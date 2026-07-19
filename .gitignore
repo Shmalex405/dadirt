@@ -1,0 +1,19 @@
+# Unreal Engine generated folders — never commit these
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Platforms/
+
+# Visual Studio generated files
+.vs/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# OS cruft
+Thumbs.db
+Desktop.ini
