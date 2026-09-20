@@ -1,0 +1,122 @@
+// DaDirt — shared dirt-simulation helpers.
+//
+// STATE LAYOUT (RGBA32F render target, ping-ponged each pass)
+//   .r  dirt layer thickness, cm above bedrock. Always >= 0. This is the only
+//       channel that carries mass, so this is the channel the volume audit sums.
+//   .g  compaction. 0 = loose fluffy dirt, 1 = packed hardpack.
+//   .b  moisture.   0 = bone dry, 1 = saturated.
+//   .a  total surface height in cm (bedrock + .r). Redundant, but it means the
+//       display material only has to sample one texture to displace the mesh.
+//
+// Parameters are bound by NAME: each one declared here or in a pass below must
+// have a matching entry in that shader's FParameters struct in DirtSimulation.cpp.
+// The three declared here are shared by every pass, so every pass's struct has
+// them — even the init pass, which only reads DirtBaseHeight.
+
+#pragma once
+
+#include "/Engine/Public/Platform.ush"
+
+#ifndef DIRT_THREADGROUP_SIZE
+	#define DIRT_THREADGROUP_SIZE 8
+#endif
+
+#define DIRT_PI 3.14159265358979f
+
+// --- shared bindings --------------------------------------------------------
+int2 DirtResolution;
+Texture2D<float> DirtBaseHeight;      // static bedrock, cm
+Texture2D<float4> DirtStateIn;        // dirt state being read this pass
+
+#ifndef UNROLL
+	#define UNROLL [unroll]
+#endif
+
+// The four axis-aligned neighbours, in a fixed order. Index ^ 1 gives the
+// opposite direction, which the slump pass relies on to match outflow to inflow.
+static const int2 DirtOffsets4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
+
+bool DirtInBounds(int2 C)
+{
+	return all(C >= int2(0, 0)) && all(C < DirtResolution);
+}
+
+float DirtBedrock(int2 C)
+{
+	return DirtBaseHeight.Load(int3(C, 0)).x;
+}
+
+float4 DirtState(int2 C)
+{
+	return DirtStateIn.Load(int3(C, 0));
+}
+
+// Total surface height at a texel: bedrock plus whatever dirt is sitting on it.
+float DirtSurface(int2 C)
+{
+	return DirtBedrock(C) + DirtStateIn.Load(int3(C, 0)).r;
+}
+
+// ---------------------------------------------------------------------------
+// Angle of repose
+// ---------------------------------------------------------------------------
+// The steepest slope this dirt can hold without avalanching.
+//
+// Real numbers this is fitted to (see docs/MXTrackReference.md):
+//   dry sand              34 deg
+//   damp sand             45 deg   <- moisture helps, up to a point
+//   saturated sand        15-30 deg
+//   wet excavated clay    15 deg   <- and past that point it is worse than dry
+//
+// So moisture is not a one-way benefit. Cohesion rises to a peak around half
+// saturation, then a saturation penalty takes over and fully wet dirt ends up
+// holding a shallower angle than bone-dry dirt. That is mud.
+float DirtReposeDegrees(float4 S, float LooseDeg, float PackedDeg, float MoistureDeg, float SaturatedPenaltyDeg)
+{
+	const float M = saturate(S.b);
+	const float Cohesion = 4.0f * M * (1.0f - M);          // 0 at m=0 and m=1, 1 at m=0.5
+	const float Saturation = smoothstep(0.55f, 1.0f, M);   // mud takes over past half-wet
+
+	const float Deg = lerp(LooseDeg, PackedDeg, saturate(S.g))
+					+ MoistureDeg * Cohesion
+					- SaturatedPenaltyDeg * Saturation;
+
+	return clamp(Deg, 1.0f, 89.0f);
+}
+
+// Largest height difference two neighbouring texels can have and still be stable.
+float DirtStableStep(float4 S, float LooseDeg, float PackedDeg, float MoistureDeg,
+					 float SaturatedPenaltyDeg, float TexelSizeCm)
+{
+	return tan(radians(DirtReposeDegrees(S, LooseDeg, PackedDeg, MoistureDeg, SaturatedPenaltyDeg))) * TexelSizeCm;
+}
+
+// ---------------------------------------------------------------------------
+// Brush kernels
+// ---------------------------------------------------------------------------
+// IMPORTANT: these two functions are mirrored exactly in C++ (DirtBrush.h,
+// DirtBrushCoreWeight / DirtBrushRimWeight). The CPU sums them over the brush
+// footprint to get normalisation constants, which is what makes dig and raise
+// conserve volume to the texel. If you change the shape here, change it there.
+
+float DirtBrushCoreWeight(float R, float CoreRadius)
+{
+	if (R >= CoreRadius || CoreRadius <= 0.0f)
+	{
+		return 0.0f;
+	}
+	const float T = R / CoreRadius;
+	const float F = 1.0f - T * T;
+	return F * F;                    // 1 at the centre, smoothly 0 at CoreRadius
+}
+
+float DirtBrushRimWeight(float R, float CoreRadius, float RimRadius)
+{
+	if (R <= CoreRadius || R >= RimRadius || RimRadius <= CoreRadius)
+	{
+		return 0.0f;
+	}
+	const float T = (R - CoreRadius) / (RimRadius - CoreRadius);
+	const float S = sin(DIRT_PI * T);
+	return S * S;                    // 0 at both edges of the ring, 1 mid-ring
+}

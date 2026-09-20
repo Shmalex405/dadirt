@@ -8,6 +8,6 @@ public class DaDirtTarget : TargetRules
 		Type = TargetType.Game;
 		DefaultBuildSettings = BuildSettingsVersion.Latest;
 		IncludeOrderVersion = EngineIncludeOrderVersion.Latest;
-		ExtraModuleNames.Add("DaDirt");
+		ExtraModuleNames.AddRange(new string[] { "DaDirt", "DaDirtShaders" });
 	}
 }

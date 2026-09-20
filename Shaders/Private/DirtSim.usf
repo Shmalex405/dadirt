@@ -1,0 +1,370 @@
+// DaDirt — dirt simulation compute passes.
+//
+//   MainBrushCS    apply one deformation stroke (dig / raise / smooth / wet / pack)
+//   MainSlumpCS    angle-of-repose relaxation: dirt too steep to stand avalanches
+//   MainResolveCS  derive the surface normal and the debug colour for display
+//
+// The brush and slump passes ping-pong between two RGBA16F state textures.
+// See DirtCommon.ush for the channel layout.
+
+#include "DirtCommon.ush"
+
+// ---------------------------------------------------------------------------
+// Init — seed the simulation state from the CPU-built testbed
+// ---------------------------------------------------------------------------
+
+#if DIRT_INIT_PASS
+
+Texture2D<float4> DirtInitialState;   // CPU-built starting state
+RWTexture2D<float4> DirtStateOut;
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+
+	float4 S = DirtInitialState.Load(int3(P, 0));
+	S.r = max(S.r, 0.0f);
+	S.g = saturate(S.g);
+	S.b = saturate(S.b);
+	S.a = DirtBedrock(P) + S.r;      // derive the surface rather than trusting the upload
+
+	DirtStateOut[P] = S;
+}
+
+#endif // DIRT_INIT_PASS
+
+// ---------------------------------------------------------------------------
+// Brush
+// ---------------------------------------------------------------------------
+
+#if DIRT_BRUSH_PASS
+
+float2 DirtBrushCenter;               // in cell coordinates
+float DirtBrushCoreRadius;
+float DirtBrushRimRadius;
+float DirtBrushCoreNorm;
+float DirtBrushRimNorm;
+float DirtBrushAmount;
+float DirtBrushDisturb;
+int DirtBrushMode;
+
+RWTexture2D<float4> DirtStateOut;
+
+void ApplyBrush(int2 P)
+{
+	float4 S = DirtState(P);
+	const float Bed = DirtBedrock(P);
+
+	const float R = length((float2(P) + 0.5f) - DirtBrushCenter);
+
+	if (R < DirtBrushRimRadius + 1.0f)
+	{
+		const float Core = DirtBrushCoreWeight(R, DirtBrushCoreRadius);
+		const float Rim  = DirtBrushRimWeight(R, DirtBrushCoreRadius, DirtBrushRimRadius);
+
+		// Normalised so that summing each kernel over the whole footprint gives
+		// exactly 1.0. That is what makes dig and raise zero-sum: whatever the
+		// core loses, the rim gains.
+		const float CoreW = (DirtBrushCoreNorm > 0.0f) ? Core / DirtBrushCoreNorm : 0.0f;
+		const float RimW  = (DirtBrushRimNorm  > 0.0f) ? Rim  / DirtBrushRimNorm  : 0.0f;
+		const float Mask  = saturate(Core + Rim);
+
+		if (DirtBrushMode == 0)         // DIG — scoop the core out, heap it on the rim
+		{
+			S.r += DirtBrushAmount * (RimW - CoreW);
+		}
+		else if (DirtBrushMode == 1)    // RAISE — pile the core up, borrow from the rim
+		{
+			S.r += DirtBrushAmount * (CoreW - RimW);
+		}
+		else if (DirtBrushMode == 2)    // SMOOTH — pull toward the local average
+		{
+			float Sum = S.r;
+			float Count = 1.0f;
+			UNROLL
+			for (int i = 0; i < 4; ++i)
+			{
+				const int2 Q = P + DirtOffsets4[i];
+				if (DirtInBounds(Q))
+				{
+					Sum += DirtState(Q).r;
+					Count += 1.0f;
+				}
+			}
+			S.r = lerp(S.r, Sum / Count, saturate(DirtBrushAmount) * Mask);
+		}
+		else if (DirtBrushMode == 3)    // WET
+		{
+			S.b = saturate(S.b + DirtBrushAmount * Mask);
+		}
+		else if (DirtBrushMode == 4)    // PACK
+		{
+			S.g = saturate(S.g + DirtBrushAmount * Mask);
+		}
+		else if (DirtBrushMode == 5)    // LOOSEN
+		{
+			S.g = saturate(S.g - DirtBrushAmount * Mask);
+		}
+
+		// Dirt you have just moved is broken-up dirt — it loses its pack.
+		if (DirtBrushMode <= 2)
+		{
+			S.g = saturate(S.g - DirtBrushDisturb * Mask);
+		}
+	}
+
+	// Bedrock is the floor. You cannot dig below it, and this clamp is the one
+	// place a dig can quietly lose volume — DaDirt.Audit reports exactly how much.
+	S.r = max(S.r, 0.0f);
+	S.a = Bed + S.r;
+
+	DirtStateOut[P] = S;
+}
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainBrushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+	ApplyBrush(P);
+}
+
+#endif // DIRT_BRUSH_PASS
+
+// ---------------------------------------------------------------------------
+// Slump (angle of repose)
+// ---------------------------------------------------------------------------
+// Mass-conserving gather formulation. Each thread writes only its own texel, so
+// to stay exactly zero-sum it computes both what flows OUT of this texel and what
+// flows IN from each neighbour — recomputing the neighbour's outflow with the
+// identical function. Every centimetre that leaves one texel arrives at another.
+//
+// PERF NOTE: that costs ~25 texture loads per texel. If this shows up hot on the
+// Arc iGPU, the fix is a groupshared tile with a 2-texel halo, which cuts it to
+// roughly 2 loads per texel. Measure before optimising.
+
+#if DIRT_SLUMP_PASS
+
+float DirtTexelSizeCm;
+float DirtLooseReposeDeg;
+float DirtPackedReposeDeg;
+float DirtMoistureCohesionDeg;
+float DirtSaturatedPenaltyDeg;
+float DirtSlumpRate;
+float DirtLooseningRate;
+float DirtLooseningScaleCm;
+
+RWTexture2D<float4> DirtStateOut;
+
+// Unscaled outflow from P toward each of its four neighbours, plus the factor
+// needed to keep it from moving more dirt than P actually has.
+void ComputeOutflow(int2 P, out float Out[4], out float Scale)
+{
+	const float4 S = DirtState(P);
+	const float Surface = S.a;              // bedrock + layer, maintained by every pass
+	const float StableStep = DirtStableStep(S, DirtLooseReposeDeg, DirtPackedReposeDeg,
+											DirtMoistureCohesionDeg, DirtSaturatedPenaltyDeg,
+											DirtTexelSizeCm);
+
+	float Sum = 0.0f;
+
+	UNROLL
+	for (int i = 0; i < 4; ++i)
+	{
+		const int2 Q = P + DirtOffsets4[i];
+		if (!DirtInBounds(Q))
+		{
+			Out[i] = 0.0f;              // the walls of the box are sealed
+			continue;
+		}
+
+		// Only the part of the drop that is steeper than this dirt can hold moves.
+		const float Excess = max(0.0f, (Surface - DirtState(Q).a) - StableStep);
+		Out[i] = Excess * DirtSlumpRate;
+		Sum += Out[i];
+	}
+
+	Scale = (Sum > S.r) ? (S.r / max(Sum, 1e-6f)) : 1.0f;
+}
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+
+	float4 S = DirtState(P);
+	const float Bed = DirtBedrock(P);
+
+	float OutP[4];
+	float ScaleP;
+	ComputeOutflow(P, OutP, ScaleP);
+
+	float TotalOut = 0.0f;
+	UNROLL
+	for (int i = 0; i < 4; ++i)
+	{
+		TotalOut += OutP[i] * ScaleP;
+	}
+
+	float TotalIn = 0.0f;
+	UNROLL
+	for (int j = 0; j < 4; ++j)
+	{
+		const int2 Q = P + DirtOffsets4[j];
+		if (!DirtInBounds(Q))
+		{
+			continue;
+		}
+
+		float OutQ[4];
+		float ScaleQ;
+		ComputeOutflow(Q, OutQ, ScaleQ);
+
+		// j^1 flips the direction: neighbour Q's flow back toward us.
+		TotalIn += OutQ[j ^ 1] * ScaleQ;
+	}
+
+	const float NewLayer = max(S.r - TotalOut + TotalIn, 0.0f);
+
+	// Avalanching dirt is tumbling dirt, so it arrives loose. Nothing re-packs it
+	// on its own — only a wheel, a tool, or a Pack brush does that. Keeping it
+	// that way means the tests stay repeatable.
+	const float Moved = TotalOut + TotalIn;
+	const float Loosen = saturate(Moved / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
+
+	S.r = NewLayer;
+	S.g = saturate(S.g - Loosen);
+	S.a = Bed + NewLayer;
+
+	DirtStateOut[P] = S;
+}
+
+#endif // DIRT_SLUMP_PASS
+
+// ---------------------------------------------------------------------------
+// Resolve — surface normal + debug colour
+// ---------------------------------------------------------------------------
+
+#if DIRT_RESOLVE_PASS
+
+float DirtTexelSizeCm;
+float DirtLooseReposeDeg;
+float DirtPackedReposeDeg;
+float DirtMoistureCohesionDeg;
+float DirtSaturatedPenaltyDeg;
+int DirtDebugMode;
+float DirtDebugLayerRangeCm;
+
+// The brush and slump passes ping-pong between two state textures, so which one
+// holds the answer changes from frame to frame. Resolve copies the finished state
+// into one fixed target, which is what the display material samples — that way the
+// material has a stable texture to bind to.
+RWTexture2D<float4> DirtDisplayOut;
+RWTexture2D<float4> DirtNormalOut;
+RWTexture2D<float4> DirtDebugOut;
+
+float3 DirtHeatRamp(float T)
+{
+	T = saturate(T);
+	float3 C = lerp(float3(0.05f, 0.05f, 0.55f), float3(0.0f, 0.75f, 0.9f), saturate(T * 4.0f));
+	C = lerp(C, float3(0.1f, 0.8f, 0.15f), saturate(T * 4.0f - 1.0f));
+	C = lerp(C, float3(0.95f, 0.9f, 0.1f), saturate(T * 4.0f - 2.0f));
+	C = lerp(C, float3(0.9f, 0.1f, 0.05f), saturate(T * 4.0f - 3.0f));
+	return C;
+}
+
+float DirtSurfaceClamped(int2 C)
+{
+	return DirtStateIn.Load(int3(clamp(C, int2(0, 0), DirtResolution - 1), 0)).a;
+}
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+
+	const float4 S = DirtState(P);
+
+	DirtDisplayOut[P] = S;
+
+	// --- world-space normal from central differences of the surface -----------
+	const float HL = DirtSurfaceClamped(P - int2(1, 0));
+	const float HR = DirtSurfaceClamped(P + int2(1, 0));
+	const float HD = DirtSurfaceClamped(P - int2(0, 1));
+	const float HU = DirtSurfaceClamped(P + int2(0, 1));
+
+	const float DHDX = (HR - HL) / (2.0f * DirtTexelSizeCm);
+	const float DHDY = (HU - HD) / (2.0f * DirtTexelSizeCm);
+	const float3 N = normalize(float3(-DHDX, -DHDY, 1.0f));
+
+	DirtNormalOut[P] = float4(N * 0.5f + 0.5f, 1.0f);
+
+	// --- debug / base colour -------------------------------------------------
+	float3 C;
+
+	if (DirtDebugMode == 1)              // dirt layer thickness
+	{
+		C = DirtHeatRamp(S.r / max(DirtDebugLayerRangeCm, 1e-3f));
+	}
+	else if (DirtDebugMode == 2)         // compaction
+	{
+		C = lerp(float3(0.9f, 0.85f, 0.6f), float3(0.35f, 0.15f, 0.1f), saturate(S.g));
+	}
+	else if (DirtDebugMode == 3)         // moisture
+	{
+		C = lerp(float3(0.85f, 0.75f, 0.55f), float3(0.06f, 0.12f, 0.28f), saturate(S.b));
+	}
+	else if (DirtDebugMode == 4)         // stability vs angle of repose
+	{
+		const float StableStep = DirtStableStep(S, DirtLooseReposeDeg, DirtPackedReposeDeg,
+												DirtMoistureCohesionDeg, DirtSaturatedPenaltyDeg,
+												DirtTexelSizeCm);
+		float MaxDrop = 0.0f;
+		UNROLL
+		for (int i = 0; i < 4; ++i)
+		{
+			const int2 Q = clamp(P + DirtOffsets4[i], int2(0, 0), DirtResolution - 1);
+			MaxDrop = max(MaxDrop, S.a - DirtStateIn.Load(int3(Q, 0)).a);
+		}
+		const float Ratio = MaxDrop / max(StableStep, 1e-4f);
+		C = (Ratio <= 1.0f)
+			? lerp(float3(0.1f, 0.6f, 0.15f), float3(0.95f, 0.9f, 0.1f), Ratio)
+			: lerp(float3(0.95f, 0.9f, 0.1f), float3(0.95f, 0.05f, 0.05f), saturate(Ratio - 1.0f));
+	}
+	else if (DirtDebugMode == 5)         // bedrock exposure
+	{
+		C = (S.r < 1.0f) ? float3(0.9f, 0.1f, 0.1f) : float3(0.25f, 0.3f, 0.25f);
+	}
+	else if (DirtDebugMode == 6)         // absolute slope angle
+	{
+		const float SlopeDeg = degrees(acos(saturate(N.z)));
+		C = DirtHeatRamp(SlopeDeg / 90.0f);
+	}
+	else                                 // 0 — plain dirt
+	{
+		C = lerp(float3(0.72f, 0.58f, 0.42f), float3(0.42f, 0.32f, 0.22f), saturate(S.g));
+		C = lerp(C, C * 0.35f, saturate(S.b));
+		// where the dirt has been scraped away, cold grey bedrock shows through
+		C = lerp(float3(0.35f, 0.33f, 0.31f), C, saturate(S.r / 5.0f));
+	}
+
+	DirtDebugOut[P] = float4(C, 1.0f);
+}
+
+#endif // DIRT_RESOLVE_PASS

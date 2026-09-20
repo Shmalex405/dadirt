@@ -5,6 +5,11 @@
 	"Description": "Dirt-first motocross game. Phase 1: the Dirtbox sandbox dirt simulator.",
 	"Modules": [
 		{
+			"Name": "DaDirtShaders",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit"
+		},
+		{
 			"Name": "DaDirt",
 			"Type": "Runtime",
 			"LoadingPhase": "Default",
@@ -16,6 +21,10 @@
 	"Plugins": [
 		{
 			"Name": "Niagara",
+			"Enabled": true
+		},
+		{
+			"Name": "ProceduralMeshComponent",
 			"Enabled": true
 		}
 	]
