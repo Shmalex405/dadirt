@@ -1,0 +1,117 @@
+# A pile is not a ramp. Three encounters, each with the plough on and then off:
+#   1. a small loose heap (25 cm across, 12 cm high) on the pad: a rut-end pile
+#   2. the same heap packed and damp: a berm lip that should carry the tyre
+#   3. the real thing: a locked-brake stop shoves a pile, then the wheel drives
+#      back through it from 5 m behind
+# Status lines print heap / carried / plough and air time. The pad is X = 3.
+# DaDirt.Wheel makes a new wheel with every part on: WheelParts must come after it.
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -5 40
+wait 1
+
+# --- 1 & 2: two heaps ---------------------------------------------------------------
+DaDirt.Raise 3 -8 25 12
+DaDirt.Raise 3 8 25 12
+wait 1
+DaDirt.Pack 3 8 45 0.9
+DaDirt.Wet 3 8 45 0.35
+wait 2 heaps_built
+DaDirt.Probe 3 -8
+DaDirt.Probe 3 8
+DaDirt.Wheel 3 -16 90
+DaDirt.Follow 1
+DaDirt.Drive 0.4 0 0
+wait 2.4 into_loose_heap
+screenshot plough_00_loose_heap
+wait 3.6 past_both_heaps
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Follow 0
+DaDirt.Probe 3 -8.3
+DaDirt.Probe 3 -8
+DaDirt.Probe 3 -7.7
+DaDirt.Probe 3 -7.4
+DaDirt.Probe 3 7.7
+DaDirt.Probe 3 8
+DaDirt.Probe 3 8.3
+camera 3 -11 0.9 -12 90
+wait 0.4
+screenshot plough_01_furrow
+DaDirt.Audit
+
+# the same with the plough off
+DaDirt.Reset
+wait 1
+DaDirt.Raise 3 -8 25 12
+DaDirt.Raise 3 8 25 12
+wait 1
+DaDirt.Pack 3 8 45 0.9
+DaDirt.Wet 3 8 45 0.35
+wait 2
+DaDirt.Wheel 3 -16 90
+DaDirt.WheelParts 1 1 1 1 1 0
+DaDirt.Drive 0.4 0 0
+wait 6 heaps_no_plough
+DaDirt.Drive 0 0 1
+wait 1
+
+# --- 2b: a crawl through a fresh loose heap, slow enough for the status lines ------
+DaDirt.Reset
+wait 1
+DaDirt.Raise 3 -8 25 12
+wait 2
+DaDirt.Wheel 3 -11 90
+DaDirt.Drive 0.25 0 0
+wait 6 crawl_through_heap
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -8.3
+DaDirt.Probe 3 -8
+DaDirt.Probe 3 -7.7
+DaDirt.Probe 3 -7.4
+DaDirt.Probe 3 -7.1
+DaDirt.Audit
+
+# --- 3: the end of a rut ---------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 3 -18 90
+DaDirt.Drive 0.5 0 0
+wait 3 run_up
+DaDirt.Drive 0 0 1
+wait 2 locked_stop
+DaDirt.Probe 3 -4
+DaDirt.Probe 3 -3
+DaDirt.Probe 3 -2
+DaDirt.Probe 3 -1
+DaDirt.Probe 3 0
+DaDirt.Probe 3 1
+DaDirt.Wheel 3 -12 90
+DaDirt.Follow 1
+DaDirt.Drive 0.5 0 0
+wait 3 through_rut_end
+screenshot plough_02_rut_end
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Follow 0
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 3 -18 90
+DaDirt.Drive 0.5 0 0
+wait 3
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Wheel 3 -12 90
+DaDirt.WheelParts 1 1 1 1 1 0
+DaDirt.Drive 0.5 0 0
+wait 3 through_rut_end_no_plough
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+quit

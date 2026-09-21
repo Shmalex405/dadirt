@@ -54,15 +54,15 @@ DaDirt.Probe 3.06 0
 DaDirt.Probe 3.12 0
 DaDirt.Probe 3.2 0
 DaDirt.Probe 3.3 0
-DaDirt.Wheel 3 -17 90
+DaDirt.Wheel 3 -19 90
 DaDirt.Drive 0.5 0 0
-wait 5 rut_pass_2
-DaDirt.Wheel 3 -17 90
+wait 5.5 rut_pass_2
+DaDirt.Wheel 3 -21 90
 DaDirt.Drive 0.5 0 0
-wait 5 rut_pass_3
-DaDirt.Wheel 3 -17 90
+wait 5.5 rut_pass_3
+DaDirt.Wheel 3 -23 90
 DaDirt.Drive 0.5 0 0
-wait 5 rut_pass_4
+wait 5.5 rut_pass_4
 DaDirt.Drive 0 0 1
 wait 2
 DaDirt.Probe 2.7 0

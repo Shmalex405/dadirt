@@ -118,6 +118,12 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   A parcel's volume was scooped from the heightfield and is deposited back by
   atomics into fixed-point textures; the audit counts ground + air. Dust is a
   second pool with the same shaders and NO audited volume: the one deliberate effect.
+- **The wheel decides climb-or-shove, never rigid contact.** Dirt standing above
+  the ground around it at the wheel's scale is a heap; the tyre sinks through
+  the share the passive wedge cannot hold and shoves that share ahead
+  (`TransferDirt`), with the wedge's resistance as a force. Do not fix a launch
+  or a stall by hand-tuning the contact: change the soil numbers that feed
+  `R_b` and `F_climb` (docs/SoilPhysics.md 6), and check `Tools/DirtboxPlough.txt`.
 - **Every mass-moving stroke is two halves.** A taking half (dig core, raise rim,
   scoop) runs first and reports per stroke what the cell did not have (bedrock)
   into `DirtScoopShortfall`; the giving half (dig rim, raise core, dump, or the
@@ -158,6 +164,10 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   dirt in the air included. Water is audited separately (pore water and pond)
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
-  (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist). Run them with
+  (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist,
+  Plough, Hills). Anything that touches the wheel or soil strength runs
+  `DirtboxHills.txt` too: the pad only exercises ruts, and every contact bug so
+  far showed up on the dome, the jump faces or the berm. `DaDirt.Wheel` makes a
+  new wheel with every part on, so `DaDirt.WheelParts` must follow it. Run them with
   the `-DirtScript=` launch and read the numbers out of the log; a change that
   moves a measured number is not done until the doc that quotes it is updated.

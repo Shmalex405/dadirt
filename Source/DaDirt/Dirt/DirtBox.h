@@ -187,7 +187,7 @@ public:
 	 * Zero-sum except where the scoop hits bedrock, which the audit reports.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
-	void TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3);
+	void TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3, float DisturbOverride = -1.0f);
 
 	/**
 	 * Take a volume of solid dirt (cm^3) out of the ground with no rim. The

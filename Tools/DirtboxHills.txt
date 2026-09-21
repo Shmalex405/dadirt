@@ -1,0 +1,206 @@
+# Off the pad: the wheel against every shape the testbed has. The window
+# follows the wheel at rut resolution (3.9 cm cells) the whole way.
+#   A. the 7.5 m dome at (22, 30): a 40 deg cosine face, crest, descent, brake
+#   B. the SX whoops at Y=+60 (4.3 m / 90 cm) at speed, then the FIM rolling
+#      waves at Y=-60 (10 m / 80 cm)
+#   C. the jump lineup: the 32 deg face at Y=-16 flat out, the flight, the landing
+#   D. the angle spectrum: standing starts up the packed 25 deg and 40 deg wedges
+#   E. the berm arc at (56, 0): a left-hander banked 34 deg at 1.1 m
+#   F. the loose 3 m mound at (54, 42) and the 3 m bowl at (54, -42)
+# Status lines carry speed, slip, sink, heap and air time. Heading 0 = +X, 90 = +Y.
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+
+# --- A. the dome ------------------------------------------------------------------------
+DaDirt.Focus 22 14 40
+wait 1
+DaDirt.Wheel 22 10 90
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.8 0 0
+wait 5 A_climb
+screenshot hills_A0_climb
+wait 3 A_crest
+screenshot hills_A1_crest
+wait 3 A_descent
+DaDirt.Drive 0 0 1
+wait 2.5 A_braked
+screenshot hills_A2_braked
+DaDirt.Follow 0
+DaDirt.Probe 22 22
+DaDirt.Probe 22.15 22
+DaDirt.Probe 22 26
+DaDirt.Probe 22 30
+DaDirt.Probe 22 36
+DaDirt.Audit
+
+# --- B. whoops, then rolling waves --------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 20 60 40
+wait 1
+DaDirt.Wheel 6 60 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.7 0 0
+wait 4 B_into_whoops
+screenshot hills_B0_whoops
+wait 5 B_through_whoops
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Probe 20 60
+DaDirt.Probe 22.15 60
+DaDirt.Probe 24.3 60
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus 20 -60 40
+wait 1
+DaDirt.Wheel 6 -60 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.6 0 0
+wait 5 B_into_waves
+screenshot hills_B1_waves
+wait 5 B_through_waves
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+
+# --- C. the 32 deg jump, then the rounded 22 deg tabletop -----------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus -30 -16 40
+wait 1
+DaDirt.Wheel -50 -16 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 3.6 C_run_up
+screenshot hills_C0_face
+wait 1.2 C_flight
+screenshot hills_C1_flight
+wait 3 C_landed
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Focus -30 -16 40
+wait 0.5
+DaDirt.Probe -33 -16
+DaDirt.Probe -31 -16
+DaDirt.Probe -30.2 -16
+DaDirt.Probe -17 -16
+DaDirt.Probe -15 -16
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus -30 -48 40
+wait 1
+DaDirt.Wheel -50 -48 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 4 C_tabletop
+screenshot hills_C2_tabletop
+wait 3.5
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+
+# --- D. the angle spectrum: 25 deg, then 40 deg ------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus -50 -26.7 40
+wait 1
+DaDirt.Wheel -63.2 -26.7 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.6 0 0
+wait 6 D_25deg
+screenshot hills_D0_25deg
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Probe -61 -26.7
+DaDirt.Probe -58 -26.7
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus -50 5.3 40
+wait 1
+DaDirt.Wheel -63.2 5.3 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.8 0 0
+wait 6 D_40deg
+screenshot hills_D1_40deg
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Probe -61.5 5.3
+DaDirt.Probe -60.5 5.3
+DaDirt.Audit
+
+# --- E. the berm ---------------------------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 50 -8 40
+wait 1
+DaDirt.Wheel 36 -13 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.7 0 0
+wait 2.2 E_entry
+DaDirt.Drive 0.5 0.6 0
+wait 1.5 E_in_the_berm
+screenshot hills_E0_berm
+wait 2.5 E_exit
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+
+# --- F. the loose mound, then the bowl ------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 50 40 40
+wait 1
+DaDirt.Wheel 40 42 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.7 0 0
+wait 5 F_mound
+screenshot hills_F0_mound
+wait 3
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Probe 48 42
+DaDirt.Probe 50 42
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus 50 -40 40
+wait 1
+DaDirt.Wheel 40 -42 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.6 0 0
+wait 5 F_bowl
+screenshot hills_F1_bowl
+wait 4
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+quit

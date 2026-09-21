@@ -608,7 +608,7 @@ FIntPoint ADirtBox::TileForCentre(FVector2D CentreCm, float RegionCm) const
 {
 	const float TileCm = RegionCm / TilesPerSide;
 	const float Half = Settings.WorldSizeCm * 0.5f;
-	const int32 MaxTile = FMath::Max(FMath::FloorToInt(Settings.WorldSizeCm / TileCm) - TilesPerSide, 0);
+	const int32 MaxTile = FMath::Max(FMath::CeilToInt(Settings.WorldSizeCm / TileCm - 0.01f) - TilesPerSide, 0);
 	const FVector2D Origin = CentreCm - FVector2D(RegionCm * 0.5);
 	return FIntPoint(
 		FMath::Clamp(FMath::RoundToInt((Origin.X + Half) / TileCm), 0, MaxTile),
@@ -709,7 +709,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 		return;
 	}
 	const float TileCm = TileSizeCm();
-	const int32 MaxTile = FMath::Max(FMath::FloorToInt(Settings.WorldSizeCm / TileCm) - TilesPerSide, 0);
+	const int32 MaxTile = FMath::Max(FMath::CeilToInt(Settings.WorldSizeCm / TileCm - 0.01f) - TilesPerSide, 0);
 	const FIntPoint NewTile(FMath::Clamp(WindowTile.X + DeltaTiles.X, 0, MaxTile),
 							FMath::Clamp(WindowTile.Y + DeltaTiles.Y, 0, MaxTile));
 	DeltaTiles = NewTile - WindowTile;
@@ -2068,7 +2068,7 @@ void ADirtBox::SpawnDust(FVector WorldPosCm, FVector VelocityCmS, float SpreadDe
 	PendingDust.Add(S);
 }
 
-void ADirtBox::TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3)
+void ADirtBox::TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3, float DisturbOverride)
 {
 	if (!bResourcesReady || VolumeCm3 <= 0.0f || FromRadiusCm <= 0.0f || ToRadiusCm <= 0.0f)
 	{
@@ -2080,7 +2080,7 @@ void ADirtBox::TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector
 	// is a giving half linked to the scoop, so it gives only what was found.
 	const float Amount = VolumeCm3 / Settings.TexelAreaCm2();
 	const int32 TakeIndex = PendingStrokes.Num();
-	PendingStrokes.Add(MakeStroke(FromWorldXYCm, FromRadiusCm, Amount, EDirtBrushMode::Scoop));
+	PendingStrokes.Add(MakeStroke(FromWorldXYCm, FromRadiusCm, Amount, EDirtBrushMode::Scoop, DisturbOverride));
 	FDirtBrushStroke Give = MakeStroke(ToWorldXYCm, ToRadiusCm, Amount, EDirtBrushMode::Dump);
 	Give.Link = (TakeIndex < DirtSim::MaxStrokesPerStep) ? TakeIndex : -1;
 	PendingGiving.Add(Give);
@@ -2757,6 +2757,17 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 			const FVector Origin = Box->GetActorLocation();
 			const FVector2D World(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
 
+			// The readback is the simulated window; a point outside it would read
+			// the nearest edge cell and look like an answer.
+			const float HalfRegion = Box->Settings.RegionSizeCm() * 0.5f;
+			if (FMath::Abs(Xm * 100.0 - Box->Settings.SimRegionCentreCm.X) > HalfRegion
+				|| FMath::Abs(Ym * 100.0 - Box->Settings.SimRegionCentreCm.Y) > HalfRegion)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("(%.1f, %.1f) m is outside the simulated window (%.0f m square at (%.0f, %.0f) m). DaDirt.Focus there first."),
+					Xm, Ym, Box->Settings.RegionSizeCm() * 0.01f, Box->Settings.SimRegionCentreCm.X * 0.01, Box->Settings.SimRegionCentreCm.Y * 0.01);
+				return;
+			}
+
 			Box->RefreshReadback();
 			const FLinearColor S = Box->GetStateAtWorld(World);
 			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm]"),
@@ -3087,7 +3098,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtDriveCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtWheelPartsCmd(
 	TEXT("DaDirt.WheelParts"),
-	TEXT("DaDirt.WheelParts <rut> <pack> <roost> <spray> <splash> - 0/1 each; switch the wheel's marks on the dirt off one at a time."),
+	TEXT("DaDirt.WheelParts <rut> <pack> <roost> <spray> <splash> [plough=1] - 0/1 each; switch the wheel's marks on the dirt off one at a time."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
 		[](const TArray<FString>& Args, UWorld* World)
 		{
@@ -3098,8 +3109,9 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtWheelPartsCmd(
 				It->bPartRoost = ArgInt(Args, 2, 1) != 0;
 				It->bPartSpray = ArgInt(Args, 3, 1) != 0;
 				It->bPartSplash = ArgInt(Args, 4, 1) != 0;
-				UE_LOG(LogDirt, Log, TEXT("Wheel parts: rut %d pack %d roost %d spray %d splash %d."),
-					It->bPartRut, It->bPartPack, It->bPartRoost, It->bPartSpray, It->bPartSplash);
+				It->bPartPlough = ArgInt(Args, 5, 1) != 0;
+				UE_LOG(LogDirt, Log, TEXT("Wheel parts: rut %d pack %d roost %d spray %d splash %d plough %d."),
+					It->bPartRut, It->bPartPack, It->bPartRoost, It->bPartSpray, It->bPartSplash, It->bPartPlough);
 				return;
 			}
 			UE_LOG(LogDirt, Warning, TEXT("No test wheel. DaDirt.Wheel <x> <y> first."));

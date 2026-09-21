@@ -1,0 +1,52 @@
+# Dirt lost at the window edge? The wheel drives into the east edge of a fixed
+# 40 m window (X = 23) with one part of its mark at a time, and parks there
+# spinning. Every case should audit to zero.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -5 40
+wait 1
+DaDirt.Wheel 12 -5 0
+DaDirt.WheelParts 1 1 0 0 0 0
+DaDirt.Drive 0.6 0 0
+wait 6 rut_pack_into_edge
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 12 -5 0
+DaDirt.WheelParts 0 0 1 0 0 0
+DaDirt.Drive 0.6 0 0
+wait 6 roost_into_edge
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 12 -5 0
+DaDirt.WheelParts 0 0 0 0 0 1
+DaDirt.Drive 0.6 0 0
+wait 6 plough_into_edge
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 12 -5 0
+DaDirt.WheelParts 0 0 0 1 1 0
+DaDirt.Drive 0.6 0.8 0
+wait 6 spray_splash_into_edge
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 12 -5 0
+DaDirt.Drive 1 0 0
+wait 6 everything_into_edge
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+quit

@@ -1,4 +1,5 @@
 #include "DirtWheel.h"
+#include "Algo/Sort.h"
 
 #include "DirtBox.h"
 #include "Components/StaticMeshComponent.h"
@@ -107,12 +108,13 @@ void ADirtWheel::Tick(float DeltaSeconds)
 		ADirtBox* B = Box.Get();
 		UE_LOG(LogDirtWheel, Log,
 			TEXT("Wheel at (%.1f, %.1f) m hdg %.0f: %.1f m/s (%.0f km/h), wheel %.1f m/s, slip %+.1f m/s (i %+.2f), ")
-			TEXT("grip %.2f, traction %.0f N, sink %.1f cm, resist %.0f N, compaction %.2f, moisture %.2f, %s, ")
-			TEXT("odometer %.1f m, roost %.2f L solid, %d parcels live"),
+			TEXT("grip %.2f, traction %.0f N, sink %.1f cm, resist %.0f N, heap %.1f cm carried %.2f plough %.0f N, ")
+			TEXT("compaction %.2f, moisture %.2f, %s (air %.2f s, max %.1f cm), odometer %.1f m, roost %.2f L, ploughed %.2f L, %d parcels live"),
 			P.X / CmPerM, P.Y / CmPerM, HeadingDeg, VelocityMps.Size(), VelocityMps.Size() * 3.6f,
 			WheelOmega * RadiusM, LastSlipMps, LastSlipRatio, LastFriction, LastTractionN, LastSinkageCm, LastResistanceN,
-			LastCompaction, LastMoisture, bOnGround ? TEXT("on ground") : TEXT("airborne"), OdometerM, RoostLitresTotal,
-			B ? B->GetLiveParcels() : 0);
+			LastHeapCm, LastCarried, LastPloughN,
+			LastCompaction, LastMoisture, bOnGround ? TEXT("on ground") : TEXT("airborne"), AirTimeS, MaxAirCm, OdometerM, RoostLitresTotal,
+			PloughLitresTotal, B ? B->GetLiveParcels() : 0);
 	}
 }
 
@@ -141,7 +143,9 @@ void ADirtWheel::SoilResponse(float Compaction, float Moisture, float LoadN,
 
 	const float Z = FMath::Pow(LoadKN / (K * WidthM * 2.0f * FMath::Sqrt(2.0f * RadiusM)), 1.0f / (N + 0.5f));
 	OutSinkageM = FMath::Clamp(Z, 0.0f, RadiusM * 0.5f);
-	OutContactLengthM = FMath::Max(2.0f * FMath::Sqrt(2.0f * RadiusM * OutSinkageM), 0.03f);
+	// The patch is the longer of what the ground gives (sinkage) and what the
+	// tyre gives (its own deflection).
+	OutContactLengthM = FMath::Max(2.0f * FMath::Sqrt(2.0f * RadiusM * FMath::Max(OutSinkageM, TyreDeflectionM)), 0.03f);
 
 	// Motion resistance is the work of pressing the rut: R = b K z^(n+1) / (n+1).
 	OutResistanceN = 1000.0f * WidthM * K * FMath::Pow(OutSinkageM, N + 1.0f) / (N + 1.0f);
@@ -187,6 +191,136 @@ void ADirtWheel::Step(float Dt)
 		LateralSlope = (RightCm - LeftCm) / (WidthM * CmPerM);
 		GroundCm = FMath::Max3(GroundCm, LeftCm, RightCm);
 	}
+
+	// --- a heap is not a half-space ------------------------------------------------
+	// How far the ground under the tyre stands above the ground around it is
+	// dirt with nothing confining it: a spoil pile, a shoulder, the mound at the
+	// end of a rut. It carries only its own bearing capacity; the rest of the
+	// wheel sinks through it and shoves it ahead. Everything below that is the
+	// confined soil Bekker describes, and the rut is pressed into that.
+	float HeapM = 0.0f;
+	float Carried = 1.0f;
+	float WedgeAheadM = 0.0f;
+	float BladeM = 0.0f;
+	float TanPhiHeap = 0.6f, CohesionHeapKPa = 0.0f;
+	if (bHaveGround)
+	{
+		// A heap stands above everything around it, and it stops growing once you
+		// step back: a spoil pile is as tall seen from one tyre radius as from
+		// two. The reference is the HIGHEST point of a ring at each distance. A
+		// hillside fails at once (the uphill side is higher than the tyre); a hill
+		// crest clears the near ring but stands far taller over the far one, so it
+		// is not a heap either and is ridden as ground. A rut shoulder clears
+		// both by the same amount (the pad is the highest thing round it).
+		// Judged against one ring's mean, the dome at (22, 30) read as a 26 cm
+		// heap all the way up and the wheel tried to bulldoze the hill.
+		float RingMax1 = -1e9f, RingMax2 = -1e9f;
+		float RingMax1Aside = -1e9f;      // ring 1 without its forward samples, which may sit on a pile just ahead
+		int32 RingN = 0;
+		const float RingHeadingRad = FMath::Atan2(Forward.Y, Forward.X);
+		for (int32 Ring = 1; Ring <= 2; ++Ring)
+		{
+			const float RingCm = RadiusM * HeapRingRadius * Ring * CmPerM;
+			for (int32 K = 0; K < 8; ++K)
+			{
+				const float A = RingHeadingRad + K * PI / 4.0f;
+				float H = 0.0f;
+				FVector Unused;
+				if (B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM + FVector2D(FMath::Cos(A), FMath::Sin(A)) * RingCm, H, Unused))
+				{
+					if (Ring == 1)
+					{
+						RingMax1 = FMath::Max(RingMax1, H);
+						if (K >= 2 && K <= 6)          // 90 degrees and more off the heading
+						{
+							RingMax1Aside = FMath::Max(RingMax1Aside, H);
+						}
+					}
+					else
+					{
+						RingMax2 = FMath::Max(RingMax2, H);
+					}
+					++RingN;
+				}
+			}
+		}
+		if (RingN >= 12)
+		{
+			const float P1 = (GroundCm - RingMax1) / CmPerM;
+			const float P2 = (GroundCm - RingMax2) / CmPerM;
+			if (P1 > 0.0f && P2 <= P1 * 1.3f + 0.02f)
+			{
+				HeapM = FMath::Min(P1, RadiusM * 0.9f);
+			}
+		}
+		const float SurroundCm = FMath::Max(RingMax1, RingMax2);
+
+		// The obstacle is the whole thing in front of the tyre, not just the part
+		// under it now: the toe of a packed lip is held by the lip behind it.
+		float AheadMaxCm = GroundCm;
+		float BladeCm = GroundCm;
+		{
+			const FVector2D Fwd2(Forward.X, Forward.Y);
+			for (float Reach : { PloughReach * 0.7f, PloughReach, 1.0f })
+			{
+				float H = 0.0f;
+				FVector Unused;
+				if (B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM + Fwd2 * (RadiusM * Reach * CmPerM), H, Unused))
+				{
+					AheadMaxCm = FMath::Max(AheadMaxCm, H);
+					if (Reach < PloughReach)
+					{
+						BladeCm = H;
+					}
+				}
+			}
+		}
+		// A pile just ahead of the tyre, not yet under it, is a heap by the same
+		// rule: it must stand above the tyre's ground AND above both rings. Rising
+		// ground on a slope fails that (the rings uphill are higher still).
+		// (The near ring's forward samples are left out of the reference: on a
+		// pile the size of the tyre they sit on the pile itself.)
+		const float AheadHeapM = (RingN >= 12)
+			? FMath::Clamp((AheadMaxCm - FMath::Max3(GroundCm, RingMax2, RingMax1Aside)) / CmPerM, 0.0f, RadiusM * 0.9f)
+			: 0.0f;
+		const float ObstacleM = FMath::Max(HeapM, AheadHeapM);
+
+		// Anything lower than the tyre's own sinkage is inside its contact patch:
+		// it is pressed as part of the rut, not shoved. Only what stands above
+		// that is an obstacle.
+		float StaticSinkM = 0.0f, UnusedL = 0.0f, UnusedR = 0.0f;
+		SoilResponse(FMath::Clamp(State.G, 0.0f, 1.0f), FMath::Clamp(State.B, 0.0f, 1.0f), MassKg * Gravity, StaticSinkM, UnusedL, UnusedR);
+		if (bPartPlough && ObstacleM > StaticSinkM + 0.005f)
+		{
+			// Climb it or shove it, whichever is cheaper.
+			DirtSoilStrength(FMath::Clamp(State.G, 0.0f, 1.0f), FMath::Clamp(State.B, 0.0f, 1.0f), B->Settings, TanPhiHeap, CohesionHeapKPa);
+			const float Phi = FMath::Atan(FMath::Max(TanPhiHeap, 0.05f));
+			const float Kp = FMath::Square(FMath::Tan(PI / 4.0f + Phi / 2.0f));
+			const float ShoveN = WidthM * (0.5f * B->Settings.UnitWeightKNm3 * 1000.0f * ObstacleM * ObstacleM * Kp
+										   + 2.0f * CohesionHeapKPa * 1000.0f * ObstacleM * FMath::Sqrt(Kp));
+			const float Theta = FMath::Acos(FMath::Clamp(1.0f - ObstacleM / RadiusM, 0.0f, 1.0f));
+			const float ClimbN = MassKg * Gravity * FMath::Tan(FMath::Min(Theta, 1.4f));
+			Carried = FMath::Clamp(ShoveN / FMath::Max(ClimbN, 1.0f), 0.0f, 1.0f);
+		}
+
+		// The wedge in front of the tyre, above where the tyre will sit: the
+		// tallest thing ahead decides the push back, what stands at the blade
+		// decides how much dirt moves.
+		const float FloorCm = GroundCm - HeapM * (1.0f - Carried) * CmPerM;
+		WedgeAheadM = ObstacleM;
+		BladeM = (RingN >= 12) ? FMath::Max(BladeCm - FMath::Max(FloorCm, SurroundCm), 0.0f) / CmPerM : 0.0f;
+	}
+	const float HeapSinkM = HeapM * (1.0f - Carried);
+	GroundCm -= HeapSinkM * CmPerM;
+	// A heap that yields has no face to launch off: the tyre feels the ground
+	// around it, not the pile it is going through.
+	if (HeapM > 0.002f)
+	{
+		Normal = FMath::Lerp(FVector::UpVector, Normal, Carried).GetSafeNormal();
+	}
+	LastHeapCm = HeapM * CmPerM;
+	LastCarried = Carried;
+
 	if (!bHaveGround)
 	{
 		// No ground data here. Off the simulated ground (outside the box or a
@@ -219,6 +353,8 @@ void ADirtWheel::Step(float Dt)
 	if (!bOnGround)
 	{
 		FallSpeedMps = FMath::Max(-VelocityMps.Z, 0.0f);
+		AirTimeS += Dt;
+		MaxAirCm = FMath::Max(MaxAirCm, (Bottom - GroundM) * CmPerM);
 	}
 	const bool bTouchdown = bOnGround && !bWasOnGround;
 	bWasOnGround = bOnGround;
@@ -337,13 +473,36 @@ void ADirtWheel::Step(float Dt)
 		const float Kj = FMath::Lerp(ShearModulusLooseM, ShearModulusDenseM, Compaction);
 		const float A = FMath::Abs(SlipRatio) * ContactLengthM / Kj;
 		const float Build = (A > 1e-4f) ? 1.0f - (1.0f - FMath::Exp(-A)) / A : 0.0f;
-		const float TractionN = FMath::Sign(SlipRatio) * MaxTractionN * Build;
+		// Shear can only ever bring the tyre surface and the ground to the same
+		// speed; a substep must not carry it past that. The impulse that stops
+		// the slip within the step (wheel spin and vehicle mass together) caps
+		// the force. Without this cap the wheel speed chattered about zero at
+		// low throttle and the tyre never got going.
+		const float EffMass = 1.0f / (1.0f / MassKg + RadiusM * RadiusM / Inertia);
+		const float StopN = EffMass * FMath::Abs(SlipMps) / Dt;
+		const float TractionN = FMath::Sign(SlipRatio) * FMath::Min(MaxTractionN * Build, StopN);
 
 		// Motion resistance: the rut being pressed, plus a floor for hardpack.
 		const float RollingN = -FMath::Sign(VForward) * (ResistanceN + BaseRollingResistance * Load)
 			* FMath::Min(1.0f, FMath::Abs(VForward) / 0.2f);
 
-		VelocityMps += FwdGround * ((TractionN + RollingN) / MassKg) * Dt;
+		// Bulldozing: the wedge of yielding dirt ahead of the tyre resists with
+		// its passive earth pressure, R_b = b (1/2 gamma z^2 K_pg + c z K_pc),
+		// Rankine's K_p = tan^2(45 + phi/2). Twice the height, four times the push.
+		float PloughN = 0.0f;
+		if (bPartPlough && WedgeAheadM > 0.0f && Carried < 1.0f)
+		{
+			const float Phi = FMath::Atan(FMath::Max(TanPhiHeap, 0.05f));
+			const float Kp = FMath::Square(FMath::Tan(PI / 4.0f + Phi / 2.0f));
+			const float Z = FMath::Min(WedgeAheadM, RadiusM);
+			PloughN = WidthM * (0.5f * B->Settings.UnitWeightKNm3 * 1000.0f * Z * Z * Kp
+								+ CohesionHeapKPa * 1000.0f * Z * 2.0f * FMath::Sqrt(Kp)) * (1.0f - Carried);
+		}
+		LastPloughN = PloughN;
+		// It can slow the tyre to a stop against the pile, never push it back.
+		const float PloughImpulse = FMath::Min(PloughN * Dt, FMath::Abs(VForward) * MassKg);
+
+		VelocityMps += FwdGround * ((TractionN + RollingN) / MassKg) * Dt - FwdGround * FMath::Sign(VForward) * (PloughImpulse / MassKg);
 		WheelOmega += (ApplyBrake(AxleTorque - TractionN * RadiusM) / Inertia) * Dt;
 
 		LastTractionN = TractionN;
@@ -364,6 +523,9 @@ void ADirtWheel::Step(float Dt)
 		const float Moved = FMath::Abs(VForward) * Dt;
 		OdometerM += Moved;
 		StrokeDistanceM += Moved;
+		// What the tyre removes from its own path: the wedge ahead, above the
+		// floor it rides on, for the share that will not hold.
+		StrokePloughM2 += BladeM * (1.0f - Carried) * Moved;
 		StrokeSinkageM += SinkageM * (1.0f + SlipSinkage * FMath::Abs(SlipRatio)) * Moved;
 		const float ShearSpeed = FMath::Max(FMath::Abs(SlipMps) - RoostSlipThresholdMps, 0.0f);
 		StrokeSlipM += FMath::Min(ShearSpeed, RoostSlipCapMps) * Dt;
@@ -395,15 +557,60 @@ void ADirtWheel::Step(float Dt)
 				const float PassFraction = StrokeDistanceM * CmPerM / B->GetTexelSizeCm();
 				const float MeanSinkageCm = StrokeSinkageM / StrokeDistanceM * CmPerM;
 				const float RutCm = PlasticSinkage * MeanSinkageCm * PassFraction * LoadFactor;
+				// The ground is pressed where the tyre first meets it, at the front
+				// of the contact patch, so the axle always rides on floor it has
+				// already made. Pressed under the axle instead, the unpressed ground
+				// ahead was a step the tyre had to climb every stroke, on top of
+				// the Bekker resistance that already charges for pressing it: a
+				// wheel at quarter throttle dug itself in and never got going.
+				const FVector2D PressCm = ContactCm + FVector2D(FwdGround.X, FwdGround.Y) * FMath::Sign(VForward) * (0.5f * ContactLengthM * CmPerM);
 				if (RutCm > 0.005f && bPartRut)
 				{
 					// No disturb: a tyre pressing a rut is packing, not breaking up.
-					B->ApplyBrush(ContactCm, HalfWidthCm * 1.2f, RutCm, EDirtBrushMode::Dig, 0.0f);
+					B->ApplyBrush(PressCm, HalfWidthCm * 1.2f, RutCm, EDirtBrushMode::Dig, 0.0f);
 				}
 				if (bPartPack)
 				{
-					B->ApplyBrush(ContactCm, HalfWidthCm * 1.3f, PackPerPass * PassFraction * LoadFactor,
+					B->ApplyBrush(PressCm, HalfWidthCm * 1.3f, PackPerPass * PassFraction * LoadFactor,
 								  EDirtBrushMode::Pack, -1.0f, /*bProctor*/ true);
+				}
+
+				// The heap the tyre sank through is shoved ahead of it: the swept
+				// volume (width x thickness sunk through x distance) moves from under
+				// the contact to just in front, where it piles up and, next stroke,
+				// stands higher, carries more, and pushes back harder.
+				if (bPartPlough && StrokePloughM2 > 0.0f)
+				{
+					// Taken from the wedge just ahead of the contact, put down a
+					// tyre radius further on: the blade of a bulldozer.
+					const float ScoopRadiusCm = HalfWidthCm * 1.2f;
+					const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
+					const float WantedCm3 = WidthM * CmPerM * StrokePloughM2 * CmPerM * CmPerM * SolidFraction;
+					const FVector2D Fwd2 = FVector2D(FwdGround.X, FwdGround.Y) * FMath::Sign(VForward);
+					const FVector2D WedgeCm = ContactCm + Fwd2 * (RadiusM * PloughReach * 0.7f * CmPerM);
+					const float VolumeCm3 = FMath::Min(WantedCm3, B->MaxScoopCm3(State.R, ScoopRadiusCm));
+					if (VolumeCm3 > 0.5f)
+					{
+						// Put down over the footprint a heap of that size would spread
+						// to at its angle of repose, not as a spike: a narrow dump stood
+						// as a 25 cm spire in front of the tyre and stalled it against
+						// its own spoil before the slump could knock it down.
+						// A tyre is a narrow blade with no wings: what it pushes spills
+						// round both sides as much as it piles up ahead. Ahead alone, the
+						// spoil built a bow wave the tyre shoved along the whole rut.
+						const float TanPhiSpoil = FMath::Max(TanPhiHeap, 0.4f);
+						const float SpreadCm = FMath::Clamp(FMath::Sqrt(VolumeCm3 * 3.0f / (PI * TanPhiSpoil)) * 0.5f, HalfWidthCm * 1.6f, RadiusM * CmPerM);
+						const FVector2D Side2(-Fwd2.Y, Fwd2.X);
+						const FVector2D AheadCm = ContactCm + Fwd2 * (RadiusM * 0.8f * CmPerM + SpreadCm * 0.5f);
+						const float Churn = 0.5f * (1.0f - Carried);
+						B->TransferDirt(WedgeCm, ScoopRadiusCm, AheadCm, SpreadCm, VolumeCm3 * 0.4f, Churn);
+						for (float Sign : { -1.0f, 1.0f })
+						{
+							const FVector2D SideCm = ContactCm + Fwd2 * (RadiusM * 0.4f * CmPerM) + Side2 * Sign * (HalfWidthCm * 1.5f + SpreadCm * 0.5f);
+							B->TransferDirt(WedgeCm, ScoopRadiusCm, SideCm, SpreadCm, VolumeCm3 * 0.3f, Churn);
+						}
+						PloughLitresTotal += VolumeCm3 / 1000.0f;
+					}
 				}
 			}
 
@@ -472,6 +679,7 @@ void ADirtWheel::Step(float Dt)
 			StrokeSinkageM = 0.0f;
 			StrokeSlipM = 0.0f;
 			StrokeSideSlipM = 0.0f;
+			StrokePloughM2 = 0.0f;
 			StrokeTimeS = 0.0f;
 		}
 	}

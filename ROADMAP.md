@@ -229,6 +229,13 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] Focus the simulation on part of the box (`DaDirt.Focus`) for rut-scale work
 - [x] Ruts persist outside the window: tiled world, sliding window, cache,
       far ground, `DaDirt.Focus follow` (2026-09-21)
+- [x] A pile is not a ramp: the tyre climbs or shoves what stands in front of
+      it, whichever costs less (bulldozing, docs/SoilPhysics.md 6 and 9i)
+- [x] The tyre has its own contact patch (deflection), the rut is pressed at
+      the front of the patch, and the wheel is tested on every testbed shape
+      (`Tools/DirtboxHills.txt`, docs/SoilPhysics.md 9j)
+- [ ] Suspension: the rigid wheel hops off whoops and berm banks a sprung one
+      would absorb. Part of the bike build.
 - [ ] Mouse tools: click and drag to sculpt
 - [ ] Droppable objects (ball, plate, block)
 - [ ] Camera + controls that make poking at dirt satisfying

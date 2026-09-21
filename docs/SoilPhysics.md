@@ -223,6 +223,43 @@ it at roughly the slip velocity: roost mass rate ∝ (ω r − v) · b · (failu
 Ejection speed 10–25 m/s at 30–60° gives ballistic ranges of 10–40 m — matches a
 real roost.
 
+**A pile is not a half-space (bulldozing).** Bekker's pressure–sinkage assumes
+soil confined on every side. Dirt that stands above the ground around it at the
+scale of the wheel — a spoil pile, a rut shoulder, the mound a locked brake shoves
+up at the end of a rut — has nothing behind it, and the tyre's leading face can
+either climb it or shove it. It does whichever costs less:
+
+    climb a heap of height h:  F_climb = N tan θ,   cos θ = 1 − h / r
+    shove it (passive wedge):  R_b = b ( ½ γ h² K_p + 2 c h √K_p ),  K_p = tan²(45° + φ/2)
+
+The share of the heap that holds is `carried = R_b / F_climb`, clamped to 1. For
+a 12 cm loose dry pile (φ 32°, c ≈ 1 kPa): R_b ≈ 50 N against 1,150 N to climb,
+so 4 % holds; the tyre sinks through the other 96 % to the ground the pile sits
+on, and the dirt it sweeps through (b × thickness × distance) is moved to just in
+front of it, where it piles up, stands higher, and pushes back with the square
+of its height — the same expression, now as motion resistance, capped so it can
+stop the tyre against the pile but never push it backwards. A packed damp lip
+(φ 42°, c ≈ 10 kPa) of the same height carries ~60 % and is a kicker; a slope,
+whose ground ahead is higher still, is not a heap at all and is climbed as
+ground. The obstacle is judged over the whole thing in front of the tyre, so the
+toe of a packed lip is held by the lip behind it, and anything lower than the
+tyre's own static sinkage is inside the contact patch and is pressed, not
+shoved. This is Bekker's bulldozing resistance term (Wong, *Theory of Ground
+Vehicles*, ch. 2) turned into a kinematic rule for the contact. Section 9i.
+
+**The tyre's own patch.** A pneumatic tyre flattens under its load whatever
+the ground does: an MX tyre at 12 psi deflects 2–3 cm, a contact patch of
+2√(2 r δ) ≈ 25 cm even on concrete. Bekker's rigid wheel alone gave a 7 cm
+patch on hardpack, the Janosi shear could not build along it, and the tyre spun
+on every packed face it met. The patch is now the longer of the two
+(`TyreDeflectionM`).
+
+**Where the rut is pressed.** At the front of the contact patch, where the tyre
+first meets the ground, so the axle rides on floor it has already made. Pressed
+under the axle, the unpressed ground ahead was a step the tyre had to climb
+every stroke on top of R_c, which already charges for pressing it: a wheel at
+quarter throttle dug itself in and never got going.
+
 **→ Simulator (Phase D).** Replace the wheel's `tanh` with Janosi–Hanamoto on
 (c_eff, φ_eff, N); replace the fixed rut-per-pass with Bekker sinkage from N, b
 and the soil's (n, k_c, k_φ) derived from compaction; motion resistance from R_c;
@@ -402,7 +439,9 @@ Four passes at 0.5 throttle over the same line at 3.9 cm cells:
 | 3 | 0.7 cm | 0.57 |
 | 4 | 0.9 cm | 0.91 (in the rut) |
 
-Rut after four passes: floor at 55.7 cm, shoulders at 59.4–59.5 cm on a 60 cm
+Rut after four passes (2026-09-21 evening, passes started on fresh ground
+2 m apart so a spin-up hole is not the next pass's pit): floor at 55.3 cm,
+compaction 0.84, shoulders at 58.8–59.3 cm on a 60 cm
 pad, a **4.3 cm rut with 0.5 cm shoulders**, floor packed to 0.91. The depth
 comes from Bekker sinkage pressed plastic plus the compaction shrink, and it
 saturates because the packed floor barely sinks, with no rule saying so.
@@ -545,6 +584,65 @@ mesh of the whole box, one section per world tile at 25 cm spacing, coloured
 with the resolve pass's plain tint from the whole-site build, hidden under the
 window and rebuilt per tile from the cache when a tile leaves, so a rut stays
 visible after the window has moved on (`M_DirtFar`).
+
+## 9i. A pile is not a ramp (2026-09-21, evening)
+
+Alex: the wheel got air when it hit the end of a rut. The contact treated every
+bump as concrete. `Tools/DirtboxPlough.txt` builds a 12 cm loose spoil pile
+(25 cm across, compaction 0) and a packed damp one on the pad and drives at
+them; the status line prints heap / carried / plough and air time.
+
+| encounter | rigid contact | climb-or-shove |
+|---|---|---|
+| loose pile at 5.5 m/s | 0.79 s in the air, 51 cm up | a 0.02 s hop, the pile cut through and its dirt spilled ahead and to both sides |
+| loose pile at quarter throttle (crawl) | | heap 13.6 cm, carried 0.12, 132 N of push back, through at 0.5 m/s |
+| packed damp lip at 8 m/s | 0.5 s, 42 cm | carried ~0.6: still a kicker, 40 cm |
+
+Things the pile exposed on the way:
+- The traction integration chattered about zero at low throttle (the shear
+  law is stiff against a 9 kg wheel at 240 Hz); a per-substep cap at the
+  impulse that stops the slip removed it.
+- The bulldozed spoil, dumped in a narrow heap ahead, stood as a 25 cm spire
+  the tyre then stalled against; it is put down over the footprint a heap of
+  that volume spreads to at its angle of repose, 40 % ahead and 30 % to each
+  side, since a tyre is a blade with no wings.
+- Judged against the mean of a ring, a hillside read as a 26 cm heap and the
+  wheel tried to bulldoze the dome. A heap is now what stands above the
+  highest point of two rings, one and two tyre radii out, by about the same
+  amount (a hill crest stands far taller over the far ring); a pile just
+  ahead is judged the same way with the near ring's forward samples left out,
+  because on a pile the size of the tyre they sit on the pile itself.
+- Anything lower than the tyre's static sinkage is pressed as part of the rut,
+  not shoved, so a packed rut floor is not churned by its own shoulders.
+
+Drift in every case: under 0.05 cm³.
+
+## 9j. Off the pad: the hills (2026-09-21, evening)
+
+Alex: test on the hills and the other things, not just the flat terrain.
+`Tools/DirtboxHills.txt` drives every shape in the testbed with the window
+following the wheel at 3.9 cm cells. With the tyre's own patch and the heap
+rule above (run 15, before the ahead-pile fix):
+
+| shape | what happened |
+|---|---|
+| 7.5 m dome, 40° cosine face | climbs, slowing to 3.7 m/s at slip 0.31 on the steepest part, crests at 11 m/s and flies 2.6 m off the back |
+| SX whoops, 90 cm at 4.3 m, 5–6 m/s | airborne 3.6 of 8 s, hops to 69 cm: a rigid wheel with no suspension skips them |
+| FIM rolling waves, 80 cm at 10 m, 10 m/s | hops of 37 cm at most |
+| 32° jump face, flat out (12 m/s) | 4.8 m of air, lands on the landing 10 m out |
+| 22° rounded tabletop, 10.6 m/s | 1.3 m of air |
+| 25° packed wedge, standing start | climbs at 3 m/s, slip 0.21, over the crest |
+| 40° packed wedge, standing start | crawls up at 1.2–1.5 m/s, slip 0.48, 640 N of traction against 630 N of gravity |
+| berm arc, 34° bank, 1.1 m | a 180° turn at 6–8 m/s; a 65 cm hop off the bank, again the rigid wheel |
+| loose 3 m mound (compaction 0.3) | climbed at 5.5 m/s, sinking 1.8 cm |
+| 3 m bowl, 10 m/s | through, a 60 cm hop off the far rim |
+
+Drift in every section: 0.5 cm³ or less. Found on the way: the window could
+not reach the last, partial row of tiles at the box edge, so the whoops at
+Y = +60 were out of reach and a wheel parked at the window edge lost 150 cm³
+to giving strokes clipped there; the window now reaches the edge and the audit
+is clean. The two heap misfires above (hillside, crest) were both found here
+and not on the pad.
 
 ## 10. Implementation plan
 

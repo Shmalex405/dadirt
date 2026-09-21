@@ -122,6 +122,16 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
 	float PlasticSinkage = 0.5f;
 
+	/**
+	 * A pneumatic tyre flattens under its load whatever the ground does: an MX
+	 * tyre at 12 psi deflects 2-3 cm, which is a contact patch 2 sqrt(2 r d) ~
+	 * 25 cm long even on concrete. Bekker's rigid wheel alone gave a 7 cm patch
+	 * on hardpack, the shear could not build over it, and the tyre spun on every
+	 * packed face it met.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float TyreDeflectionM = 0.022f;
+
 	/** Slip-sinkage: extra sinkage per unit slip ratio, as a fraction of the static sinkage. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
 	float SlipSinkage = 0.5f;
@@ -133,6 +143,29 @@ public:
 	/** Compaction one pass adds to the line at full load, before the Proctor moisture curve. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
 	float PackPerPass = 0.15f;
+
+	// --- heaps: a pile is not a half-space ------------------------------------------
+	//
+	// Bekker's pressure-sinkage assumes soil confined on every side. Dirt that
+	// stands above the ground around it at the scale of the wheel (a spoil pile,
+	// a rut shoulder, the mound at the end of a rut) has nothing behind it: the
+	// tyre's leading face can either climb it or shove it, and it does whichever
+	// takes less. Climbing a heap of height h needs a push of N tan(theta), with
+	// cos(theta) = 1 - h / r; shoving it needs the passive earth pressure of the
+	// wedge, R_b = b (1/2 gamma h^2 K_p + 2 c h sqrt(K_p)), Rankine's K_p =
+	// tan^2(45 + phi/2). The share of the heap that holds is R_b / (N tan theta):
+	// a loose dry pile is a few percent (the tyre goes through it and pushes it
+	// ahead, where it grows and pushes back with the square of its height); a
+	// packed damp lip is most of the way to solid. A slope, whose ground ahead
+	// is higher still, is not a heap at all and is climbed like the ground it is.
+
+	/** Radius, as a fraction of the tyre radius, of the ring that defines "the ground around": prominence above its lower half is heap. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float HeapRingRadius = 1.0f;
+
+	/** How far ahead of the axle the bulldozed wedge is measured, as a fraction of the tyre radius. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float PloughReach = 0.5f;
 
 	// --- roost: excavation past the traction limit --------------------------------
 
@@ -184,6 +217,7 @@ public:
 	bool bPartRoost = true;
 	bool bPartSpray = true;
 	bool bPartSplash = true;
+	bool bPartPlough = true;
 
 	/** Test-rig mode: the wheel cannot translate, only spin. Burnouts on a stand. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
@@ -206,6 +240,12 @@ public:
 	float LastResistanceN = 0.0f;
 	float LastCompaction = 0.0f;
 	float LastMoisture = 0.0f;
+	float LastHeapCm = 0.0f;          // how far the ground under the tyre stands above the ground around it
+	float LastCarried = 1.0f;         // the share of the load that heap can carry (1 = rides over it)
+	float LastPloughN = 0.0f;         // bulldozing resistance from the wedge ahead
+	double PloughLitresTotal = 0.0;   // solid litres shoved ahead of the tyre
+	double AirTimeS = 0.0;            // seconds spent off the ground since placed
+	float MaxAirCm = 0.0f;            // highest the tyre has been above the ground since placed
 	bool bOnGround = false;
 	double OdometerM = 0.0;
 	double RoostLitresTotal = 0.0;    // solid litres thrown
@@ -247,6 +287,7 @@ private:
 	float StrokeSlipRatio = 0.0f;
 	float StrokeSideSlipM = 0.0f;     // sideways slide, for spray
 	float StrokeSideSign = 0.0f;
+	float StrokePloughM2 = 0.0f;      // heap thickness sunk through x distance: the swept area, for the plough
 	bool bWasOnGround = false;
 	float FallSpeedMps = 0.0f;        // downward speed on the last airborne substep, for the splash
 
