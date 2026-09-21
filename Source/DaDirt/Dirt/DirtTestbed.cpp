@@ -73,6 +73,10 @@ void FDirtTestbed::RaiseTo(int32 X, int32 Y, float NewHeightM, const FDirtMateri
 		Bedrock[I] = NewCm;
 		Compaction[I] = FMath::Lerp(Compaction[I], Mat.Compaction, T);
 		Moisture[I] = FMath::Lerp(Moisture[I], Mat.Moisture, T);
+		if (T > 0.5f)
+		{
+			Soil[I] = Mat.SoilId;
+		}
 		Layer[I] = FMath::Lerp(Layer[I], Mat.LayerCm, T);
 	}
 }
@@ -87,6 +91,7 @@ void FDirtTestbed::LowerTo(int32 X, int32 Y, float NewHeightM, const FDirtMateri
 		Bedrock[I] = NewCm;
 		Compaction[I] = Mat.Compaction;
 		Moisture[I] = Mat.Moisture;
+		Soil[I] = Mat.SoilId;
 		Layer[I] = Mat.LayerCm;
 	}
 }
@@ -248,6 +253,7 @@ void FDirtTestbed::AddPad(FVector2f CentreM, FVector2f HalfExtentM, float Height
 				Bedrock[I] = HCm;
 				Compaction[I] = Mat.Compaction;
 				Moisture[I] = Mat.Moisture;
+				Soil[I] = Mat.SoilId;
 				Layer[I] = Mat.LayerCm;
 			}
 		}
@@ -276,6 +282,7 @@ void FDirtTestbed::AddLooseCone(FVector2f CentreM, float RadiusM, float HeightM,
 			Layer[I] += H * 100.0f;
 			Compaction[I] = Mat.Compaction;
 			Moisture[I] = Mat.Moisture;
+			Soil[I] = Mat.SoilId;
 		}
 	}
 }
@@ -375,6 +382,7 @@ void FDirtTestbed::Build()
 	Layer.Init(Settings.RestLayerCm, Count);
 	Compaction.Init(0.3f, Count);
 	Moisture.Init(0.2f, Count);
+	Soil.Init(1, Count);
 	FeatureLog.Reset();
 
 	Log(FString::Printf(TEXT("Testbed %.0f m box, %d x %d cells, %.1f cm per cell"),
@@ -506,6 +514,28 @@ void FDirtTestbed::BuildCalibrationPad()
 
 	AddPad(FVector2f(3.0f, 0.0f), FVector2f(9.0f, 30.0f), 0.0f, 3.0f, PadMat);
 
+	// The soil quilt: the north end of the pad in five lanes across, one per
+	// reference soil, so every soil test drives the same flat ground. X = 3
+	// stays loam, so nothing measured on the pad's centre line changes.
+	{
+		FIntPoint QMin, QMax;
+		MetresToCellRect(FVector2f(-6.0f, 20.0f), FVector2f(12.0f, 30.0f), QMin, QMax);
+		static const uint8 Lanes[5] = { 0, 3, 1, 2, 4 };      // sand, granite, loam, pnw, clay
+		for (int32 CY = QMin.Y; CY <= QMax.Y; ++CY)
+		{
+			for (int32 CX = QMin.X; CX <= QMax.X; ++CX)
+			{
+				const FVector2f P = CellToMetres(CX, CY);
+				if (P.X < -6.0f || P.X > 12.0f || P.Y < 20.0f || P.Y > 30.0f)
+				{
+					continue;
+				}
+				const int32 Lane = FMath::Clamp(FMath::FloorToInt((P.X + 6.0f) / 3.6f), 0, 4);
+				Soil[Index(CX, CY)] = Lanes[Lane];
+			}
+		}
+	}
+
 	// A cone far steeper than loose dirt can stand. It should visibly collapse
 	// within the first second and settle at the loose repose angle — the fastest
 	// possible check that slumping is alive and correctly tuned.
@@ -535,6 +565,7 @@ void FDirtTestbed::BuildCalibrationPad()
 	}
 
 	Log(TEXT("Calibration pad: flat 18 x 60 m, loose cone at (3, -45), 100 m3 block at (3, 45)"));
+	Log(TEXT("Soil quilt on the pad, Y = 20..30: lanes of sand, granite, loam, pnw, clay from X = -6 to 12"));
 }
 
 void FDirtTestbed::BuildHills()

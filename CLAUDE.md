@@ -103,6 +103,16 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   The same goes for the soil strength and the solid-volume functions
   (`DirtSoilStrength`, `DirtAllowedDrop`, `DirtSolidFraction`, `DirtBulkCm`,
   `DirtSolidCm`, `DirtPackingEfficiency`): mirrored in both files, keep identical.
+- **Soils are a table, cells carry an id.** `FDirtSoil` (DirtSimTypes.h, presets
+  in DirtSoils.cpp) holds every measured soil property; `FDirtSimSettings::Soils`
+  is the table and each cell's `SoilId` (a static R8_UINT map built with the
+  terrain, like bedrock) picks its row. The shaders read `DirtSoilTable` /
+  `DirtSoilIn` through `DirtSoilAt(P)`; the five float4 rows are laid out by
+  `FDirtSoil::ToRows` and documented in DirtCommon.ush, keep them identical.
+  Nothing reads a soil number from Settings any more: the C++ functions take a
+  `const FDirtSoil&` (the cell's, `SoilAtTexel` / `SoilAtWorld`), and a new
+  property goes into the struct, the rows and the docs table, never a global.
+  Wet, mud and dust are moisture states of a soil, not soils.
 - **The layer channel stores SOLID centimetres**, not bulk thickness. Bulk height
   comes from porosity via `DirtBulkCm` (a packed skin over natural ground), so
   packing lowers the surface and loosening raises it without moving any grains.
@@ -165,7 +175,7 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
   (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist,
-  Plough, Hills, WaterGrip). Anything that touches the wheel or soil strength runs
+  Plough, Hills, WaterGrip, Soils). Anything that touches the wheel or soil strength runs
   `DirtboxHills.txt` too: the pad only exercises ruts, and every contact bug so
   far showed up on the dome, the jump faces or the berm. `DaDirt.Wheel` makes a
   new wheel with every part on, so `DaDirt.WheelParts` must follow it. Run them with

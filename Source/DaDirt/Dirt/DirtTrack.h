@@ -87,6 +87,7 @@ public:
 	TArray<float> Layer;        // cm
 	TArray<float> Compaction;   // 0-1
 	TArray<float> Moisture;     // 0-1
+	TArray<uint8> Soil;         // soil id per cell
 
 	double BaselineVolumeM3 = 0.0;
 	TArray<FString> FeatureLog;

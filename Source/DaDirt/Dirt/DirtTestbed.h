@@ -24,6 +24,9 @@ struct FDirtMaterial
 
 	/** How much loose dirt sits on this feature's bedrock, in cm. */
 	float LayerCm = 60.0f;
+
+	/** Which soil (index into FDirtSimSettings::Soils). 1 = loam. */
+	uint8 SoilId = 1;
 };
 
 /** One wedge of the angle spectrum, in metres relative to the box centre. */
@@ -62,6 +65,9 @@ public:
 
 	/** Moisture per cell, 0-1. */
 	TArray<float> Moisture;
+
+	/** Soil id per cell: the static soil map of the site. */
+	TArray<uint8> Soil;
 
 	/** Total dirt volume in the layer at build time, cubic metres. The volume
 	 *  audit compares against this. */

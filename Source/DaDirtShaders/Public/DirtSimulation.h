@@ -23,6 +23,13 @@
 #include <atomic>
 #include "RenderGraphResources.h"
 
+namespace DirtSim
+{
+	/** Soils in the table and float4 rows per soil. Mirrors DIRT_MAX_SOILS / DIRT_SOIL_ROWS in DirtCommon.ush. */
+	constexpr int32 MaxSoils = 8;
+	constexpr int32 SoilRows = 5;
+}
+
 class FRHICommandListImmediate;
 class FRHITexture;
 
@@ -156,12 +163,12 @@ struct FDirtSimFrame
 	uint32 FrameSeed = 0;
 
 	// --- tunables ----------------------------------------------------------
-	float LooseReposeDeg = 32.0f;
-	float PackedReposeDeg = 42.0f;         // friction angle of dense dirt
-	float SuctionCohesionKPa = 3.0f;       // apparent cohesion from moisture, peak
-	float PackedCohesionKPa = 8.0f;        // interlock/cementation when fully packed
-	float UnitWeightKNm3 = 17.0f;
-	float SaturationFrictionLoss = 0.6f;
+	/**
+	 * The soil table: DirtSim::MaxSoils soils x DirtSim::SoilRows float4 rows,
+	 * laid out exactly as DirtCommon.ush documents (FDirtSoil::ToRows fills it).
+	 * Every cell reads its own soil through the SoilIn texture.
+	 */
+	TArray<FVector4f> SoilTable;
 	float MaxCohesiveHeightCm = 400.0f;
 	float SlumpRate = 0.1f;
 	float LooseningRate = 0.25f;
@@ -169,8 +176,6 @@ struct FDirtSimFrame
 	int32 SlumpIterations = 3;
 
 	// solid volume
-	float LoosePorosity = 0.48f;
-	float DensePorosity = 0.34f;
 	float CompactionDepthCm = 15.0f;
 	float DeepCompaction = 0.25f;
 	float DepositCompaction = 0.05f;
@@ -179,10 +184,8 @@ struct FDirtSimFrame
 	bool bWater = true;
 	float RunoffRate = 0.5f;
 	float RainCmPerSec = 0.0f;
-	float InfiltrationCmPerSec = 0.5f;
 	float DrainPerSec = 0.025f;
 	float EvapPerSec = 0.0007f;
-	float FieldCapacity = 0.3f;
 	float WetDepthCm = 20.0f;
 	float AmbientMoisture = 0.05f;
 
@@ -248,6 +251,7 @@ struct FDirtSimFrame
 	// Raw RHI textures. Fill these in ON THE RENDER THREAD, from the texture
 	// resources the Dirtbox owns; they are only valid there.
 	FRHITexture* BaseHeight = nullptr;     // R32F,    static bedrock
+	FRHITexture* SoilIn = nullptr;         // R8_UINT, the soil id of every cell (static, CPU-built)
 	FRHITexture* InitialState = nullptr;   // RGBA32F, CPU-built start state, or the entering patch on a shift
 	FRHITexture* InitialPond = nullptr;    // R32F, entering pond on a shift
 	FRHITexture* StateA = nullptr;         // RGBA32F, ping
@@ -272,7 +276,8 @@ struct FDirtSimFrame
 
 	bool IsValid() const
 	{
-		return BaseHeight && InitialState && InitialPond && StateA && StateB && PondA && PondB && Display && NormalOut && DebugOut;
+		return BaseHeight && SoilIn && InitialState && InitialPond && StateA && StateB && PondA && PondB && Display && NormalOut && DebugOut
+			&& SoilTable.Num() == DirtSim::MaxSoils * DirtSim::SoilRows;
 	}
 
 	/** The dirt pool exists (its resources are bound even when parcels are switched off: the slump pass needs them). */

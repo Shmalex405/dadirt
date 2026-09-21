@@ -83,40 +83,9 @@ public:
 
 	// --- terramechanics: the soil as the tyre feels it ---------------------------
 	//
-	// Bekker: p = (k_c / b + k_phi) z^n. Loose and dense values are interpolated
-	// by compaction (k in log space), and saturation weakens both. Loose ~ dry
-	// sand (sinks 3-4 cm under this wheel), dense ~ hardpack (under 1 mm).
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float BekkerNLoose = 0.9f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float BekkerNDense = 0.5f;
-
-	/** kN / m^(n+1) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float BekkerKcLoose = 1.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float BekkerKcDense = 15.0f;
-
-	/** kN / m^(n+2) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float BekkerKphiLoose = 400.0f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float BekkerKphiDense = 5000.0f;
-
-	/** Fraction of soil stiffness lost when saturated: mud takes a wheel. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float SaturationStiffnessLoss = 0.8f;
-
-	/** Janosi-Hanamoto shear deformation modulus, m: sand 1-2.5 cm, loam 2-5 cm. Loose / dense. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float ShearModulusLooseM = 0.02f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float ShearModulusDenseM = 0.045f;
+	// Bekker's (n, k_c, k_phi) and the Janosi shear modulus are properties of the
+	// soil under the tyre and live in FDirtSoil (loose and dense values,
+	// interpolated by compaction, k in log space, weakened by saturation).
 
 	/** Share of the Bekker sinkage that stays as a rut once the tyre has passed (the rest springs back). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
@@ -284,9 +253,9 @@ private:
 	void UpdateFollowCamera();
 
 	/** Bekker static sinkage (m) and the soil constants for this state and load. */
-	void SoilResponse(float Compaction, float Moisture, float LoadN,
+	void SoilResponse(const struct FDirtSoil& Soil, float Compaction, float Moisture, float LoadN,
 					  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const;
-	float ContactPatchLength(float Compaction, float Moisture, float LoadN) const;
+	float ContactPatchLength(const struct FDirtSoil& Soil, float Compaction, float Moisture, float LoadN) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<USceneComponent> Root;

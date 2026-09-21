@@ -331,6 +331,7 @@ float FDirtTrack::FeatureProfile(const FDirtTrackFeature& F, float IntoS, float 
 			bOutOverridesMaterial = true;
 			OutMat.Compaction = 0.05f;      // sand never packs
 			OutMat.Moisture = 0.10f;
+			OutMat.SoilId = 0;              // and it is sand, not loam
 			OutMat.LayerCm = 90.0f;         // deep enough to swallow a wheel
 		}
 		return 0.0f;
@@ -810,6 +811,7 @@ void FDirtTrack::Finalise()
 		Layer[I] = Mat.LayerCm;
 		Compaction[I] = Mat.Compaction;
 		Moisture[I] = Mat.Moisture;
+		Soil[I] = Mat.SoilId;
 
 		MinElevationM = FMath::Min(MinElevationM, SurfaceM[I]);
 		MaxElevationM = FMath::Max(MaxElevationM, SurfaceM[I]);
@@ -850,6 +852,7 @@ void FDirtTrack::Build()
 	Layer.Init(Settings.RestLayerCm, Count);
 	Compaction.Init(0.5f, Count);
 	Moisture.Init(0.25f, Count);
+	Soil.Init(1, Count);
 	FeatureLog.Reset();
 	CutM3 = FillM3 = BuiltM3 = BorrowedM3 = ImportedM3 = 0.0;
 

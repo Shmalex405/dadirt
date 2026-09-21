@@ -42,21 +42,15 @@ namespace
 // struct carries them. Bind-by-name means a missing one is a silent zero.
 #define DIRT_SHARED_PARAMETERS() \
 	SHADER_PARAMETER(FIntPoint, DirtResolution) \
-	SHADER_PARAMETER(float, DirtLoosePorosity) \
-	SHADER_PARAMETER(float, DirtDensePorosity) \
 	SHADER_PARAMETER(float, DirtCompactionDepthCm) \
 	SHADER_PARAMETER(float, DirtDeepCompaction) \
 	SHADER_PARAMETER_TEXTURE(Texture2D<float>, DirtBaseHeight) \
+	SHADER_PARAMETER_TEXTURE(Texture2D<uint>, DirtSoilIn) \
+	SHADER_PARAMETER_ARRAY(FVector4f, DirtSoilTable, [DirtSim::MaxSoils * DirtSim::SoilRows]) \
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtStateIn)
 
 #define DIRT_SOIL_PARAMETERS() \
 	SHADER_PARAMETER(float, DirtTexelSizeCm) \
-	SHADER_PARAMETER(float, DirtLooseReposeDeg) \
-	SHADER_PARAMETER(float, DirtPackedReposeDeg) \
-	SHADER_PARAMETER(float, DirtSuctionCohesionKPa) \
-	SHADER_PARAMETER(float, DirtPackedCohesionKPa) \
-	SHADER_PARAMETER(float, DirtUnitWeightKNm3) \
-	SHADER_PARAMETER(float, DirtSaturationFrictionLoss) \
 	SHADER_PARAMETER(float, DirtMaxCohesiveHeightCm)
 
 // The bindings DirtParcelCommon.ush declares. DirtTexelSizeCm is deliberately
@@ -248,10 +242,8 @@ public:
 		SHADER_PARAMETER(float, DirtDt)
 		SHADER_PARAMETER(float, DirtRunoffRate)
 		SHADER_PARAMETER(float, DirtRainCmPerSec)
-		SHADER_PARAMETER(float, DirtInfiltrationCmPerSec)
 		SHADER_PARAMETER(float, DirtDrainPerSec)
 		SHADER_PARAMETER(float, DirtEvapPerSec)
-		SHADER_PARAMETER(float, DirtFieldCapacity)
 		SHADER_PARAMETER(float, DirtWetDepthCm)
 		SHADER_PARAMETER(float, DirtAmbientMoisture)
 		SHADER_PARAMETER(int32, DirtWaterSourceCount)
@@ -384,9 +376,6 @@ public:
 		SHADER_PARAMETER(float, DirtDustLifetime)
 		SHADER_PARAMETER(float, DirtDustDragK)
 		SHADER_PARAMETER(float, DirtDustBuoyancy)
-		SHADER_PARAMETER(float, DirtLooseReposeDeg)
-		SHADER_PARAMETER(float, DirtPackedReposeDeg)
-		SHADER_PARAMETER(float, DirtSaturationFrictionLoss)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
@@ -535,11 +524,14 @@ namespace
 	void BindSharedParameters(TParams* Params, const FDirtSimFrame& Frame, FRDGTextureRef StateIn)
 	{
 		Params->DirtResolution = Frame.Resolution;
-		Params->DirtLoosePorosity = Frame.LoosePorosity;
-		Params->DirtDensePorosity = Frame.DensePorosity;
 		Params->DirtCompactionDepthCm = Frame.CompactionDepthCm;
 		Params->DirtDeepCompaction = Frame.DeepCompaction;
 		Params->DirtBaseHeight = Frame.BaseHeight;
+		Params->DirtSoilIn = Frame.SoilIn;
+		for (int32 i = 0; i < DirtSim::MaxSoils * DirtSim::SoilRows; ++i)
+		{
+			Params->DirtSoilTable[i] = Frame.SoilTable.IsValidIndex(i) ? Frame.SoilTable[i] : FVector4f::Zero();
+		}
 		Params->DirtStateIn = StateIn;
 	}
 
@@ -547,12 +539,6 @@ namespace
 	void BindSoilParameters(TParams* Params, const FDirtSimFrame& Frame)
 	{
 		Params->DirtTexelSizeCm = Frame.TexelSizeCm;
-		Params->DirtLooseReposeDeg = Frame.LooseReposeDeg;
-		Params->DirtPackedReposeDeg = Frame.PackedReposeDeg;
-		Params->DirtSuctionCohesionKPa = Frame.SuctionCohesionKPa;
-		Params->DirtPackedCohesionKPa = Frame.PackedCohesionKPa;
-		Params->DirtUnitWeightKNm3 = Frame.UnitWeightKNm3;
-		Params->DirtSaturationFrictionLoss = Frame.SaturationFrictionLoss;
 		Params->DirtMaxCohesiveHeightCm = Frame.MaxCohesiveHeightCm;
 	}
 
@@ -630,9 +616,6 @@ namespace
 			Params->DirtDustLifetime = Frame.DustLifetime;
 			Params->DirtDustDragK = Frame.DustDragK;
 			Params->DirtDustBuoyancy = Frame.DustBuoyancy;
-			Params->DirtLooseReposeDeg = Frame.LooseReposeDeg;
-			Params->DirtPackedReposeDeg = Frame.PackedReposeDeg;
-			Params->DirtSaturationFrictionLoss = Frame.SaturationFrictionLoss;
 
 			TShaderMapRef<FDirtParcelSimCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 			FComputeShaderUtils::AddPass(GraphBuilder, bIsDust ? RDG_EVENT_NAME("DirtDustSim") : RDG_EVENT_NAME("DirtParcelSim"),
@@ -897,10 +880,8 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Params->DirtDt = Frame.Dt;
 		Params->DirtRunoffRate = Frame.RunoffRate;
 		Params->DirtRainCmPerSec = Frame.RainCmPerSec;
-		Params->DirtInfiltrationCmPerSec = Frame.InfiltrationCmPerSec;
 		Params->DirtDrainPerSec = Frame.DrainPerSec;
 		Params->DirtEvapPerSec = Frame.EvapPerSec;
-		Params->DirtFieldCapacity = Frame.FieldCapacity;
 		Params->DirtWetDepthCm = Frame.WetDepthCm;
 		Params->DirtAmbientMoisture = Frame.AmbientMoisture;
 		const int32 SourceCount = FMath::Min(Frame.WaterSources.Num(), DirtSim::MaxWaterSourcesPerPass);

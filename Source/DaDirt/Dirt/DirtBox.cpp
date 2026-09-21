@@ -281,6 +281,13 @@ void ADirtBox::CreateResources()
 	InitialStateTex->AddressY = TA_Clamp;
 	InitialStateTex->NeverStream = true;
 
+	SoilTex = UTexture2D::CreateTransient(Res, Res, PF_R8_UINT);
+	SoilTex->SRGB = false;
+	SoilTex->Filter = TF_Nearest;
+	SoilTex->AddressX = TA_Clamp;
+	SoilTex->AddressY = TA_Clamp;
+	SoilTex->NeverStream = true;
+
 	InitialPondTex = UTexture2D::CreateTransient(Res, Res, PF_R32_FLOAT);
 	InitialPondTex->SRGB = false;
 	InitialPondTex->Filter = TF_Nearest;
@@ -331,18 +338,21 @@ void ADirtBox::BuildTerrainAndUpload()
 	TArray<float> Bedrock;
 	TArray<FLinearColor> Initial;
 	TArray<float> InitialPond;
+	TArray<uint8> Soils;
 	Bedrock.SetNumZeroed(Count);
 	Initial.SetNumZeroed(Count);
 	InitialPond.SetNumZeroed(Count);
+	Soils.SetNumZeroed(Count);
 
 	TArray<float> TileBedrock;
 	TArray<FLinearColor> TileState;
+	TArray<uint8> TileSoil;
 	for (int32 TY = 0; TY < TilesPerSide; ++TY)
 	{
 		for (int32 TX = 0; TX < TilesPerSide; ++TX)
 		{
 			const FIntPoint Tile = WindowTile + FIntPoint(TX, TY);
-			BuildTile(Tile, TileBedrock, TileState);
+			BuildTile(Tile, TileBedrock, TileState, TileSoil);
 
 			TSharedPtr<FDirtTile>* Cached = TileCache.Find(Tile);
 			const bool bFromCache = Cached && (*Cached)->bHasState;
@@ -350,6 +360,7 @@ void ADirtBox::BuildTerrainAndUpload()
 			{
 				const int32 Row = (TY * TileCells + Y) * Res + TX * TileCells;
 				FMemory::Memcpy(Bedrock.GetData() + Row, TileBedrock.GetData() + Y * TileCells, TileCells * sizeof(float));
+				FMemory::Memcpy(Soils.GetData() + Row, TileSoil.GetData() + Y * TileCells, TileCells * sizeof(uint8));
 				if (bFromCache)
 				{
 					FMemory::Memcpy(Initial.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
@@ -371,7 +382,9 @@ void ADirtBox::BuildTerrainAndUpload()
 	}
 
 	BedrockCm = Bedrock;
+	SoilId = Soils;
 	UploadFloats(BaseHeightTex, Bedrock);
+	UploadBytes(SoilTex, SoilId);
 	UploadColors(InitialStateTex, Initial);
 	UploadFloats(InitialPondTex, InitialPond);
 
@@ -387,6 +400,69 @@ void ADirtBox::UploadFloats(UTexture2D* Texture, const TArray<float>& Data)
 	FMemory::Memcpy(Dest, Data.GetData(), Data.Num() * sizeof(float));
 	Mip.BulkData.Unlock();
 	Texture->UpdateResource();
+}
+
+void ADirtBox::UploadBytes(UTexture2D* Texture, const TArray<uint8>& Data)
+{
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(Dest, Data.GetData(), Data.Num() * sizeof(uint8));
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+}
+
+const FDirtSoil& ADirtBox::SoilAtTexel(FIntPoint Texel) const
+{
+	const int32 Res = Settings.SimResolution;
+	const int32 X = FMath::Clamp(Texel.X, 0, Res - 1);
+	const int32 Y = FMath::Clamp(Texel.Y, 0, Res - 1);
+	return Settings.Soil(SoilId.IsValidIndex(Y * Res + X) ? SoilId[Y * Res + X] : Settings.DefaultSoil);
+}
+
+int32 ADirtBox::SoilIdAtWorld(FVector2D WorldXYCm) const
+{
+	const int32 Res = Settings.SimResolution;
+	const FVector2f T = WorldToTexel(WorldXYCm);
+	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
+	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
+	return SoilId.IsValidIndex(Y * Res + X) ? SoilId[Y * Res + X] : Settings.DefaultSoil;
+}
+
+void ADirtBox::PaintSoil(int32 Id, FVector2D CentreCm, float RadiusCm)
+{
+	if (!bResourcesReady || !Settings.Soils.IsValidIndex(Id))
+	{
+		return;
+	}
+	const int32 Res = Settings.SimResolution;
+	if (SoilId.Num() != Res * Res)
+	{
+		return;
+	}
+	if (RadiusCm <= 0.0f)
+	{
+		SoilOverride = Id;
+		for (uint8& V : SoilId) { V = static_cast<uint8>(Id); }
+	}
+	else
+	{
+		const FVector2f C = WorldToTexel(CentreCm);
+		const float R = RadiusCm / Settings.TexelSizeCm();
+		for (int32 Y = 0; Y < Res; ++Y)
+		{
+			for (int32 X = 0; X < Res; ++X)
+			{
+				const float DX = X + 0.5f - C.X, DY = Y + 0.5f - C.Y;
+				if (DX * DX + DY * DY <= R * R)
+				{
+					SoilId[Y * Res + X] = static_cast<uint8>(Id);
+				}
+			}
+		}
+	}
+	UploadBytes(SoilTex, SoilId);
+	// The far ground and the whole-site map keep the built soil; painting is a
+	// test-time act on the window.
 }
 
 void ADirtBox::UploadColors(UTexture2D* Texture, const TArray<FLinearColor>& Data)
@@ -415,6 +491,7 @@ void ADirtBox::BuildWholeSiteLog()
 		LapLengthM = Track.LapLengthM;
 		Bedrock = MoveTemp(Track.Bedrock); Layer = MoveTemp(Track.Layer);
 		WholeCompaction = MoveTemp(Track.Compaction); WholeMoisture = MoveTemp(Track.Moisture);
+		WholeSoil = MoveTemp(Track.Soil);
 	}
 	else
 	{
@@ -424,6 +501,7 @@ void ADirtBox::BuildWholeSiteLog()
 		LapLengthM = 0.0f;
 		Bedrock = MoveTemp(Testbed.Bedrock); Layer = MoveTemp(Testbed.Layer);
 		WholeCompaction = MoveTemp(Testbed.Compaction); WholeMoisture = MoveTemp(Testbed.Moisture);
+		WholeSoil = MoveTemp(Testbed.Soil);
 	}
 
 	// Kept for the far ground: the surface a ruler would measure, and the solids.
@@ -435,14 +513,14 @@ void ADirtBox::BuildWholeSiteLog()
 	{
 		const float Bulk = FMath::Max(Layer[i], 0.0f);
 		WholeSurfaceCm[i] = Bedrock[i] + Bulk;
-		WholeSolidCm[i] = DirtSolidCm(Bulk, WholeCompaction[i], Settings);
+		WholeSolidCm[i] = DirtSolidCm(Bulk, WholeCompaction[i], Settings.Soil(WholeSoil.IsValidIndex(i) ? WholeSoil[i] : 1), Settings);
 	}
 }
 
-FLinearColor ADirtBox::FarTint(float SolidCm, float Compaction, float Moisture)
+FLinearColor ADirtBox::FarTint(const FDirtSoil& Soil, float SolidCm, float Compaction, float Moisture)
 {
 	// The resolve pass's plain dirt, mirrored (DirtSim.usf, MainResolveCS).
-	FLinearColor C = FMath::Lerp(FLinearColor(0.40f, 0.29f, 0.19f), FLinearColor(0.24f, 0.16f, 0.10f), FMath::Clamp(Compaction, 0.0f, 1.0f));
+	FLinearColor C = FMath::Lerp(Soil.DryColour, Soil.PackedColour, FMath::Clamp(Compaction, 0.0f, 1.0f));
 	C = FMath::Lerp(C, C * 0.40f, FMath::Clamp(Moisture, 0.0f, 1.0f));
 	C = FMath::Lerp(FLinearColor(0.35f, 0.33f, 0.31f), C, FMath::Clamp(SolidCm / 3.0f, 0.0f, 1.0f));
 	C.A = 1.0f;
@@ -509,7 +587,10 @@ void ADirtBox::FillFarTile(FIntPoint Tile, const FDirtTile* Cached, TArray<FVect
 			{
 				const int32 K = (J - 1) * V + (I - 1);
 				Verts[K] = FVector(X, Y, Surface);
-				Colors[K] = FarTint(Solid, Comp, Moist);
+				const int32 WX = FMath::Clamp(FMath::FloorToInt((X + Half) / (Settings.WorldSizeCm / WholeRes)), 0, WholeRes - 1);
+				const int32 WY = FMath::Clamp(FMath::FloorToInt((Y + Half) / (Settings.WorldSizeCm / WholeRes)), 0, WholeRes - 1);
+				const int32 WSoil = WholeSoil.IsValidIndex(WY * WholeRes + WX) ? WholeSoil[WY * WholeRes + WX] : 1;
+				Colors[K] = FarTint(Settings.Soil(WSoil), Solid, Comp, Moist);
 			}
 		}
 	}
@@ -617,7 +698,7 @@ FIntPoint ADirtBox::TileForCentre(FVector2D CentreCm, float RegionCm) const
 		FMath::Clamp(FMath::RoundToInt((Origin.Y + Half) / TileCm), 0, MaxTile));
 }
 
-void ADirtBox::BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState)
+void ADirtBox::BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState, TArray<uint8>& OutSoil)
 {
 	// The builders take a region and a resolution; a tile is just a small one.
 	const float TileCm = TileSizeCm();
@@ -634,6 +715,7 @@ void ADirtBox::BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLine
 		Track.Build();
 		OutBedrock = MoveTemp(Track.Bedrock); Layer = MoveTemp(Track.Layer);
 		Compaction = MoveTemp(Track.Compaction); Moisture = MoveTemp(Track.Moisture);
+		OutSoil = MoveTemp(Track.Soil);
 	}
 	else
 	{
@@ -641,6 +723,11 @@ void ADirtBox::BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLine
 		Testbed.Build();
 		OutBedrock = MoveTemp(Testbed.Bedrock); Layer = MoveTemp(Testbed.Layer);
 		Compaction = MoveTemp(Testbed.Compaction); Moisture = MoveTemp(Testbed.Moisture);
+		OutSoil = MoveTemp(Testbed.Soil);
+	}
+	if (Settings.Soils.IsValidIndex(SoilOverride))
+	{
+		for (uint8& V : OutSoil) { V = static_cast<uint8>(SoilOverride); }
 	}
 
 	// The builders think in bulk centimetres; the simulation stores solids.
@@ -649,13 +736,14 @@ void ADirtBox::BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLine
 	double SumSolidCm = 0.0;
 	for (int32 i = 0; i < Count; ++i)
 	{
-		const float Solid = DirtSolidCm(FMath::Max(Layer[i], 0.0f), Compaction[i], Settings);
+		const FDirtSoil& CellSoil = Settings.Soil(OutSoil.IsValidIndex(i) ? OutSoil[i] : 1);
+		const float Solid = DirtSolidCm(FMath::Max(Layer[i], 0.0f), Compaction[i], CellSoil, Settings);
 		SumSolidCm += Solid;
 		FLinearColor& S = OutState[i];
 		S.R = Solid;
 		S.G = Compaction[i];
 		S.B = Moisture[i];
-		S.A = OutBedrock[i] + DirtBulkCm(Solid, Compaction[i], Settings);
+		S.A = OutBedrock[i] + DirtBulkCm(Solid, Compaction[i], CellSoil, Settings);
 	}
 
 	TSharedPtr<FDirtTile>& Entry = TileCache.FindOrAdd(Tile);
@@ -751,9 +839,11 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 	// 2. Bedrock slides on the CPU (it is static and deterministic), the
 	//    entering cells are filled, and the patch of entering state is uploaded.
 	TArray<float> NewBedrock;
+	TArray<uint8> NewSoil;
 	TArray<FLinearColor> Patch;
 	TArray<float> PatchPond;
 	NewBedrock.SetNumZeroed(Count);
+	NewSoil.SetNumZeroed(Count);
 	Patch.SetNumZeroed(Count);
 	PatchPond.SetNumZeroed(Count);
 	for (int32 Y = 0; Y < Res; ++Y)
@@ -769,12 +859,14 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 			if (OX >= 0 && OX < Res)
 			{
 				NewBedrock[Y * Res + X] = BedrockCm[OY * Res + OX];
+				NewSoil[Y * Res + X] = SoilId.IsValidIndex(OY * Res + OX) ? SoilId[OY * Res + OX] : 1;
 			}
 		}
 	}
 
 	TArray<float> TileBedrock;
 	TArray<FLinearColor> TileState;
+	TArray<uint8> TileSoil;
 	int32 Entered = 0, FromCache = 0;
 	for (int32 TY = 0; TY < TilesPerSide; ++TY)
 	{
@@ -787,13 +879,14 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 			{
 				continue;
 			}
-			BuildTile(Tile, TileBedrock, TileState);
+			BuildTile(Tile, TileBedrock, TileState, TileSoil);
 			TSharedPtr<FDirtTile>* Cached = TileCache.Find(Tile);
 			const bool bFromCache = Cached && (*Cached)->bHasState;
 			for (int32 Y = 0; Y < TileCells; ++Y)
 			{
 				const int32 Row = (TY * TileCells + Y) * Res + TX * TileCells;
 				FMemory::Memcpy(NewBedrock.GetData() + Row, TileBedrock.GetData() + Y * TileCells, TileCells * sizeof(float));
+				FMemory::Memcpy(NewSoil.GetData() + Row, TileSoil.GetData() + Y * TileCells, TileCells * sizeof(uint8));
 				if (bFromCache)
 				{
 					FMemory::Memcpy(Patch.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
@@ -816,7 +909,9 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 	}
 
 	BedrockCm = MoveTemp(NewBedrock);
+	SoilId = MoveTemp(NewSoil);
 	UploadFloats(BaseHeightTex, BedrockCm);
+	UploadBytes(SoilTex, SoilId);
 	UploadColors(InitialStateTex, Patch);
 	UploadFloats(InitialPondTex, PatchPond);
 
@@ -1277,7 +1372,7 @@ void ADirtBox::Tick(float DeltaSeconds)
 				*PendingMeasureLabel, A.VolumeM3, A.GroundM3, A.AirborneM3, A.BaselineM3, A.DriftM3, A.DriftPercent);
 			UE_LOG(LogDirt, Log, TEXT("[%s] max slope on loose dirt %.1f deg (repose setting %.1f), ")
 				TEXT("max slope anywhere %.1f deg, cells scraped to bedrock %d"),
-				*PendingMeasureLabel, A.MaxLooseSlopeDeg, Settings.LooseReposeDeg,
+				*PendingMeasureLabel, A.MaxLooseSlopeDeg, Settings.Soil(Settings.DefaultSoil).LooseReposeDeg,
 				A.MaxAnySlopeDeg, A.BedrockExposedCells);
 		}
 	}
@@ -1651,6 +1746,7 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	// Dirtbox creates them once and never resizes them. The actual RHI textures
 	// are pulled out on the render thread, where they belong.
 	FTextureResource* BaseHeightRes = BaseHeightTex->GetResource();
+	FTextureResource* SoilRes = SoilTex ? SoilTex->GetResource() : nullptr;
 	FTextureResource* InitialStateRes = InitialStateTex->GetResource();
 	FTextureResource* InitialPondRes = InitialPondTex ? InitialPondTex->GetResource() : nullptr;
 	FTextureRenderTargetResource* StateARes = StateA->GameThread_GetRenderTargetResource();
@@ -1661,7 +1757,7 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	FTextureRenderTargetResource* NormalRes = NormalRT->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* DebugRes = DebugRT->GameThread_GetRenderTargetResource();
 
-	if (!BaseHeightRes || !InitialStateRes || !InitialPondRes || !StateARes || !StateBRes || !PondARes || !PondBRes
+	if (!BaseHeightRes || !SoilRes || !InitialStateRes || !InitialPondRes || !StateARes || !StateBRes || !PondARes || !PondBRes
 		|| !DisplayRes || !NormalRes || !DebugRes)
 	{
 		return;
@@ -1689,18 +1785,14 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 		static_cast<float>(Settings.SimRegionCentreCm.X) - Settings.RegionSizeCm() * 0.5f,
 		static_cast<float>(Settings.SimRegionCentreCm.Y) - Settings.RegionSizeCm() * 0.5f);
 	Frame.Dt = 1.0f / FMath::Max(Settings.SimHz, 1.0f);
-	Frame.LoosePorosity = Settings.LoosePorosity;
-	Frame.DensePorosity = Settings.DensePorosity;
 	Frame.CompactionDepthCm = Settings.CompactionDepthCm;
 	Frame.DeepCompaction = Settings.DeepCompaction;
 	Frame.DepositCompaction = Settings.DepositCompaction;
 	Frame.bWater = Settings.bWater;
 	Frame.RunoffRate = Settings.RunoffRate;
 	Frame.RainCmPerSec = Settings.RainCmPerSec;
-	Frame.InfiltrationCmPerSec = Settings.InfiltrationCmPerSec;
 	Frame.DrainPerSec = Settings.DrainPerSec;
 	Frame.EvapPerSec = Settings.EvapPerSec;
-	Frame.FieldCapacity = Settings.FieldCapacity;
 	Frame.WetDepthCm = Settings.WetDepthCm;
 	Frame.AmbientMoisture = Settings.AmbientMoisture;
 	Frame.bParcels = bParcelsReady;
@@ -1722,13 +1814,12 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	Frame.ParcelRestitutionWet = Settings.ParcelRestitutionWet;
 	Frame.ParcelRestSpeedCmS = Settings.ParcelRestSpeedCmS;
 	Frame.ParcelRestSeconds = Settings.ParcelRestSeconds;
-	Frame.LooseReposeDeg = Settings.LooseReposeDeg;
-	Frame.PackedReposeDeg = Settings.PackedReposeDeg;
-	Frame.SuctionCohesionKPa = Settings.SuctionCohesionKPa;
-	Frame.PackedCohesionKPa = Settings.PackedCohesionKPa;
-	Frame.UnitWeightKNm3 = Settings.UnitWeightKNm3;
-	Frame.SaturationFrictionLoss = Settings.SaturationFrictionLoss;
 	Frame.MaxCohesiveHeightCm = Settings.MaxCohesiveHeightCm;
+	Frame.SoilTable.SetNumZeroed(DirtSim::MaxSoils * DirtSim::SoilRows);
+	for (int32 i = 0; i < FMath::Min(Settings.Soils.Num(), DirtSim::MaxSoils); ++i)
+	{
+		Settings.Soils[i].ToRows(Frame.SoilTable.GetData() + i * DirtSim::SoilRows);
+	}
 	Frame.SlumpRate = Settings.SlumpRate;
 	Frame.LooseningRate = Settings.LooseningRate;
 	Frame.LooseningScaleCm = Settings.LooseningScaleCm;
@@ -1764,11 +1855,12 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	}
 
 	ENQUEUE_RENDER_COMMAND(DirtSimStep)(
-		[Frame, BaseHeightRes, InitialStateRes, InitialPondRes, StateARes, StateBRes, PondARes, PondBRes, DisplayRes, NormalRes, DebugRes,
+		[Frame, BaseHeightRes, SoilRes, InitialStateRes, InitialPondRes, StateARes, StateBRes, PondARes, PondBRes, DisplayRes, NormalRes, DebugRes,
 		 ParcelPosRes, ParcelVelRes, ParcelPropRes, ParcelRes, DustPosRes, DustVelRes, DustPropRes, DustRes]
 		(FRHICommandListImmediate& RHICmdList) mutable
 		{
 			Frame.BaseHeight = BaseHeightRes->TextureRHI;
+			Frame.SoilIn = SoilRes->TextureRHI;
 			Frame.InitialState = InitialStateRes->TextureRHI;
 			Frame.InitialPond = InitialPondRes->TextureRHI;
 			Frame.StateA = StateARes->GetRenderTargetTexture();
@@ -1955,7 +2047,8 @@ FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float
 		// becomes that many solid centimetres at the ground's solid fraction: a
 		// 15 cm hole in loose dirt is 15 cm deep, and the same stroke in hardpack
 		// comes out shallower, which is what a shovel finds too.
-		S.Amount = Amount * S.CoreNorm * DirtSolidFraction(Settings.DeepCompaction, Settings);
+		S.Amount = Amount * S.CoreNorm * DirtSolidFraction(Settings.DeepCompaction,
+														  SoilAtTexel(FIntPoint(FMath::FloorToInt(S.CenterTexel.X), FMath::FloorToInt(S.CenterTexel.Y))));
 	}
 	else
 	{
@@ -2033,8 +2126,9 @@ float ADirtBox::ChooseParcelDiameterCm(float Moisture, float Compaction) const
 		// well below that. Scale it down and let the min/max bound it: dry sand
 		// (no cohesion) goes to the minimum, damp loam to a few centimetres.
 		float TanPhi = 0.0f, CohesionKPa = 0.0f;
-		DirtSoilStrength(Compaction, Moisture, Settings, TanPhi, CohesionKPa);
-		D = 100.0f * CohesionKPa / FMath::Max(Settings.UnitWeightKNm3, 1.0f) * 0.15f;
+		const FDirtSoil& ClodSoil = Settings.Soil(Settings.DefaultSoil);
+		DirtSoilStrength(Compaction, Moisture, ClodSoil, TanPhi, CohesionKPa);
+		D = 100.0f * CohesionKPa / FMath::Max(ClodSoil.UnitWeightKNm3, 1.0f) * 0.15f;
 	}
 	return FMath::Clamp(D, Settings.ParcelMinDiameterCm, Settings.ParcelMaxDiameterCm);
 }
@@ -2314,11 +2408,12 @@ FDirtAudit ADirtBox::RunAudit()
 	for (int32 i = 0; i < Res * Res; ++i)
 	{
 		const FLinearColor& S = Readback[i];
-		const float Bulk = DirtBulkCm(S.R, S.G, Settings);
+		const FDirtSoil& CellSoil = Settings.Soil(SoilId.IsValidIndex(i) ? SoilId[i] : Settings.DefaultSoil);
+		const float Bulk = DirtBulkCm(S.R, S.G, CellSoil, Settings);
 		SumSolidCm += S.R;
 		SumBulkCm += Bulk;
 		// Pore water: saturation x porosity x the wet skin the moisture channel describes.
-		SumWaterCm += FMath::Clamp(S.B, 0.0f, 1.0f) * (1.0f - DirtSolidFraction(S.G, Settings)) * FMath::Min(Bulk, Settings.WetDepthCm);
+		SumWaterCm += FMath::Clamp(S.B, 0.0f, 1.0f) * (1.0f - DirtSolidFraction(S.G, CellSoil)) * FMath::Min(Bulk, Settings.WetDepthCm);
 		if (PondReadback.IsValidIndex(i))
 		{
 			SumPondCm += PondReadback[i];
@@ -2528,7 +2623,7 @@ bool ADirtBox::RunTest(const FString& TestName, FString& OutMessage)
 
 		OutMessage = FString::Printf(
 			TEXT("Watch the cone at (3, -45) collapse. Measuring in 3 s; expect the ")
-			TEXT("max loose slope to land near %.0f deg."), Settings.LooseReposeDeg);
+			TEXT("max loose slope to land near %.0f deg."), Settings.Soil(Settings.DefaultSoil).LooseReposeDeg);
 		return true;
 	}
 
@@ -2555,7 +2650,7 @@ bool ADirtBox::RunTest(const FString& TestName, FString& OutMessage)
 		OutMessage = FString::Printf(
 			TEXT("Dropped loose piles on %d faces (%.0f to %.0f deg). Switch to ")
 			TEXT("DaDirt.DebugView 4 to see stability. Faces under %.0f deg should hold."),
-			Wedges.Num(), Wedges[0].AngleDeg, Wedges.Last().AngleDeg, Settings.LooseReposeDeg);
+			Wedges.Num(), Wedges[0].AngleDeg, Wedges.Last().AngleDeg, Settings.Soil(Settings.DefaultSoil).LooseReposeDeg);
 		return true;
 	}
 
@@ -2781,7 +2876,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtAuditCmd(
 				UE_LOG(LogDirt, Warning, TEXT("  NEGATIVE dirt     %d cells, %.3f cm3 in total, worst %.5f cm"), A.NegativeCells, A.NegativeCm3, A.MinSolidCm);
 			}
 			UE_LOG(LogDirt, Log, TEXT("  steepest loose    %.1f deg  (repose setting %.1f)"),
-				A.MaxLooseSlopeDeg, Box->Settings.LooseReposeDeg);
+				A.MaxLooseSlopeDeg, Box->Settings.Soil(Box->Settings.DefaultSoil).LooseReposeDeg);
 			UE_LOG(LogDirt, Log, TEXT("  steepest anywhere %.1f deg"), A.MaxAnySlopeDeg);
 		}));
 
@@ -2817,8 +2912,9 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 			const FLinearColor S = Box->GetStateAtWorld(World);
 			const float PondHere = Box->GetPondAtWorld(World);
 			const float SurfaceZ = Box->GetSurfaceHeightAtWorld(World);
-			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm%s]"),
-				Xm, Ym, SurfaceZ, DirtBulkCm(S.R, S.G, Box->Settings), S.R, S.G, S.B, PondHere,
+			const FDirtSoil& ProbeSoil = Box->SoilAtWorld(World);
+			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [%s, layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm%s]"),
+				Xm, Ym, SurfaceZ, *ProbeSoil.Name, DirtBulkCm(S.R, S.G, ProbeSoil, Box->Settings), S.R, S.G, S.B, PondHere,
 				PondHere > 0.05f ? *FString::Printf(TEXT(", water top at Z = %.1f cm"), SurfaceZ + PondHere) : TEXT(""));
 		}));
 
@@ -2879,7 +2975,16 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtReposeCmd(
 				return;
 			}
 
-			FDirtSimSettings& S = Box->Settings;
+			FDirtSimSettings& Settings = Box->Settings;
+			// Edits the default soil, or the one named as a fifth argument.
+			int32 SoilIndex = Settings.DefaultSoil;
+			if (Args.IsValidIndex(4))
+			{
+				const int32 Named = Settings.FindSoil(Args[4]);
+				if (Named >= 0) { SoilIndex = Named; }
+			}
+			if (!Settings.Soils.IsValidIndex(SoilIndex)) { return; }
+			FDirtSoil& S = Settings.Soils[SoilIndex];
 			S.LooseReposeDeg = FMath::Clamp(ArgFloat(Args, 0, S.LooseReposeDeg), 1.0f, 89.0f);
 			S.PackedReposeDeg = FMath::Clamp(ArgFloat(Args, 1, S.PackedReposeDeg), 1.0f, 60.0f);
 			S.SuctionCohesionKPa = FMath::Clamp(ArgFloat(Args, 2, S.SuctionCohesionKPa), 0.0f, 50.0f);
@@ -2892,6 +2997,73 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtReposeCmd(
 			UE_LOG(LogDirt, Log, TEXT("Soil: friction %.0f deg loose / %.0f dense, mud %.0f deg; cohesion %.1f kPa damp, ")
 				TEXT("%.1f kPa packed; a damp vertical wall stands to %.0f cm."),
 				S.LooseReposeDeg, S.PackedReposeDeg, MudDeg, S.SuctionCohesionKPa, S.PackedCohesionKPa, DampWallCm);
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtSoilCmd(
+	TEXT("DaDirt.Soil"),
+	TEXT("DaDirt.Soil - list the soils. DaDirt.Soil <name|id> - paint the whole window with it. ")
+	TEXT("DaDirt.Soil <name|id> <xM> <yM> <radiusM> - paint a disc. DaDirt.Soil default <name> - the soil tools and tests use. ")
+	TEXT("A whole-window paint sticks through Reset and slides until DaDirt.Soil built."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			FDirtSimSettings& Settings = Box->Settings;
+			if (Args.Num() == 0)
+			{
+				for (int32 i = 0; i < Settings.Soils.Num(); ++i)
+				{
+					const FDirtSoil& So = Settings.Soils[i];
+					UE_LOG(LogDirt, Log, TEXT("  %d %-8s%s friction %.0f/%.0f deg, cohesion %.1f+%.1f kPa, K %.2f cm/s, field capacity %.2f, dust x%.1f"),
+						i, *So.Name, i == Settings.DefaultSoil ? TEXT(" (default)") : TEXT(""),
+						So.LooseReposeDeg, So.PackedReposeDeg, So.SuctionCohesionKPa, So.PackedCohesionKPa,
+						So.InfiltrationCmPerSec, So.FieldCapacity, So.Dustiness);
+				}
+				return;
+			}
+			const auto Resolve = [&Settings](const FString& Arg) -> int32
+			{
+				const int32 Named = Settings.FindSoil(Arg);
+				if (Named >= 0) { return Named; }
+				const int32 Id = FCString::Atoi(*Arg);
+				return (Arg.IsNumeric() && Settings.Soils.IsValidIndex(Id)) ? Id : -1;
+			};
+			if (Args[0].Equals(TEXT("built"), ESearchCase::IgnoreCase))
+			{
+				// Back to the soil map the builders made. Takes effect on the next Reset.
+				Box->SoilOverride = -1;
+				UE_LOG(LogDirt, Log, TEXT("The built soil map is back after the next DaDirt.Reset."));
+				return;
+			}
+			if (Args[0].Equals(TEXT("default"), ESearchCase::IgnoreCase))
+			{
+				const int32 Id = Args.IsValidIndex(1) ? Resolve(Args[1]) : -1;
+				if (Id < 0) { UE_LOG(LogDirt, Warning, TEXT("No such soil.")); return; }
+				Settings.DefaultSoil = Id;
+				UE_LOG(LogDirt, Log, TEXT("Default soil: %s."), *Settings.Soils[Id].Name);
+				return;
+			}
+			const int32 Id = Resolve(Args[0]);
+			if (Id < 0)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("No such soil: %s. DaDirt.Soil lists them."), *Args[0]);
+				return;
+			}
+			if (Args.Num() >= 4)
+			{
+				Box->PaintSoil(Id, FVector2D(ArgFloat(Args, 1, 0.0f) * 100.0f, ArgFloat(Args, 2, 0.0f) * 100.0f), ArgFloat(Args, 3, 5.0f) * 100.0f);
+				UE_LOG(LogDirt, Log, TEXT("Painted %s in a %.1f m disc at (%.1f, %.1f) m."), *Settings.Soils[Id].Name, ArgFloat(Args, 3, 5.0f), ArgFloat(Args, 1, 0.0f), ArgFloat(Args, 2, 0.0f));
+			}
+			else
+			{
+				Box->PaintSoil(Id, FVector2D::ZeroVector, 0.0f);
+				Settings.DefaultSoil = Id;
+				UE_LOG(LogDirt, Log, TEXT("The whole window is %s now (and it is the default)."), *Settings.Soils[Id].Name);
+			}
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtTestCmd(
@@ -3240,16 +3412,21 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtInfoCmd(
 			UE_LOG(LogDirt, Log, TEXT("  sim grid       %d x %d (%.2f cm per cell, a 12 cm rut is %.1f cells)"),
 				S.SimResolution, S.SimResolution, S.TexelSizeCm(), 12.0f / FMath::Max(S.TexelSizeCm(), 0.01f));
 			UE_LOG(LogDirt, Log, TEXT("  display mesh   %d x %d verts"), S.MeshVertsPerSide, S.MeshVertsPerSide);
-			UE_LOG(LogDirt, Log, TEXT("  soil           friction %.0f deg loose / %.0f dense (x%.1f when saturated), ")
-				TEXT("cohesion %.1f kPa suction peak + %.1f kPa packed, %.0f kN/m3"),
-				S.LooseReposeDeg, S.PackedReposeDeg, 1.0f - S.SaturationFrictionLoss,
-				S.SuctionCohesionKPa, S.PackedCohesionKPa, S.UnitWeightKNm3);
+			for (int32 i = 0; i < S.Soils.Num(); ++i)
+			{
+				const FDirtSoil& So = S.Soils[i];
+				UE_LOG(LogDirt, Log, TEXT("  soil %d %-8s %s friction %.0f/%.0f deg (x%.2f wet), cohesion %.1f+%.1f kPa, %.1f kN/m3, porosity %.2f/%.2f, K %.2f cm/s, field cap %.2f, Proctor %.2f, dries x%.1f, dust x%.1f"),
+					i, *So.Name, i == S.DefaultSoil ? TEXT("*") : TEXT(" "),
+					So.LooseReposeDeg, So.PackedReposeDeg, 1.0f - So.SaturationFrictionLoss,
+					So.SuctionCohesionKPa, So.PackedCohesionKPa, So.UnitWeightKNm3, So.LoosePorosity, So.DensePorosity,
+					So.InfiltrationCmPerSec, So.FieldCapacity, So.ProctorOptimum, So.DryingMultiplier, So.Dustiness);
+			}
 			UE_LOG(LogDirt, Log, TEXT("  slump          %d iterations at rate %.3f, %.0f Hz fixed step"),
 				S.SlumpIterations, S.SlumpRate, S.SimHz);
-			UE_LOG(LogDirt, Log, TEXT("  solids         porosity %.2f loose / %.2f dense, packing reaches %.0f cm"),
-				S.LoosePorosity, S.DensePorosity, S.CompactionDepthCm);
+			UE_LOG(LogDirt, Log, TEXT("  solids         packing reaches %.0f cm, natural ground at %.2f"),
+				S.CompactionDepthCm, S.DeepCompaction);
 			UE_LOG(LogDirt, Log, TEXT("  water          %s, soaks in at %.2f cm/s loose, rain %.1f mm/min"),
-				S.bWater ? TEXT("on") : TEXT("off"), S.InfiltrationCmPerSec, S.RainCmPerSec * 600.0f);
+				S.bWater ? TEXT("on") : TEXT("off"), S.Soil(S.DefaultSoil).InfiltrationCmPerSec, S.RainCmPerSec * 600.0f);
 			UE_LOG(LogDirt, Log, TEXT("  parcels        %s, pool %d, %s, %d live; shedding %s; dust %s, pool %d, %d live"),
 				S.bParcels ? TEXT("on") : TEXT("off"), S.ParcelPoolSide * S.ParcelPoolSide,
 				S.ParcelDiameterCm > 0.0f ? *FString::Printf(TEXT("%.2f cm"), S.ParcelDiameterCm) : TEXT("sized by the soil"),
@@ -3322,7 +3499,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtWaterCmd(
 			const float PeakCm = Litres * 1000.0f / (PI * RadiusCm * RadiusCm / 3.0f);
 			UE_LOG(LogDirt, Log, TEXT("Poured %.0f L at (%.1f, %.1f) m over a %.0f cm radius: about %.1f cm of water at the centre, ")
 				TEXT("soaking in at %.2f cm/s on loose dirt and %.4f cm/s on hardpack."),
-				Litres, Xm, Ym, RadiusCm, PeakCm, Box->Settings.InfiltrationCmPerSec, Box->Settings.InfiltrationCmPerSec * FMath::Exp(-4.6f));
+				Litres, Xm, Ym, RadiusCm, PeakCm, Box->Settings.Soil(Box->Settings.DefaultSoil).InfiltrationCmPerSec, Box->Settings.Soil(Box->Settings.DefaultSoil).InfiltrationCmPerSec * FMath::Exp(-4.6f));
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtParcelCmd(

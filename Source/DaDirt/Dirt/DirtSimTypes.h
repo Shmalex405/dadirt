@@ -75,6 +75,105 @@ enum class EDirtDebugView : uint8
  * Everything tunable about the dirt. Dirt feel is the whole game, so all of this
  * is exposed on the DirtBox actor and most of it is reachable from the console.
  */
+
+/**
+ * A soil: the measured properties one kind of dirt has. Every cell of the
+ * box belongs to one (a static map built with the terrain), and the shaders
+ * read the table through the cell's id. Wet and dry are not soils, they are
+ * the moisture channel; a soil is what a moisture does to it.
+ *
+ * The five float4 rows the GPU sees are laid out by ToRows() exactly as
+ * Shaders/Private/DirtCommon.ush documents. The Bekker and Janosi numbers are
+ * for the wheel and stay on the CPU. Sources: docs/SoilPhysics.md section 8.
+ */
+USTRUCT(BlueprintType)
+struct FDirtSoil
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil")
+	FString Name = TEXT("loam");
+
+	// --- packing (section 1, 4) ------------------------------------------------
+	/** Void fraction when loose. Sand ~0.44, loam ~0.48, silty PNW loam ~0.52. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0.2", ClampMax = "0.7"))
+	float LoosePorosity = 0.48f;
+	/** Void fraction when fully packed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0.15", ClampMax = "0.6"))
+	float DensePorosity = 0.34f;
+
+	// --- strength (section 2) ----------------------------------------------------
+	/** Friction angle loose, deg. Dry sand ~30-32, angular granite ~36, clay ~24. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "1", ClampMax = "89"))
+	float LooseReposeDeg = 32.0f;
+	/** Friction angle fully packed, deg. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "1", ClampMax = "60"))
+	float PackedReposeDeg = 42.0f;
+	/** Peak apparent cohesion from moisture suction, kPa. Sand 2, loam 3, silty loam 6, clay 8. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "50"))
+	float SuctionCohesionKPa = 3.0f;
+	/** Cohesion of fully packed dirt, kPa: interlock and cementation. Sand ~0.5, loam ~8, caliche ~25. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "100"))
+	float PackedCohesionKPa = 8.0f;
+	/** Moist unit weight, kN/m3. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "10", ClampMax = "24"))
+	float UnitWeightKNm3 = 17.0f;
+	/** Fraction of friction lost when saturated (pore pressure carries the load). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "0.95"))
+	float SaturationFrictionLoss = 0.6f;
+
+	// --- water (section 5) --------------------------------------------------------
+	/** Saturated conductivity of the loose soil, cm/s, game-paced. Sand ~1, loam 0.5, silt loam 0.15, clay 0.02. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0"))
+	float InfiltrationCmPerSec = 0.5f;
+	/** Saturation the soil holds against gravity. Sand 0.1, loam 0.3, silt loam 0.45, clay 0.4. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "1"))
+	float FieldCapacity = 0.3f;
+	/** Moisture at which it packs best (Proctor optimum). Sand packs best wet, clay well before saturation. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0.1", ClampMax = "0.9"))
+	float ProctorOptimum = 0.55f;
+	/** Multiplier on the surface drying rate. Sand and granite dry fast, silty loam slowly. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "5"))
+	float DryingMultiplier = 1.0f;
+
+	// --- looks and dust ------------------------------------------------------------
+	/** Multiplier on DustPerLitre: decomposed granite is a dust storm, wet-country loam is not. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "5"))
+	float Dustiness = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil")
+	FLinearColor DryColour = FLinearColor(0.40f, 0.29f, 0.19f);
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil")
+	FLinearColor PackedColour = FLinearColor(0.24f, 0.16f, 0.10f);
+
+	// --- the tyre (section 6): Bekker pressure-sinkage and Janosi shear -------------
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float BekkerNLoose = 0.9f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float BekkerNDense = 0.5f;
+	/** kN / m^(n+1) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float BekkerKcLoose = 1.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float BekkerKcDense = 15.0f;
+	/** kN / m^(n+2) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float BekkerKphiLoose = 400.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float BekkerKphiDense = 5000.0f;
+	/** Janosi-Hanamoto shear modulus, m, loose / dense. Sand 1-2.5 cm, loam 2-5 cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float ShearModulusLooseM = 0.02f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float ShearModulusDenseM = 0.045f;
+	/** Fraction of Bekker stiffness lost when saturated: mud takes a wheel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float SaturationStiffnessLoss = 0.8f;
+
+	/** The five float4 rows the shaders read. Out must hold DirtSim::SoilRows entries. */
+	void ToRows(FVector4f* Out) const
+	{
+		Out[0] = FVector4f(LoosePorosity, DensePorosity, LooseReposeDeg, PackedReposeDeg);
+		Out[1] = FVector4f(SuctionCohesionKPa, PackedCohesionKPa, UnitWeightKNm3, SaturationFrictionLoss);
+		Out[2] = FVector4f(InfiltrationCmPerSec, FieldCapacity, ProctorOptimum, DryingMultiplier);
+		Out[3] = FVector4f(DryColour.R, DryColour.G, DryColour.B, Dustiness);
+		Out[4] = FVector4f(PackedColour.R, PackedColour.G, PackedColour.B, 0.0f);
+	}
+
+	/** The reference soils, docs/SoilPhysics.md section 8. Index 1 (loam) is the default. */
+	static void Presets(TArray<FDirtSoil>& Out);
+};
+
 USTRUCT(BlueprintType)
 struct FDirtSimSettings
 {
@@ -136,47 +235,48 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Dirt", meta = (ClampMin = "0"))
 	float RestLayerCm = 60.0f;
 
+	// --- soils -------------------------------------------------------------
+	//
+	// The strength, packing and water numbers all live in the soils now: each
+	// cell of the box belongs to one. DaDirt.Soil lists and paints them.
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil")
+	TArray<FDirtSoil> Soils;
+
+	/** The soil a tool, test or painted region uses when none is named. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil")
+	int32 DefaultSoil = 1;
+
+	FDirtSimSettings()
+	{
+		FDirtSoil::Presets(Soils);
+	}
+
+	const FDirtSoil& Soil(int32 Id) const
+	{
+		static const FDirtSoil Fallback;
+		return Soils.IsValidIndex(Id) ? Soils[Id] : (Soils.Num() > 0 ? Soils[0] : Fallback);
+	}
+
+	int32 FindSoil(const FString& Name) const
+	{
+		for (int32 i = 0; i < Soils.Num(); ++i)
+		{
+			if (Soils[i].Name.Equals(Name, ESearchCase::IgnoreCase))
+			{
+				return i;
+			}
+		}
+		return -1;
+	}
+
 	// --- angle of repose --------------------------------------------------
 
-	/** Steepest slope fully loose dirt can hold. Dry sand is about 32 degrees. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "1", ClampMax = "89"))
-	float LooseReposeDeg = 32.0f;
 
-	/**
-	 * Friction angle of fully packed (dense) dirt. Dense sand is 38-42 deg: grains
-	 * interlock. Hardpack standing at 70 deg is not friction, it is cohesion —
-	 * see PackedCohesionKPa. (docs/SoilPhysics.md section 2.)
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "1", ClampMax = "60"))
-	float PackedReposeDeg = 42.0f;
 
-	/**
-	 * Peak apparent cohesion from moisture, kPa. Water menisci between grains pull
-	 * them together (matric suction); it is zero when dry, peaks around half
-	 * saturation and vanishes again when saturated. Damp sand: 2-4 kPa. This is
-	 * what lets a sandcastle wall stand vertical up to ~1 m.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "50"))
-	float SuctionCohesionKPa = 3.0f;
 
-	/**
-	 * Cohesion of fully packed dirt, kPa: interlock and cementation of fines. Sand
-	 * ~2, loam ~8, hardpack clay ~25. Washed out as the dirt saturates.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "100"))
-	float PackedCohesionKPa = 8.0f;
 
-	/** Moist unit weight, kN/m3. Sets how tall a cohesive face can stand: H ~ 4c/gamma. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "10", ClampMax = "24"))
-	float UnitWeightKNm3 = 17.0f;
 
-	/**
-	 * Fraction of friction lost when saturated: pore pressure carries the load
-	 * instead of the grains (effective stress). 0.6 takes 32 deg dry sand to about
-	 * 14 deg mud.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "0.95"))
-	float SaturationFrictionLoss = 0.6f;
 
 	/** Cap on the cohesive standing height, cm, so near-repose faces do not read as infinitely strong. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "10"))
@@ -220,13 +320,7 @@ struct FDirtSimSettings
 	// shrinks the ground and loosening fluffs it up, and nothing is created or
 	// destroyed either way. The audit sums solids.
 
-	/** Void fraction of fully loose dirt. Loam ~0.48, sand ~0.46, clay ~0.50. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "0.2", ClampMax = "0.7"))
-	float LoosePorosity = 0.48f;
 
-	/** Void fraction of fully packed dirt. Loam ~0.34. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "0.1", ClampMax = "0.6"))
-	float DensePorosity = 0.34f;
 
 	/**
 	 * How deep packing reaches, cm. A tyre or a tool packs a skin, not the whole
@@ -265,9 +359,6 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
 	float RainSecondsLeft = 0.0f;
 
-	/** How fast ponded water soaks into LOOSE dirt, cm/s. Packing cuts it a hundredfold. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
-	float InfiltrationCmPerSec = 0.5f;
 
 	/** Per second, the share of water above field capacity that drains away downward through loose dirt. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
@@ -281,9 +372,6 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "0.5"))
 	float AmbientMoisture = 0.05f;
 
-	/** Saturation the dirt holds against gravity by suction. ~0.3 for loam. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "1"))
-	float FieldCapacity = 0.3f;
 
 	/** Depth of ground the moisture channel describes, cm. Sets how much water a cell can drink. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "1"))
@@ -487,18 +575,18 @@ inline float DirtBrushRimWeight(float R, float CoreRadius, float RimRadius)
 // ---------------------------------------------------------------------------
 
 /** Friction (as tan phi) and cohesion (kPa) of dirt in a given state. */
-inline void DirtSoilStrength(float Compaction, float Moisture, const FDirtSimSettings& S,
+inline void DirtSoilStrength(float Compaction, float Moisture, const FDirtSoil& Soil,
 							 float& OutTanPhi, float& OutCohesionKPa)
 {
 	const float C = FMath::Clamp(Compaction, 0.0f, 1.0f);
 	const float M = FMath::Clamp(Moisture, 0.0f, 1.0f);
 	const float Sat = FMath::SmoothStep(0.55f, 1.0f, M);                 // pore pressure takes over
 
-	const float PhiDeg = FMath::Lerp(S.LooseReposeDeg, S.PackedReposeDeg, C);
-	OutTanPhi = FMath::Tan(FMath::DegreesToRadians(PhiDeg)) * (1.0f - S.SaturationFrictionLoss * Sat);
+	const float PhiDeg = FMath::Lerp(Soil.LooseReposeDeg, Soil.PackedReposeDeg, C);
+	OutTanPhi = FMath::Tan(FMath::DegreesToRadians(PhiDeg)) * (1.0f - Soil.SaturationFrictionLoss * Sat);
 
 	const float Suction = 4.0f * M * (1.0f - M);                         // menisci: none dry, none soaked
-	OutCohesionKPa = S.SuctionCohesionKPa * Suction + S.PackedCohesionKPa * C * (1.0f - Sat);
+	OutCohesionKPa = Soil.SuctionCohesionKPa * Suction + Soil.PackedCohesionKPa * C * (1.0f - Sat);
 }
 
 /**
@@ -530,17 +618,17 @@ inline float DirtAllowedDropCm(float DropCm, float RunCm, float TanPhi, float Co
 // DirtSolidCm in Shaders/Private/DirtCommon.ush — keep them identical.
 // ---------------------------------------------------------------------------
 
-/** Solid fraction (1 - porosity) of dirt at a given compaction. */
-inline float DirtSolidFraction(float Compaction, const FDirtSimSettings& S)
+/** Solid fraction (1 - porosity) of a soil at a given compaction. */
+inline float DirtSolidFraction(float Compaction, const FDirtSoil& Soil)
 {
-	return 1.0f - FMath::Lerp(S.LoosePorosity, S.DensePorosity, FMath::Clamp(Compaction, 0.0f, 1.0f));
+	return 1.0f - FMath::Lerp(Soil.LoosePorosity, Soil.DensePorosity, FMath::Clamp(Compaction, 0.0f, 1.0f));
 }
 
 /** Bulk (visible) thickness of a column holding SolidCm of grains, whose top skin is at Compaction. */
-inline float DirtBulkCm(float SolidCm, float Compaction, const FDirtSimSettings& S)
+inline float DirtBulkCm(float SolidCm, float Compaction, const FDirtSoil& Soil, const FDirtSimSettings& S)
 {
-	const float SkinFrac = DirtSolidFraction(Compaction, S);
-	const float DeepFrac = DirtSolidFraction(S.DeepCompaction, S);
+	const float SkinFrac = DirtSolidFraction(Compaction, Soil);
+	const float DeepFrac = DirtSolidFraction(S.DeepCompaction, Soil);
 	const float SkinSolid = SkinFrac * S.CompactionDepthCm;
 	return (SolidCm <= SkinSolid)
 		? SolidCm / SkinFrac
@@ -548,20 +636,21 @@ inline float DirtBulkCm(float SolidCm, float Compaction, const FDirtSimSettings&
 }
 
 /** Inverse: the solids in a column BulkCm tall whose top skin is at Compaction. */
-inline float DirtSolidCm(float BulkCm, float Compaction, const FDirtSimSettings& S)
+inline float DirtSolidCm(float BulkCm, float Compaction, const FDirtSoil& Soil, const FDirtSimSettings& S)
 {
-	const float SkinFrac = DirtSolidFraction(Compaction, S);
-	const float DeepFrac = DirtSolidFraction(S.DeepCompaction, S);
+	const float SkinFrac = DirtSolidFraction(Compaction, Soil);
+	const float DeepFrac = DirtSolidFraction(S.DeepCompaction, Soil);
 	return (BulkCm <= S.CompactionDepthCm)
 		? BulkCm * SkinFrac
 		: S.CompactionDepthCm * SkinFrac + (BulkCm - S.CompactionDepthCm) * DeepFrac;
 }
 
-/** Proctor: packing efficiency as a function of moisture. Mirrors DirtPackingEfficiency in DirtCommon.ush. */
-inline float DirtPackingEfficiency(float Moisture)
+/** Proctor: packing efficiency as a function of moisture, peaking at the soil's optimum. Mirrors DirtPackingEfficiency in DirtCommon.ush. */
+inline float DirtPackingEfficiency(float Moisture, const FDirtSoil& Soil)
 {
 	const float M = FMath::Clamp(Moisture, 0.0f, 1.0f);
-	const float Hump = FMath::SmoothStep(-0.2f, 0.7f, M);
-	const float Mud = 1.0f - FMath::SmoothStep(0.85f, 1.0f, M);
+	const float Opt = Soil.ProctorOptimum;
+	const float Hump = FMath::SmoothStep(Opt - 0.75f, Opt + 0.15f, M);
+	const float Mud = 1.0f - FMath::SmoothStep(Opt + 0.3f, 1.0f, M);
 	return (0.35f + 0.65f * Hump) * Mud;
 }

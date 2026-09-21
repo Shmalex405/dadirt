@@ -245,6 +245,15 @@ public:
 	/** A camera position and rotation that frames whatever is currently built. */
 	void GetSuggestedViewpoint(FVector& OutLocation, FRotator& OutRotation) const;
 
+	/** The soil of a cell of the window, or at a box-relative position. */
+	const FDirtSoil& SoilAtTexel(FIntPoint Texel) const;
+	int32 SoilIdAtWorld(FVector2D WorldXYCm) const;
+	const FDirtSoil& SoilAtWorld(FVector2D WorldXYCm) const { return Settings.Soil(SoilIdAtWorld(WorldXYCm)); }
+	/** Paint a soil over the window (RadiusCm <= 0) or a disc of it, and re-upload. Tests and DaDirt.Soil. */
+	void PaintSoil(int32 SoilId, FVector2D CentreCm, float RadiusCm);
+	/** A soil painted over everything by DaDirt.Soil <name>: survives Reset and slides, until DaDirt.Soil built. */
+	int32 SoilOverride = -1;
+
 	/** Keep the simulated window centred on the test wheel, sliding by tiles as it drives. */
 	void SetFollowWheel(bool bFollow);
 	bool IsFollowingWheel() const { return bFollowWheel; }
@@ -338,7 +347,9 @@ private:
 	void CreateResources();
 
 	/** Build one tile of the world with the current builder, converted to solids. Records its pristine volume. */
-	void BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState);
+	void BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState, TArray<uint8>& OutSoil);
+
+	void UploadBytes(UTexture2D* Texture, const TArray<uint8>& Data);
 
 	/** Run the whole-site builder once for its feature log and site-wide constants. */
 	void BuildWholeSiteLog();
@@ -364,7 +375,7 @@ private:
 	void UpdateFarTile(FIntPoint Tile);
 	void UpdateFarVisibility();
 	void FillFarTile(FIntPoint Tile, const FDirtTile* Cached, TArray<FVector>& Verts, TArray<FVector>& Normals, TArray<FLinearColor>& Colors) const;
-	static FLinearColor FarTint(float SolidCm, float Compaction, float Moisture);
+	static FLinearColor FarTint(const FDirtSoil& Soil, float SolidCm, float Compaction, float Moisture);
 	float TileSizeCm() const { return Settings.RegionSizeCm() / TilesPerSide; }
 	void UploadFloats(UTexture2D* Texture, const TArray<float>& Data);
 	void UploadColors(UTexture2D* Texture, const TArray<FLinearColor>& Data);
@@ -419,6 +430,10 @@ private:
 	/** Static bedrock, R32F. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> BaseHeightTex;
+
+	/** The soil id of every cell of the window, R8_UINT. Static like bedrock; painted by DaDirt.Soil. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> SoilTex;
 
 	/** CPU-built starting state, RGBA32F. Also the patch of entering cells on a slide. */
 	UPROPERTY(Transient)
@@ -511,6 +526,8 @@ private:
 
 	/** Bedrock kept on the CPU too, so audits and height probes need no GPU round trip. */
 	TArray<float> BedrockCm;
+	/** Soil id per cell of the window, the CPU copy of SoilTex. */
+	TArray<uint8> SoilId;
 
 	TArray<FString> FeatureLog;
 
@@ -534,6 +551,7 @@ private:
 
 	/** The whole site as first built, at whole-box resolution: what the far ground shows until a tile is touched. */
 	int32 WholeRes = 0;
+	TArray<uint8> WholeSoil;
 	TArray<float> WholeSurfaceCm;
 	TArray<float> WholeSolidCm;
 	TArray<float> WholeCompaction;

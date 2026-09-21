@@ -330,26 +330,63 @@ render as sprites with drag, never carry volume worth auditing, and fade.
 
 ---
 
-## 8. Three reference soils
+## 8. The soils (rewritten 2026-09-22)
 
-Parameters the simulator should expose as presets. `c` = fully packed values;
-loose values follow from the formulas in sections 2–4.
+A soil is a set of measured properties, and every cell of the box belongs to
+one: a static soil map built with the terrain (the testbed's pad is loam with a
+five-lane quilt across its north end; the track is loam with a sand section).
+The shaders read a table of five float4 rows per soil through the cell's id;
+the wheel reads the Bekker and Janosi numbers of the soil under it. **Wet and
+dry are not soils.** Mud is any of these at saturation; dust is any of these
+dry; a wet sand is sand with the moisture channel high. What differs between
+soils is what a moisture *does* to them: how fast water goes in and out, where
+the packing optimum sits, how much suction cohesion a damp state buys, how
+the friction angle collapses.
 
-| | sand track | loam (default) | hardpack clay |
-|---|---|---|---|
-| φ loose / dense | 30° / 38° | 32° / 42° | 26° / 34° |
-| c_suction peak | 2 kPa | 3 kPa | 4 kPa |
-| c_pack (full compaction) | 2 kPa | 8 kPa | 25 kPa |
-| k_sat (friction lost at S = 1) | 0.5 | 0.6 | 0.8 |
-| γ (kN/m³, moist, mid-pack) | 17 | 17.5 | 19 |
-| n loose / dense | 0.46 / 0.36 | 0.48 / 0.34 | 0.50 / 0.36 |
-| K_s (m/s) | 3·10⁻⁴ | 5·10⁻⁶ | 10⁻⁸ |
-| S_opt for packing | 0.7 | 0.8 | 0.85 |
-| Bekker n, k_c, k_φ | 1.1, 1, 1528 | 0.7, 5.3, 1515 | 0.5, 13, 692 |
-| Janosi K | 1.5 cm | 3 cm | 4 cm |
-| roost | spray, grains | 1–5 cm clods | lumps, or dust when dry |
+| | sand | loam (default) | pnw | granite | clay |
+|---|---|---|---|---|---|
+| what it is | rounded quartz, beach and pit sand | classic track dirt, sandy loam | Pacific Northwest: dark silty loam, organic | American Southwest: decomposed granite, angular grit | hardpack clay / caliche, the SW base and any blue-groove line |
+| porosity loose / dense | 0.44 / 0.36 | 0.48 / 0.34 | 0.52 / 0.36 | 0.42 / 0.33 | 0.45 / 0.30 |
+| friction loose / dense, deg | 31 / 38 | 32 / 42 | 28 / 38 | 36 / 44 | 24 / 34 |
+| suction cohesion peak, kPa | 2 | 3 | 6 | 1.5 | 8 |
+| packed cohesion, kPa | 0.5 | 8 | 12 | 3 | 25 |
+| unit weight, kN/m³ | 16.5 | 17 | 16 | 17.5 | 18 |
+| friction lost saturated | 0.50 | 0.60 | 0.65 | 0.45 | 0.75 |
+| K_s loose, cm/s (game-paced) | 1.2 | 0.5 | 0.15 | 1.0 | 0.02 |
+| field capacity | 0.10 | 0.30 | 0.45 | 0.12 | 0.40 |
+| Proctor optimum moisture | 0.70 | 0.55 | 0.60 | 0.45 | 0.50 |
+| drying rate × | 1.5 | 1.0 | 0.6 | 1.6 | 0.8 |
+| dust × | 0.6 | 1.0 | 0.3 | 1.6 | 0.8 |
+| Bekker n loose / dense | 1.1 / 0.9 | 0.9 / 0.5 | 0.7 / 0.5 | 1.0 / 0.6 | 0.5 / 0.4 |
+| Bekker k_c loose / dense | 0.99 / 3 | 1 / 15 | 5.27 / 13 | 2 / 10 | 13.2 / 40 |
+| Bekker k_φ loose / dense | 1528 / 4000 | 400 / 5000 | 1515 / 5000 | 1200 / 6000 | 692 / 8000 |
+| Janosi K loose / dense, m | 0.015 / 0.025 | 0.02 / 0.045 | 0.03 / 0.05 | 0.015 / 0.03 | 0.04 / 0.06 |
+| stiffness lost saturated | 0.5 | 0.8 | 0.85 | 0.55 | 0.9 |
 
----
+Where the numbers come from: friction angles from the standard geotechnical
+ranges (rounded sand 30–34°, angular sand and gravel 35–45°, silt 26–32°,
+clay 20–28°; dense a few degrees more); porosities from typical void ratios
+(sand 0.6–0.8, silt loam 1.0–1.2, clay 0.6–1.0); conductivities and field
+capacities from USDA texture classes (sand drains in minutes at field capacity
+~0.1, silt loam holds ~0.45, clay under 1 cm/h), scaled to the same game pace as
+loam's 0.5; Proctor optima from the standard compaction curves (sands pack best
+near saturation, clays at 15–20 % gravimetric); Bekker and Janosi loose values
+from Wong's table in section 6 (dry sand 1.1 / 0.99 / 1528, sandy loam
+0.70 / 5.27 / 1515, clayey soil 0.50 / 13.2 / 692), dense values from the same
+soils compacted. Dustiness is the one number chosen by observation: a decomposed
+granite track in August is a dust storm, a PNW loam is not. Every entry is in
+`FDirtSoil::Presets` (DirtSoils.cpp) with the same names.
+
+**Regional presets** are the last two columns. "pnw" is Washougal / Woodland
+dirt: dark, organic, holds water for days, tacky when damp, packs into a
+blue-groove line. "granite" is Glen Helen / Fox Raceway: decomposed granite
+that dries in an hour, never really packs, roosts hard and dusts the whole
+valley; "clay" is the caliche base under it and any watered, rolled hardpack.
+
+**Tools.** `DaDirt.Soil` lists the soils; `DaDirt.Soil <name>` paints the whole
+window (and survives Reset until `DaDirt.Soil built`); `DaDirt.Soil <name> x y r`
+paints a disc; `DaDirt.Repose` edits the default soil, or the soil named as its
+fifth argument. `DaDirt.Probe` names the soil at the point.
 
 ## 9. What this predicts that the old model could not
 
@@ -370,7 +407,7 @@ loose values follow from the formulas in sections 2–4.
 
 ---
 
-## 9b. Phase A measured (Tools/DirtboxSoil.txt, 2026-09-21)
+## 9b. Phase A measured (Tools/DirtboxSoil.txt, 2026-09-21; re-run 2026-09-22 after the soil table: 140.6 → 80.5, damp wall stands, soaked block runs out)
 
 The testbed's 100 m³ block (1 m tall, vertical walls, compaction 0.1, moisture
 0.05) in three states, probing across its east wall after 5 s:
@@ -687,6 +724,33 @@ Pond and pore water are audited throughout (2.48 m³ ponded at the start,
 the pad dries at the set rate); dirt drift under 0.5 cm³. Not yet: the water
 the tyre throws (a spray pool like dust), and puddles in the far mesh.
 
+## 9l. The soils measured (2026-09-22)
+
+`Tools/DirtboxSoils.txt` paints each soil over the pad and asks the same
+questions. The cone is the testbed's loose cone at (3, −45), 3 m tall on a 2 m
+radius, read as a profile 6 s after the reset (whole box, 12.5 cm cells); the
+tyre is the 100 kg test wheel at rest and rolling at ~6 m/s; the puddle is
+600 L on a 1.5 m disc after 6 s; the dust is what a 2 s burnout leaves in the
+air.
+
+| | sand | granite | loam | pnw | clay |
+|---|---|---|---|---|---|
+| cone face, deg (setting) | 32 (31) | 37 (36) | 33 (32) | 29 (28) | 25 (24) |
+| sinkage at rest, cm | 2.4 | 1.9 | 3.0 | 0.6 | 0.4 |
+| grip at rest / rolling | 0.66 / 0.68 | 0.79 / 0.83 | 0.75 / 0.79 | 0.70 / 0.77 | 0.70 / 0.81 |
+| rut after one pass, cm (compaction) | 1.5 (0.32) | 1.8 (0.62) | 1.9 (0.50) | 1.2 (0.45) | 1.2 (0.47) |
+| puddle left after 6 s, cm (moisture under it) | 13.8 (0.39) | 14.2 (0.36) | 15.1 (0.25) | 15.8 (0.17) | 16.0 (0.15) |
+| dust after a 2 s burnout, motes | 178 | 489 | 302 | 81 | 252 |
+
+Every cone lands one degree over its friction angle, the same discretisation
+bias the loam cone has always had (9b). Drift after every section: under
+0.02 cm³. The quilt drive (one pass across all five lanes at Y = 25) reads the
+same sinkages lane by lane, with the loam lane the pad's own numbers, which is
+the point of putting loam in the middle. Not yet: the roost volume and the
+lug failure depth do not depend on the soil (they should: sand roosts more,
+clay less), and a parcel keeps the soil it lands on rather than the one it came
+from.
+
 ## 10. Implementation plan
 
 - **Phase A — strength (done 2026-09-21):** Mohr–Coulomb φ_eff and c_eff per cell
@@ -725,6 +789,6 @@ the tyre throws (a spray pool like dust), and puddles in the far mesh.
   repose), rest detection, and an atomic fixed-point deposit that the next step
   folds into the layer. The audit counts ground + air. A quarter-million pool,
   drawn as tetrahedra only up to the highest live slot. Section 9f.
-- **Phase F — soil presets:** sand / loam / hardpack as one switch, testbed
-  sections built from each, and the FIM track assigned a soil per section (sand
-  section, hardpack start straight).
+- **Phase F — soil presets (done 2026-09-22):** five soils as a table of
+  measured properties on a static per-cell soil map; the testbed's quilt and
+  the track's sand section built from them. Section 8, 9l.

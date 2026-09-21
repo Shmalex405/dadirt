@@ -37,7 +37,7 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	S.r = max(S.r, 0.0f);
 	S.g = saturate(S.g);
 	S.b = saturate(S.b);
-	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g);      // derive the surface rather than trusting the upload
+	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));      // derive the surface rather than trusting the upload
 
 	DirtStateOut[P] = S;
 	DirtPondOut[P] = 0.0f;
@@ -86,7 +86,7 @@ void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		S = DirtPatchState.Load(int3(P, 0));
 		Pond = DirtPatchPond.Load(int3(P, 0)).x;
 	}
-	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g);
+	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
 
 	DirtStateOut[P] = S;
 	DirtPondOut[P] = Pond;
@@ -138,7 +138,7 @@ void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		S.b = saturate(lerp(S.b, Moisture, W));
 		S.g = saturate(lerp(S.g, DirtDepositCompaction, W));
 		S.r += AddCm;
-		S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g);
+		S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
 
 		DirtDepositVol[P] = 0u;
 		DirtDepositMoist[P] = 0u;
@@ -251,7 +251,7 @@ void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
 	}
 	else if (Mode == 4)    // PACK
 	{
-		const float Efficiency = bProctor ? DirtPackingEfficiency(S.b) : 1.0f;
+		const float Efficiency = bProctor ? DirtPackingEfficiency(S.b, DirtSoilAt(P)) : 1.0f;
 		S.g = saturate(S.g + Amount * Efficiency * Mask);
 	}
 	else if (Mode == 5)    // LOOSEN
@@ -315,7 +315,7 @@ void ApplyBrush(int2 P)
 		}
 	}
 	S.r = max(S.r, 0.0f);
-	S.a = Bed + DirtBulkCm(S.r, S.g);
+	S.a = Bed + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
 
 	DirtStateOut[P] = S;
 }
@@ -357,12 +357,6 @@ void MainBrushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 #if DIRT_SLUMP_PASS
 
 float DirtTexelSizeCm;
-float DirtLooseReposeDeg;
-float DirtPackedReposeDeg;
-float DirtSuctionCohesionKPa;
-float DirtPackedCohesionKPa;
-float DirtUnitWeightKNm3;
-float DirtSaturationFrictionLoss;
 float DirtMaxCohesiveHeightCm;
 float DirtSlumpRate;
 float DirtLooseningRate;
@@ -404,7 +398,7 @@ float4 TileAt(int2 T)
 // plus the factor needed to keep it from moving more dirt than the cell has.
 // A cell outside the box is stored with a negative layer; it neither gives nor
 // takes: the walls of the box are sealed.
-void ComputeOutflowTile(int2 T, out float Out[8], out float Scale)
+void ComputeOutflowTile(int2 T, int2 Cell, out float Out[8], out float Scale)
 {
 	const float4 S = TileAt(T);
 	if (S.r < 0.0f)
@@ -419,11 +413,12 @@ void ComputeOutflowTile(int2 T, out float Out[8], out float Scale)
 	}
 
 	const float Surface = S.a;              // bedrock + bulk layer, maintained by every pass
-	const float Solid = DirtSolidFraction(S.g);
+	const uint Soil = DirtSoilAt(Cell);
+	const float Solid = DirtSolidFraction(S.g, Soil);
+	const float UnitWeight = DirtSoilUnitWeight(Soil);
 
 	float TanPhi, CohesionKPa;
-	DirtSoilStrength(S, DirtLooseReposeDeg, DirtPackedReposeDeg, DirtSuctionCohesionKPa,
-					 DirtPackedCohesionKPa, DirtSaturationFrictionLoss, TanPhi, CohesionKPa);
+	DirtSoilStrength(S, Soil, TanPhi, CohesionKPa);
 
 	float Sum = 0.0f;
 
@@ -443,7 +438,7 @@ void ComputeOutflowTile(int2 T, out float Out[8], out float Scale)
 		const float Dist = DirtNeighbourDist[i];
 		const float Drop = Surface - SQ.a;
 		const float Excess = max(0.0f, Drop - DirtAllowedDrop(Drop, DirtTexelSizeCm * Dist, TanPhi, CohesionKPa,
-															 DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm));
+															 UnitWeight, DirtMaxCohesiveHeightCm));
 		Out[i] = Excess * Solid * DirtSlumpRate / Dist;
 
 		// Flows are moved in float: taken from this cell in one subtraction and
@@ -487,7 +482,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 		const int2 T = int2(Idx % SLUMP_OUT, Idx / SLUMP_OUT) + 1;    // tile coords: ring starts at 1
 		float Out[8];
 		float Scale;
-		ComputeOutflowTile(T, Out, Scale);
+		ComputeOutflowTile(T, TileOrigin + T, Out, Scale);
 		UNROLL
 		for (int i = 0; i < 8; ++i)
 		{
@@ -601,7 +596,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 					const float3 Vel = float3((Down + Side) * DirtShedSpeedCmS * (0.6f + 0.8f * DirtRand01(Seed, 3u)), DirtShedSpeedCmS * 0.3f);
 
 					const float2 XY = DirtRegionOriginCm + (float2(P) + float2(DirtRand01(Seed, 5u), DirtRand01(Seed, 6u))) * DirtTexelSizeCm;
-					const float Z = Bed + DirtBulkCm(NewLayer, S.g) + Diameter;
+					const float Z = Bed + DirtBulkCm(NewLayer, S.g, DirtSoilAt(P)) + Diameter;
 
 					const int2 PT = ParcelTexel(Slot);
 					DirtParcelPos[PT] = float4(XY, Z, VolumeCm3);
@@ -613,7 +608,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 	}
 
 	S.r = NewLayer;
-	S.a = Bed + DirtBulkCm(NewLayer, S.g);
+	S.a = Bed + DirtBulkCm(NewLayer, S.g, DirtSoilAt(P));
 
 	DirtStateOut[P] = S;
 }
@@ -637,10 +632,8 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 float DirtDt;
 float DirtRunoffRate;
 float DirtRainCmPerSec;
-float DirtInfiltrationCmPerSec;   // K_s of loose dirt, game-paced
 float DirtDrainPerSec;            // of the water above field capacity, loose dirt
 float DirtEvapPerSec;
-float DirtFieldCapacity;
 float DirtWetDepthCm;
 float DirtAmbientMoisture;        // air-dry dirt keeps this much (hygroscopic water)
 
@@ -725,8 +718,11 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// 3. infiltration. Compaction lowers conductivity by ~two orders of magnitude.
 	const float C = saturate(S.g);
-	const float PoreCm = max(lerp(DirtLoosePorosity, DirtDensePorosity, C) * min(S.a - DirtBedrock(P), DirtWetDepthCm), 0.05f);
-	const float K = DirtInfiltrationCmPerSec * exp(-4.6f * C);
+	const uint Soil = DirtSoilAt(P);
+	const float4 SoilR0 = DirtSoilRow(Soil, 0);
+	const float4 SoilR2 = DirtSoilRow(Soil, 2);
+	const float PoreCm = max(lerp(SoilR0.x, SoilR0.y, C) * min(S.a - DirtBedrock(P), DirtWetDepthCm), 0.05f);
+	const float K = SoilR2.x * exp(-4.6f * C);
 	const float Room = max(0.0f, 1.0f - S.b) * PoreCm;
 	const float Infil = min(Pond, min(K * DirtDt, Room));
 	S.b += Infil / PoreCm;
@@ -741,10 +737,10 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	// 5. drainage down through the layer
 	const float Drain = DirtDrainPerSec * exp(-3.45f * C);
-	S.b -= Drain * max(0.0f, S.b - DirtFieldCapacity) * DirtDt;
+	S.b -= Drain * max(0.0f, S.b - SoilR2.y) * DirtDt;
 
 	// 6. drying at the surface, down to what air-dry dirt holds on to
-	S.b -= DirtEvapPerSec * DirtDt * saturate((S.b - DirtAmbientMoisture) / 0.05f);
+	S.b -= DirtEvapPerSec * SoilR2.w * DirtDt * saturate((S.b - DirtAmbientMoisture) / 0.05f);
 	S.b = max(S.b, 0.0f);
 
 	DirtStateOut[P] = S;
@@ -760,12 +756,6 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 #if DIRT_RESOLVE_PASS
 
 float DirtTexelSizeCm;
-float DirtLooseReposeDeg;
-float DirtPackedReposeDeg;
-float DirtSuctionCohesionKPa;
-float DirtPackedCohesionKPa;
-float DirtUnitWeightKNm3;
-float DirtSaturationFrictionLoss;
 float DirtMaxCohesiveHeightCm;
 int DirtDebugMode;
 float DirtDebugLayerRangeCm;
@@ -837,7 +827,7 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	if (DirtDebugMode == 1)              // dirt layer thickness (bulk, what you would measure with a ruler)
 	{
-		C = DirtHeatRamp(DirtBulkCm(S.r, S.g) / max(DirtDebugLayerRangeCm, 1e-3f));
+		C = DirtHeatRamp(DirtBulkCm(S.r, S.g, DirtSoilAt(P)) / max(DirtDebugLayerRangeCm, 1e-3f));
 	}
 	else if (DirtDebugMode == 2)         // compaction
 	{
@@ -853,9 +843,9 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		// Same eight directions, distances and strength rule the slump pass uses,
 		// so this view shows exactly what the sim considers unstable. A face held
 		// only by cohesion reads exactly 1.0: yellow, "standing on cohesion".
+		const uint Soil = DirtSoilAt(P);
 		float TanPhi, CohesionKPa;
-		DirtSoilStrength(S, DirtLooseReposeDeg, DirtPackedReposeDeg, DirtSuctionCohesionKPa,
-						 DirtPackedCohesionKPa, DirtSaturationFrictionLoss, TanPhi, CohesionKPa);
+		DirtSoilStrength(S, Soil, TanPhi, CohesionKPa);
 		float Ratio = 0.0f;
 		UNROLL
 		for (int i = 0; i < 8; ++i)
@@ -863,7 +853,7 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const int2 Q = clamp(P + DirtOffsets8[i], int2(0, 0), DirtResolution - 1);
 			const float Drop = S.a - DirtStateIn.Load(int3(Q, 0)).a;
 			const float Allowed = DirtAllowedDrop(Drop, DirtTexelSizeCm * DirtNeighbourDist[i], TanPhi, CohesionKPa,
-												  DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm);
+												  DirtSoilUnitWeight(Soil), DirtMaxCohesiveHeightCm);
 			Ratio = max(Ratio, Drop / max(Allowed, 1e-4f));
 		}
 		C = (Ratio <= 1.0f)
@@ -883,7 +873,9 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	{
 		// Real soil albedo is 0.15-0.35; the earlier 0.72 sand read as near-white
 		// under a full sun with auto exposure and hid every shape.
-		C = lerp(float3(0.40f, 0.29f, 0.19f), float3(0.24f, 0.16f, 0.10f), saturate(S.g));
+		// Each soil has its own dry and packed colours (the table, rows 3 and 4).
+		const uint TintSoil = DirtSoilAt(P);
+		C = lerp(DirtSoilRow(TintSoil, 3).rgb, DirtSoilRow(TintSoil, 4).rgb, saturate(S.g));
 		C = lerp(C, C * 0.40f, saturate(S.b));
 		// where the dirt has been scraped away, cold grey bedrock shows through
 		C = lerp(float3(0.35f, 0.33f, 0.31f), C, saturate(S.r / 3.0f));

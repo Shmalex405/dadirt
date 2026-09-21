@@ -1,0 +1,230 @@
+# The soils. Each reference soil in turn is painted over the pad and asked the
+# same four questions: how steep does a loose cone stand, how far does the tyre
+# sink and how well does it grip, how fast does a puddle soak in, how much dust
+# does a burnout make. Then the quilt: one drive across all five lanes.
+# The pad runs Y = -30..30 at X = 3; the quilt is Y = 20..30, lanes across X.
+# The repose cone is measured in the whole box (12.5 cm cells): at 3.9 cm cells a
+# cone takes far longer to settle than the 3 s the test waits. The cone is read as a
+# profile along +Y from its centre; the max-slope statistic is the block's cohesive
+# step, not the cone.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -5 40
+wait 1
+DaDirt.Soil
+
+# ---- one block per soil ---------------------------------------------------------
+DaDirt.Focus off
+DaDirt.Soil sand
+DaDirt.Test repose
+wait 6 sand_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 3 -44.5
+DaDirt.Probe 3 -44
+DaDirt.Probe 3 -43.5
+DaDirt.Probe 3 -43
+DaDirt.Probe 3 -42.5
+DaDirt.Probe 3 -42
+DaDirt.Probe 3 -41.5
+DaDirt.Focus 3 -5 40
+wait 0.5
+camera 3 -22 2.5 -25 90
+wait 0.4
+screenshot soils_sand
+DaDirt.Audit
+DaDirt.Wheel 3 -8 90
+wait 1.5 sand_rest
+DaDirt.Drive 0.6 0 0
+wait 3 sand_drive
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -4
+DaDirt.Water 8 -20 600 150
+wait 6 sand_soak
+DaDirt.Probe 8 -20
+DaDirt.Wheel 8 8 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 sand_burnout
+DaDirt.Drive 0 0 1
+DaDirt.Info
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus off
+DaDirt.Soil granite
+DaDirt.Test repose
+wait 6 granite_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 3 -44.5
+DaDirt.Probe 3 -44
+DaDirt.Probe 3 -43.5
+DaDirt.Probe 3 -43
+DaDirt.Probe 3 -42.5
+DaDirt.Probe 3 -42
+DaDirt.Probe 3 -41.5
+DaDirt.Focus 3 -5 40
+wait 0.5
+camera 3 -22 2.5 -25 90
+wait 0.4
+screenshot soils_granite
+DaDirt.Audit
+DaDirt.Wheel 3 -8 90
+wait 1.5 granite_rest
+DaDirt.Drive 0.6 0 0
+wait 3 granite_drive
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -4
+DaDirt.Water 8 -20 600 150
+wait 6 granite_soak
+DaDirt.Probe 8 -20
+DaDirt.Wheel 8 8 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 granite_burnout
+DaDirt.Drive 0 0 1
+DaDirt.Info
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus off
+DaDirt.Soil loam
+DaDirt.Test repose
+wait 6 loam_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 3 -44.5
+DaDirt.Probe 3 -44
+DaDirt.Probe 3 -43.5
+DaDirt.Probe 3 -43
+DaDirt.Probe 3 -42.5
+DaDirt.Probe 3 -42
+DaDirt.Probe 3 -41.5
+DaDirt.Focus 3 -5 40
+wait 0.5
+camera 3 -22 2.5 -25 90
+wait 0.4
+screenshot soils_loam
+DaDirt.Audit
+DaDirt.Wheel 3 -8 90
+wait 1.5 loam_rest
+DaDirt.Drive 0.6 0 0
+wait 3 loam_drive
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -4
+DaDirt.Water 8 -20 600 150
+wait 6 loam_soak
+DaDirt.Probe 8 -20
+DaDirt.Wheel 8 8 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 loam_burnout
+DaDirt.Drive 0 0 1
+DaDirt.Info
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus off
+DaDirt.Soil pnw
+DaDirt.Test repose
+wait 6 pnw_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 3 -44.5
+DaDirt.Probe 3 -44
+DaDirt.Probe 3 -43.5
+DaDirt.Probe 3 -43
+DaDirt.Probe 3 -42.5
+DaDirt.Probe 3 -42
+DaDirt.Probe 3 -41.5
+DaDirt.Focus 3 -5 40
+wait 0.5
+camera 3 -22 2.5 -25 90
+wait 0.4
+screenshot soils_pnw
+DaDirt.Audit
+DaDirt.Wheel 3 -8 90
+wait 1.5 pnw_rest
+DaDirt.Drive 0.6 0 0
+wait 3 pnw_drive
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -4
+DaDirt.Water 8 -20 600 150
+wait 6 pnw_soak
+DaDirt.Probe 8 -20
+DaDirt.Wheel 8 8 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 pnw_burnout
+DaDirt.Drive 0 0 1
+DaDirt.Info
+DaDirt.Audit
+
+DaDirt.Reset
+wait 1
+DaDirt.Focus off
+DaDirt.Soil clay
+DaDirt.Test repose
+wait 6 clay_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 3 -44.5
+DaDirt.Probe 3 -44
+DaDirt.Probe 3 -43.5
+DaDirt.Probe 3 -43
+DaDirt.Probe 3 -42.5
+DaDirt.Probe 3 -42
+DaDirt.Probe 3 -41.5
+DaDirt.Focus 3 -5 40
+wait 0.5
+camera 3 -22 2.5 -25 90
+wait 0.4
+screenshot soils_clay
+DaDirt.Audit
+DaDirt.Wheel 3 -8 90
+wait 1.5 clay_rest
+DaDirt.Drive 0.6 0 0
+wait 3 clay_drive
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -4
+DaDirt.Water 8 -20 600 150
+wait 6 clay_soak
+DaDirt.Probe 8 -20
+DaDirt.Wheel 8 8 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 clay_burnout
+DaDirt.Drive 0 0 1
+DaDirt.Info
+DaDirt.Audit
+
+# ---- the quilt: across five soils in one drive ------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 15 40
+wait 1
+DaDirt.Probe -4.2 25
+DaDirt.Probe -0.6 25
+DaDirt.Probe 3 25
+DaDirt.Probe 6.6 25
+DaDirt.Probe 10.2 25
+DaDirt.Wheel -11 25 0
+DaDirt.Follow 1
+DaDirt.Drive 0.5 0 0
+wait 7 quilt
+screenshot soils_00_quilt
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Follow 0
+camera 3 12 3 -30 90
+wait 0.4
+screenshot soils_01_quilt_above
+DaDirt.Audit
+DaDirt.Soil built
+quit

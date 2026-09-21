@@ -34,12 +34,36 @@ int2 DirtResolution;
 Texture2D<float> DirtBaseHeight;      // static bedrock, cm
 Texture2D<float4> DirtStateIn;        // dirt state being read this pass
 
-// Porosity (void fraction) of loose and dense dirt, and how deep a tool's
-// packing reaches. docs/SoilPhysics.md sections 1 and 4.
-float DirtLoosePorosity;
-float DirtDensePorosity;
+// How deep a tool's packing reaches, and the natural ground's packing below
+// that. docs/SoilPhysics.md sections 1 and 4.
 float DirtCompactionDepthCm;
 float DirtDeepCompaction;
+
+// --- soils -----------------------------------------------------------------
+// Every cell belongs to a soil, a set of measured properties. The id is a
+// static map of the site (a uint texture the CPU builds with the terrain);
+// the table is what the numbers are. Five float4 rows per soil, MIRRORED in
+// C++ by FDirtSoil::ToRows (DirtSimTypes.h): keep the layout identical.
+//   row 0: loose porosity, dense porosity, loose friction deg, packed friction deg
+//   row 1: suction cohesion kPa (peak), packed cohesion kPa, unit weight kN/m3, saturation friction loss
+//   row 2: infiltration cm/s (loose), field capacity, Proctor optimum moisture, drying multiplier
+//   row 3: dry colour rgb, dust motes per litre
+//   row 4: packed colour rgb, (unused)
+#define DIRT_MAX_SOILS 8
+#define DIRT_SOIL_ROWS 5
+Texture2D<uint> DirtSoilIn;
+float4 DirtSoilTable[DIRT_MAX_SOILS * DIRT_SOIL_ROWS];
+
+uint DirtSoilAt(int2 C)
+{
+	C = clamp(C, int2(0, 0), DirtResolution - 1);
+	return min(DirtSoilIn.Load(int3(C, 0)).x, (uint)(DIRT_MAX_SOILS - 1));
+}
+
+float4 DirtSoilRow(uint Soil, uint Row)
+{
+	return DirtSoilTable[Soil * DIRT_SOIL_ROWS + Row];
+}
 
 #ifndef UNROLL
 	#define UNROLL [unroll]
@@ -92,16 +116,17 @@ float4 DirtState(int2 C)
 // reaches roughly CompactionDepthCm down. So a column is modelled as a skin at
 // the cell's compaction over a deep part at the natural-ground compaction.
 
-float DirtSolidFraction(float C)
+float DirtSolidFraction(float C, uint Soil)
 {
-	return 1.0f - lerp(DirtLoosePorosity, DirtDensePorosity, saturate(C));
+	const float4 R0 = DirtSoilRow(Soil, 0);
+	return 1.0f - lerp(R0.x, R0.y, saturate(C));
 }
 
 // Bulk (visible) thickness of a column holding SolidCm of grains, cm.
-float DirtBulkCm(float SolidCm, float C)
+float DirtBulkCm(float SolidCm, float C, uint Soil)
 {
-	const float SkinFrac = DirtSolidFraction(C);
-	const float DeepFrac = DirtSolidFraction(DirtDeepCompaction);
+	const float SkinFrac = DirtSolidFraction(C, Soil);
+	const float DeepFrac = DirtSolidFraction(DirtDeepCompaction, Soil);
 	const float SkinSolid = SkinFrac * DirtCompactionDepthCm;
 	return (SolidCm <= SkinSolid)
 		? SolidCm / SkinFrac
@@ -109,10 +134,10 @@ float DirtBulkCm(float SolidCm, float C)
 }
 
 // Inverse: the solids in a column BulkCm tall at compaction C.
-float DirtSolidCm(float BulkCm, float C)
+float DirtSolidCm(float BulkCm, float C, uint Soil)
 {
-	const float SkinFrac = DirtSolidFraction(C);
-	const float DeepFrac = DirtSolidFraction(DirtDeepCompaction);
+	const float SkinFrac = DirtSolidFraction(C, Soil);
+	const float DeepFrac = DirtSolidFraction(DirtDeepCompaction, Soil);
 	return (BulkCm <= DirtCompactionDepthCm)
 		? BulkCm * SkinFrac
 		: DirtCompactionDepthCm * SkinFrac + (BulkCm - DirtCompactionDepthCm) * DeepFrac;
@@ -122,7 +147,7 @@ float DirtSolidCm(float BulkCm, float C)
 float DirtSurface(int2 C)
 {
 	const float4 S = DirtStateIn.Load(int3(C, 0));
-	return DirtBedrock(C) + DirtBulkCm(S.r, S.g);
+	return DirtBedrock(C) + DirtBulkCm(S.r, S.g, DirtSoilAt(C));
 }
 
 // ---------------------------------------------------------------------------
@@ -136,17 +161,31 @@ float DirtSurface(int2 C)
 //             as the dirt saturates: pore water carries the load, not the grains
 //   cohesion  from moisture suction (a hump: none dry, none soaked, peak mid) plus
 //             interlock/cementation from packing, which saturation washes out
-void DirtSoilStrength(float4 S, float LooseDeg, float DenseDeg, float SuctionKPa, float PackedKPa,
-					  float FrictionLoss, out float TanPhi, out float CohesionKPa)
+void DirtSoilStrength(float4 S, uint Soil, out float TanPhi, out float CohesionKPa)
 {
+	const float4 R0 = DirtSoilRow(Soil, 0);
+	const float4 R1 = DirtSoilRow(Soil, 1);
 	const float C = saturate(S.g);
 	const float M = saturate(S.b);
 	const float Sat = smoothstep(0.55f, 1.0f, M);           // pore pressure takes over past half-wet
 
-	TanPhi = tan(radians(lerp(LooseDeg, DenseDeg, C))) * (1.0f - FrictionLoss * Sat);
+	TanPhi = tan(radians(lerp(R0.z, R0.w, C))) * (1.0f - R1.w * Sat);
 
 	const float Suction = 4.0f * M * (1.0f - M);
-	CohesionKPa = SuctionKPa * Suction + PackedKPa * C * (1.0f - Sat);
+	CohesionKPa = R1.x * Suction + R1.y * C * (1.0f - Sat);
+}
+
+// Friction alone (tan phi with the saturation loss): what a rolling grain feels.
+float DirtSoilFriction(float4 S, uint Soil)
+{
+	float TanPhi, CohesionKPa;
+	DirtSoilStrength(S, Soil, TanPhi, CohesionKPa);
+	return TanPhi;
+}
+
+float DirtSoilUnitWeight(uint Soil)
+{
+	return DirtSoilRow(Soil, 1).z;
 }
 
 // Largest drop (cm) a cell may stand above a neighbour RunCm away.
@@ -174,11 +213,14 @@ float DirtAllowedDrop(float DropCm, float RunCm, float TanPhi, float CohesionKPa
 // Proctor: how well dirt takes packing depends on its water. Bone dry it barely
 // packs (grains cannot rearrange), damp it packs fast, saturated it pumps and
 // will not pack at all. MIRRORED in C++ (DirtPackingEfficiency).
-float DirtPackingEfficiency(float Moisture)
+// The optimum moisture is the soil's (Proctor optimum): sand packs best wet,
+// clay well before saturation.
+float DirtPackingEfficiency(float Moisture, uint Soil)
 {
 	const float M = saturate(Moisture);
-	const float Hump = smoothstep(-0.2f, 0.7f, M);            // rises from ~0.3 dry to 1 at optimum
-	const float Mud = 1.0f - smoothstep(0.85f, 1.0f, M);      // past optimum it pumps
+	const float Opt = DirtSoilRow(Soil, 2).z;
+	const float Hump = smoothstep(Opt - 0.75f, Opt + 0.15f, M);       // rises from ~0.3 dry to 1 at optimum
+	const float Mud = 1.0f - smoothstep(Opt + 0.3f, 1.0f, M);         // past optimum it pumps
 	return (0.35f + 0.65f * Hump) * Mud;
 }
 

@@ -120,14 +120,14 @@ void ADirtWheel::Tick(float DeltaSeconds)
 	}
 }
 
-float ADirtWheel::ContactPatchLength(float Compaction, float Moisture, float LoadN) const
+float ADirtWheel::ContactPatchLength(const FDirtSoil& Soil, float Compaction, float Moisture, float LoadN) const
 {
 	float SinkageM, ContactLengthM, ResistanceN;
-	SoilResponse(Compaction, Moisture, LoadN, SinkageM, ContactLengthM, ResistanceN);
+	SoilResponse(Soil, Compaction, Moisture, LoadN, SinkageM, ContactLengthM, ResistanceN);
 	return ContactLengthM;
 }
 
-void ADirtWheel::SoilResponse(float Compaction, float Moisture, float LoadN,
+void ADirtWheel::SoilResponse(const FDirtSoil& Soil, float Compaction, float Moisture, float LoadN,
 							  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const
 {
 	// Bekker: p = (k_c / b + k_phi) z^n, with the rigid wheel's contact length
@@ -135,11 +135,11 @@ void ADirtWheel::SoilResponse(float Compaction, float Moisture, float LoadN,
 	// the sinkage has a closed form:  z = (N / (K b 2 sqrt(2 r)))^(1 / (n + 1/2)).
 	const float C = FMath::Clamp(Compaction, 0.0f, 1.0f);
 	const float Sat = FMath::SmoothStep(0.55f, 1.0f, FMath::Clamp(Moisture, 0.0f, 1.0f));
-	const float Weak = 1.0f - SaturationStiffnessLoss * Sat;
+	const float Weak = 1.0f - Soil.SaturationStiffnessLoss * Sat;
 
-	const float N = FMath::Lerp(BekkerNLoose, BekkerNDense, C);
-	const float Kc = FMath::Exp(FMath::Lerp(FMath::Loge(FMath::Max(BekkerKcLoose, 0.01f)), FMath::Loge(FMath::Max(BekkerKcDense, 0.01f)), C)) * Weak;
-	const float Kphi = FMath::Exp(FMath::Lerp(FMath::Loge(FMath::Max(BekkerKphiLoose, 1.0f)), FMath::Loge(FMath::Max(BekkerKphiDense, 1.0f)), C)) * Weak;
+	const float N = FMath::Lerp(Soil.BekkerNLoose, Soil.BekkerNDense, C);
+	const float Kc = FMath::Exp(FMath::Lerp(FMath::Loge(FMath::Max(Soil.BekkerKcLoose, 0.01f)), FMath::Loge(FMath::Max(Soil.BekkerKcDense, 0.01f)), C)) * Weak;
+	const float Kphi = FMath::Exp(FMath::Lerp(FMath::Loge(FMath::Max(Soil.BekkerKphiLoose, 1.0f)), FMath::Loge(FMath::Max(Soil.BekkerKphiDense, 1.0f)), C)) * Weak;
 	const float K = Kc / WidthM + Kphi;                                   // kN / m^(n+2)
 	const float LoadKN = FMath::Max(LoadN, 1.0f) * 0.001f;
 
@@ -184,6 +184,8 @@ void ADirtWheel::Step(float Dt)
 	float LateralSlope = 0.0f;
 	bool bHaveGround = B && B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM, GroundCm, Normal, &State, &PondCm);
 	LastPondCm = PondCm;
+	static const FDirtSoil NoSoil;
+	const FDirtSoil& Soil = B ? B->SoilAtWorld(FVector2D(PosM) * CmPerM) : NoSoil;
 	if (bHaveGround)
 	{
 		const FVector Right(-Forward.Y, Forward.X, 0.0f);
@@ -293,14 +295,14 @@ void ADirtWheel::Step(float Dt)
 		// it is pressed as part of the rut, not shoved. Only what stands above
 		// that is an obstacle.
 		float StaticSinkM = 0.0f, UnusedL = 0.0f, UnusedR = 0.0f;
-		SoilResponse(FMath::Clamp(State.G, 0.0f, 1.0f), FMath::Clamp(State.B, 0.0f, 1.0f), MassKg * Gravity, StaticSinkM, UnusedL, UnusedR);
+		SoilResponse(Soil, FMath::Clamp(State.G, 0.0f, 1.0f), FMath::Clamp(State.B, 0.0f, 1.0f), MassKg * Gravity, StaticSinkM, UnusedL, UnusedR);
 		if (bPartPlough && ObstacleM > StaticSinkM + 0.005f)
 		{
 			// Climb it or shove it, whichever is cheaper.
-			DirtSoilStrength(FMath::Clamp(State.G, 0.0f, 1.0f), FMath::Clamp(State.B, 0.0f, 1.0f), B->Settings, TanPhiHeap, CohesionHeapKPa);
+			DirtSoilStrength(FMath::Clamp(State.G, 0.0f, 1.0f), FMath::Clamp(State.B, 0.0f, 1.0f), Soil, TanPhiHeap, CohesionHeapKPa);
 			const float Phi = FMath::Atan(FMath::Max(TanPhiHeap, 0.05f));
 			const float Kp = FMath::Square(FMath::Tan(PI / 4.0f + Phi / 2.0f));
-			const float ShoveN = WidthM * (0.5f * B->Settings.UnitWeightKNm3 * 1000.0f * ObstacleM * ObstacleM * Kp
+			const float ShoveN = WidthM * (0.5f * Soil.UnitWeightKNm3 * 1000.0f * ObstacleM * ObstacleM * Kp
 										   + 2.0f * CohesionHeapKPa * 1000.0f * ObstacleM * FMath::Sqrt(Kp));
 			const float Theta = FMath::Acos(FMath::Clamp(1.0f - ObstacleM / RadiusM, 0.0f, 1.0f));
 			const float ClimbN = MassKg * Gravity * FMath::Tan(FMath::Min(Theta, 1.4f));
@@ -482,7 +484,7 @@ void ADirtWheel::Step(float Dt)
 					const FVector Dir = (Lateral * static_cast<float>(Side) * 0.85f + Normal * 0.5f).GetSafeNormal();
 					B->SpawnParcels(Launch, Dir * SplashSpeed + VelocityMps * CmPerM * 0.5f, 30.0f, VolumeCm3 * 0.5f, Moisture, Compaction, Link);
 					B->SpawnDust(Launch, Dir * SplashSpeed * 0.5f, 45.0f,
-								 FMath::RoundToInt(B->Settings.DustPerLitre * VolumeCm3 * 0.5f / 1000.0f * (1.0f - Moisture)), Moisture);
+								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 * 0.5f / 1000.0f * (1.0f - Moisture)), Moisture);
 				}
 				RoostLitresTotal += VolumeCm3 / 1000.0f;
 			}
@@ -490,13 +492,13 @@ void ADirtWheel::Step(float Dt)
 
 		// --- the soil's answer to this load ----------------------------------------------
 		float SinkageM, ContactLengthM, ResistanceN;
-		SoilResponse(Compaction, Moisture, Load, SinkageM, ContactLengthM, ResistanceN);
+		SoilResponse(Soil, Compaction, Moisture, Load, SinkageM, ContactLengthM, ResistanceN);
 
 		// Mohr-Coulomb ceiling on traction: cohesion over the whole contact patch
 		// plus friction under the load. Cohesion gives grip even under a light
 		// wheel; saturation takes both away.
 		float TanPhi = 0.6f, CohesionKPa = 0.0f;
-		DirtSoilStrength(Compaction, Moisture, B->Settings, TanPhi, CohesionKPa);
+		DirtSoilStrength(Compaction, Moisture, Soil, TanPhi, CohesionKPa);
 		const float PatchAreaM2 = WidthM * ContactLengthM;
 		// Cohesion needs the knobs in the soil; the floating share of the patch has none.
 		const float MaxTractionN = CohesionKPa * 1000.0f * PatchAreaM2 * (1.0f - Floating) + Load * TanPhi;
@@ -507,7 +509,7 @@ void ADirtWheel::Step(float Dt)
 		// the fraction of the ceiling the tyre actually gets at this slip.
 		SlipMps = WheelOmega * RadiusM - VForward;
 		SlipRatio = SlipMps / FMath::Max3(FMath::Abs(WheelOmega * RadiusM), FMath::Abs(VForward), 0.3f);
-		const float Kj = FMath::Lerp(ShearModulusLooseM, ShearModulusDenseM, Compaction);
+		const float Kj = FMath::Lerp(Soil.ShearModulusLooseM, Soil.ShearModulusDenseM, Compaction);
 		const float A = FMath::Abs(SlipRatio) * ContactLengthM / Kj;
 		const float Build = (A > 1e-4f) ? 1.0f - (1.0f - FMath::Exp(-A)) / A : 0.0f;
 		// Shear can only ever bring the tyre surface and the ground to the same
@@ -532,7 +534,7 @@ void ADirtWheel::Step(float Dt)
 			const float Phi = FMath::Atan(FMath::Max(TanPhiHeap, 0.05f));
 			const float Kp = FMath::Square(FMath::Tan(PI / 4.0f + Phi / 2.0f));
 			const float Z = FMath::Min(WedgeAheadM, RadiusM);
-			PloughN = WidthM * (0.5f * B->Settings.UnitWeightKNm3 * 1000.0f * Z * Z * Kp
+			PloughN = WidthM * (0.5f * Soil.UnitWeightKNm3 * 1000.0f * Z * Z * Kp
 								+ CohesionHeapKPa * 1000.0f * Z * 2.0f * FMath::Sqrt(Kp)) * (1.0f - Carried);
 		}
 		LastPloughN = PloughN;
@@ -621,7 +623,7 @@ void ADirtWheel::Step(float Dt)
 					// Taken from the wedge just ahead of the contact, put down a
 					// tyre radius further on: the blade of a bulldozer.
 					const float ScoopRadiusCm = HalfWidthCm * 1.2f;
-					const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
+					const float SolidFraction = DirtSolidFraction(Compaction, Soil);
 					const float WantedCm3 = WidthM * CmPerM * StrokePloughM2 * CmPerM * CmPerM * SolidFraction;
 					const FVector2D Fwd2 = FVector2D(FwdGround.X, FwdGround.Y) * FMath::Sign(VForward);
 					const FVector2D WedgeCm = ContactCm + Fwd2 * (RadiusM * PloughReach * 0.7f * CmPerM);
@@ -663,7 +665,7 @@ void ADirtWheel::Step(float Dt)
 				const float ScoopRadiusCm = HalfWidthCm * 1.1f;
 				const float AvailableCm3 = B->MaxScoopCm3(State.R, ScoopRadiusCm);
 				const float FailureDepthCm = LugFailureDepthCm * (1.0f - 0.6f * Compaction);
-				const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
+				const float SolidFraction = DirtSolidFraction(Compaction, Soil);
 				const float WantedCm3 = WidthM * CmPerM * FailureDepthCm * SolidFraction * StrokeSlipM * CmPerM * LoadFactor;
 				const float VolumeCm3 = FMath::Min(WantedCm3, AvailableCm3);
 
@@ -683,7 +685,7 @@ void ADirtWheel::Step(float Dt)
 					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM, RoostSpreadDeg, VolumeCm3, Moisture, Compaction, Link);
 					// Dry dirt roosts with a plume of dust; wet dirt does not.
 					B->SpawnDust(LaunchCm, Dir * EjectMps * CmPerM * 0.5f + VelocityMps * CmPerM, RoostSpreadDeg + 20.0f,
-								 FMath::RoundToInt(B->Settings.DustPerLitre * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
+								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
 					RoostLitresTotal += VolumeCm3 / 1000.0f;
 				}
 			}
@@ -695,8 +697,8 @@ void ADirtWheel::Step(float Dt)
 				const float ScoopRadiusCm = HalfWidthCm * 1.3f;
 				const float AvailableCm3 = B->MaxScoopCm3(State.R, ScoopRadiusCm);
 				const float FailureDepthCm = SprayFailureDepthCm * (1.0f - 0.6f * Compaction);
-				const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
-				const float WantedCm3 = ContactPatchLength(Compaction, Moisture, Load) * CmPerM * FailureDepthCm * SolidFraction * StrokeSideSlipM * CmPerM * LoadFactor;
+				const float SolidFraction = DirtSolidFraction(Compaction, Soil);
+				const float WantedCm3 = ContactPatchLength(Soil, Compaction, Moisture, Load) * CmPerM * FailureDepthCm * SolidFraction * StrokeSideSlipM * CmPerM * LoadFactor;
 				const float VolumeCm3 = FMath::Min(WantedCm3, AvailableCm3);
 				if (VolumeCm3 > 0.5f)
 				{
@@ -707,7 +709,7 @@ void ADirtWheel::Step(float Dt)
 					const int32 Link = B->ScoopDirt(ContactCm, ScoopRadiusCm, VolumeCm3, 0.1f);
 					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM * 0.7f, 18.0f, VolumeCm3, Moisture, Compaction, Link);
 					B->SpawnDust(LaunchCm, Dir * EjectMps * CmPerM * 0.5f + VelocityMps * CmPerM * 0.7f, 35.0f,
-								 FMath::RoundToInt(B->Settings.DustPerLitre * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
+								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
 					RoostLitresTotal += VolumeCm3 / 1000.0f;
 				}
 			}
