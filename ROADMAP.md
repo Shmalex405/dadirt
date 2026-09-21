@@ -229,6 +229,8 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] Focus the simulation on part of the box (`DaDirt.Focus`) for rut-scale work
 - [x] Ruts persist outside the window: tiled world, sliding window, cache,
       far ground, `DaDirt.Focus follow` (2026-09-21)
+- [x] Standing water and the tyre: saturated mud under a puddle, water drag,
+      hydroplaning past knob height (docs/SoilPhysics.md 5 and 9k, 2026-09-22)
 - [x] A pile is not a ramp: the tyre climbs or shoves what stands in front of
       it, whichever costs less (bulldozing, docs/SoilPhysics.md 6 and 9i)
 - [x] The tyre has its own contact patch (deflection), the rut is pressed at

@@ -44,10 +44,12 @@ struct FDirtWindowSlot
 	FIntPoint ReadyOrigin = FIntPoint::ZeroValue;
 	uint32 ReadyGeneration = 0;
 	TArray<FLinearColor> ReadyData;
+	TArray<float> ReadyPond;
 	bool bReady = false;
 
 	// Render thread only.
 	TUniquePtr<FRHIGPUTextureReadback> Readback[2];
+	TUniquePtr<FRHIGPUTextureReadback> PondReadback[2];
 	FIntPoint PendingOrigin[2];
 	uint32 PendingGeneration[2] = { 0, 0 };
 	bool bPending[2] = { false, false };
@@ -1435,7 +1437,7 @@ void ADirtBox::SetHeightWindowCentre(int32 Id, FVector2D WorldXYCm)
 }
 
 bool ADirtBox::SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
-								  FLinearColor* OutState) const
+								  FLinearColor* OutState, float* OutPondCm) const
 {
 	if (!Windows.IsValidIndex(Id) || !Windows[Id] || Windows[Id]->bReleased)
 	{
@@ -1468,10 +1470,23 @@ bool ADirtBox::SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeigh
 	const FLinearColor Top = FMath::Lerp(At(X0, Y0 + 1), At(X0 + 1, Y0 + 1), FX);
 	const FLinearColor S = FMath::Lerp(Bottom, Top, FY);
 
-	OutHeightCm = static_cast<float>(GetActorLocation().Z) + S.A;
+	// The display texture carries the water top; the dirt is that minus the pond.
+	float PondHere = 0.0f;
+	if (W.Pond.Num() >= N * N)
+	{
+		const auto PondAt = [&W, N](int32 X, int32 Y) { return W.Pond[Y * N + X]; };
+		PondHere = FMath::Lerp(FMath::Lerp(PondAt(X0, Y0), PondAt(X0 + 1, Y0), FX),
+							   FMath::Lerp(PondAt(X0, Y0 + 1), PondAt(X0 + 1, Y0 + 1), FX), FY);
+	}
+	OutHeightCm = static_cast<float>(GetActorLocation().Z) + S.A - PondHere;
 	if (OutState)
 	{
 		*OutState = S;
+		OutState->A = S.A - PondHere;
+	}
+	if (OutPondCm)
+	{
+		*OutPondCm = PondHere;
 	}
 
 	// Normal from central differences around the nearest texel.
@@ -1508,6 +1523,7 @@ void ADirtBox::UpdateHeightWindows()
 				Slot->Game.Origin = Slot->ReadyOrigin;
 				Slot->Game.Size = Slot->Size;
 				Swap(Slot->Game.Data, Slot->ReadyData);
+				Swap(Slot->Game.Pond, Slot->ReadyPond);
 				Slot->Game.bValid = true;
 			}
 			else
@@ -1520,7 +1536,8 @@ void ADirtBox::UpdateHeightWindows()
 
 	// 2. Harvest and re-arm on the render thread.
 	FTextureRenderTargetResource* Resource = DisplayRT->GameThread_GetRenderTargetResource();
-	if (!Resource)
+	FTextureRenderTargetResource* PondResource = PondA ? PondA->GameThread_GetRenderTargetResource() : nullptr;
+	if (!Resource || !PondResource)
 	{
 		return;
 	}
@@ -1528,10 +1545,11 @@ void ADirtBox::UpdateHeightWindows()
 	TArray<TSharedPtr<FDirtWindowSlot, ESPMode::ThreadSafe>> Slots = Windows;
 
 	ENQUEUE_RENDER_COMMAND(DirtHeightWindows)(
-		[Slots, Resource](FRHICommandListImmediate& RHICmdList)
+		[Slots, Resource, PondResource](FRHICommandListImmediate& RHICmdList)
 		{
 			FRHITexture* Texture = Resource->GetRenderTargetTexture();
-			if (!Texture)
+			FRHITexture* PondTexture = PondResource->GetRenderTargetTexture();
+			if (!Texture || !PondTexture)
 			{
 				return;
 			}
@@ -1547,7 +1565,7 @@ void ADirtBox::UpdateHeightWindows()
 				// Finished copies become ReadyData.
 				for (int32 i = 0; i < 2; ++i)
 				{
-					if (!Slot->bPending[i] || !Slot->Readback[i]->IsReady())
+					if (!Slot->bPending[i] || !Slot->Readback[i]->IsReady() || !Slot->PondReadback[i]->IsReady())
 					{
 						continue;
 					}
@@ -1564,8 +1582,23 @@ void ADirtBox::UpdateHeightWindows()
 						}
 						Slot->Readback[i]->Unlock();
 
+						// The pond rides along: the wheel needs to know it is in a puddle.
+						TArray<float> PondCopy;
+						PondCopy.SetNumZeroed(N * N);
+						int32 PondPitch = 0;
+						if (const void* PondSrc = Slot->PondReadback[i]->Lock(PondPitch))
+						{
+							const float* PondRows = static_cast<const float*>(PondSrc);
+							for (int32 Y = 0; Y < N; ++Y)
+							{
+								FMemory::Memcpy(PondCopy.GetData() + Y * N, PondRows + Y * PondPitch, N * sizeof(float));
+							}
+							Slot->PondReadback[i]->Unlock();
+						}
+
 						FScopeLock L(&Slot->Lock);
 						Slot->ReadyData = MoveTemp(Copy);
+						Slot->ReadyPond = MoveTemp(PondCopy);
 						Slot->ReadyOrigin = Slot->PendingOrigin[i];
 						Slot->ReadyGeneration = Slot->PendingGeneration[i];
 						Slot->bReady = true;
@@ -1583,6 +1616,7 @@ void ADirtBox::UpdateHeightWindows()
 					if (!Slot->Readback[i])
 					{
 						Slot->Readback[i] = MakeUnique<FRHIGPUTextureReadback>(TEXT("DirtHeightWindow"));
+						Slot->PondReadback[i] = MakeUnique<FRHIGPUTextureReadback>(TEXT("DirtHeightWindowPond"));
 					}
 
 					FIntPoint Origin;
@@ -1594,6 +1628,8 @@ void ADirtBox::UpdateHeightWindows()
 					}
 
 					Slot->Readback[i]->EnqueueCopy(RHICmdList, Texture,
+						FResolveRect(Origin.X, Origin.Y, Origin.X + N, Origin.Y + N));
+					Slot->PondReadback[i]->EnqueueCopy(RHICmdList, PondTexture,
 						FResolveRect(Origin.X, Origin.Y, Origin.X + N, Origin.Y + N));
 					Slot->PendingOrigin[i] = Origin;
 					Slot->PendingGeneration[i] = Generation;
@@ -2445,7 +2481,16 @@ float ADirtBox::GetSurfaceHeightAtWorld(FVector2D WorldXYCm) const
 	const float Bottom = FMath::Lerp(H00, H10, FX);
 	const float Top = FMath::Lerp(H01, H11, FX);
 
-	return GetActorLocation().Z + FMath::Lerp(Bottom, Top, FY);
+	// The display texture carries the water top; the dirt is that minus the pond.
+	float PondHere = 0.0f;
+	if (PondReadback.Num() >= Res * Res)
+	{
+		const float FX = T.X - FMath::FloorToInt(T.X);
+		const float FY = T.Y - FMath::FloorToInt(T.Y);
+		PondHere = FMath::Lerp(FMath::Lerp(PondReadback[Y0 * Res + X0], PondReadback[Y0 * Res + X1], FX),
+							   FMath::Lerp(PondReadback[Y1 * Res + X0], PondReadback[Y1 * Res + X1], FX), FY);
+	}
+	return (GetActorLocation().Z + FMath::Lerp(Bottom, Top, FY)) - PondHere;
 }
 
 // ---------------------------------------------------------------------------
@@ -2772,8 +2817,11 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 
 			Box->RefreshReadback();
 			const FLinearColor S = Box->GetStateAtWorld(World);
-			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm]"),
-				Xm, Ym, Box->GetSurfaceHeightAtWorld(World), DirtBulkCm(S.R, S.G, Box->Settings), S.R, S.G, S.B, Box->GetPondAtWorld(World));
+			const float PondHere = Box->GetPondAtWorld(World);
+			const float SurfaceZ = Box->GetSurfaceHeightAtWorld(World);
+			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm%s]"),
+				Xm, Ym, SurfaceZ, DirtBulkCm(S.R, S.G, Box->Settings), S.R, S.G, S.B, PondHere,
+				PondHere > 0.05f ? *FString::Printf(TEXT(", water top at Z = %.1f cm"), SurfaceZ + PondHere) : TEXT(""));
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtResetCmd(

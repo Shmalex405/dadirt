@@ -184,6 +184,28 @@ stays damp (a real MX phenomenon: dry dusty top over tacky base).
 
 ---
 
+**Standing water and the tyre (2026-09-22).** A puddle does three things to a
+tyre, none of them a grip slider:
+
+1. The soil under it is saturated whatever the moisture channel has had time
+   to say, so the strength and stiffness the tyre feels are the saturated ones
+   (φ × 0.4, cohesion gone, Bekker k × 0.2): mud.
+2. The submerged front of the tyre has to push the water aside:
+   R_w = ½ ρ_w C_d A v² with A = b × depth, C_d ≈ 1. Twenty centimetres of
+   water at 6 m/s is ~500 N on a 100 kg wheel, which is what slows a bike
+   through a puddle and throws the water.
+3. Deeper than the knobs, the water cannot escape between them fast enough and
+   the wedge of water under the patch carries part of the load: L = ½ ρ_w v² A_patch C_L.
+   NASA's hydroplaning speed v = 6.36 √p (mph, psi) puts a 12 psi tyre at
+   9.8 m/s, which on the tyre's own 25 cm patch is C_L = 0.68. The share of the
+   load on water has no cohesion and no friction: the knobs float. Below knob
+   height nothing floats; the water only wets the soil.
+
+The pond depth reaches the wheel through the height window (a second readback
+of the pond texture), the display height carries the water top so a puddle is
+a flat sheet over the rut rather than a groove in it, and every dirt-surface
+query takes the pond off again. Section 9k.
+
 ## 6. The tyre and the soil: terramechanics
 
 **Pressure–sinkage (Bekker).** A plate of width b pushed into soil to depth z
@@ -646,6 +668,24 @@ Y = +60 were out of reach and a wheel parked at the window edge lost 150 cm³
 to giving strokes clipped there; the window now reaches the edge and the audit
 is clean. The two heap misfires above (hillside, crest) were both found here
 and not on the pad.
+
+## 9k. Standing water and the tyre (2026-09-22)
+
+`Tools/DirtboxWaterGrip.txt`: a 3 m basin dug and packed on the pad, 2,500 L
+poured in, a puddle 30 cm deep at the centre (deeper than meant; the basin is
+a bowl). The status line prints pond / drag / lift.
+
+| run | in the puddle |
+|---|---|
+| through at 8 m/s | drag 480–490 N, lift 350–400 N, grip 0.33, the wheel spins to 16 m/s in the mud; out at 5.7–5.9 m/s, a third of the speed gone |
+| flat out, 10.4 m/s in | drag 1,120 N, lift 946 N of a 981 N load, traction 8 N: hydroplaning; out at 9.2 m/s |
+| locked-brake stop from 7.1 m/s, dry pad | 693 N of retardation, about 3.7 m to stop |
+| locked-brake stop from 7.5 m/s, into the puddle | 213–387 N in the water (grip 0.29–0.44), about 5.5 m to stop |
+
+Pond and pore water are audited throughout (2.48 m³ ponded at the start,
+2.07 m³ forty seconds later: the packed basin lets 0.008 cm/s through and
+the pad dries at the set rate); dirt drift under 0.5 cm³. Not yet: the water
+the tyre throws (a spray pool like dust), and puddles in the far mesh.
 
 ## 10. Implementation plan
 

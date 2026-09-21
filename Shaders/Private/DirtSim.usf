@@ -795,6 +795,12 @@ float DirtSurfaceClamped(int2 C)
 	return DirtStateIn.Load(int3(clamp(C, int2(0, 0), DirtResolution - 1), 0)).a;
 }
 
+float DirtWaterTopClamped(int2 Q)
+{
+	Q = clamp(Q, int2(0, 0), DirtResolution - 1);
+	return DirtState(Q).a + DirtPondIn.Load(int3(Q, 0)).x;
+}
+
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 {
@@ -807,13 +813,18 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	const float4 S = DirtState(P);
 	const float Pond = DirtPondIn.Load(int3(P, 0)).x;
 
-	DirtDisplayOut[P] = S;
+	// What is drawn is the top of the water where there is any: a puddle is a
+	// flat sheet over the rut, not a groove in it. The height window that the
+	// wheel reads takes the pond off again to get the dirt underneath.
+	float4 Shown = S;
+	Shown.a = S.a + Pond;
+	DirtDisplayOut[P] = Shown;
 
-	// --- world-space normal from central differences of the surface -----------
-	const float HL = DirtSurfaceClamped(P - int2(1, 0));
-	const float HR = DirtSurfaceClamped(P + int2(1, 0));
-	const float HD = DirtSurfaceClamped(P - int2(0, 1));
-	const float HU = DirtSurfaceClamped(P + int2(0, 1));
+	// --- world-space normal from central differences of the water top ---------
+	const float HL = DirtWaterTopClamped(P - int2(1, 0));
+	const float HR = DirtWaterTopClamped(P + int2(1, 0));
+	const float HD = DirtWaterTopClamped(P - int2(0, 1));
+	const float HU = DirtWaterTopClamped(P + int2(0, 1));
 
 	const float DHDX = (HR - HL) / (2.0f * DirtTexelSizeCm);
 	const float DHDY = (HU - HD) / (2.0f * DirtTexelSizeCm);

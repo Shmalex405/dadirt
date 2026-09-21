@@ -55,6 +55,8 @@ struct FDirtHeightWindow
 	int32 Size = 0;
 	/** Size x Size texels: R solid layer cm, G compaction, B moisture, A surface height cm. */
 	TArray<FLinearColor> Data;
+	/** Size x Size texels: ponded water on the surface, cm. */
+	TArray<float> Pond;
 	bool bValid = false;
 };
 
@@ -318,7 +320,7 @@ public:
 	 * outside it. OutState, if given, receives the bilinear dirt state there.
 	 */
 	bool SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
-							FLinearColor* OutState = nullptr) const;
+							FLinearColor* OutState = nullptr, float* OutPondCm = nullptr) const;
 
 	float GetTexelSizeCm() const { return Settings.TexelSizeCm(); }
 

@@ -109,10 +109,12 @@ void ADirtWheel::Tick(float DeltaSeconds)
 		UE_LOG(LogDirtWheel, Log,
 			TEXT("Wheel at (%.1f, %.1f) m hdg %.0f: %.1f m/s (%.0f km/h), wheel %.1f m/s, slip %+.1f m/s (i %+.2f), ")
 			TEXT("grip %.2f, traction %.0f N, sink %.1f cm, resist %.0f N, heap %.1f cm carried %.2f plough %.0f N, ")
+			TEXT("pond %.1f cm drag %.0f N lift %.0f N, ")
 			TEXT("compaction %.2f, moisture %.2f, %s (air %.2f s, max %.1f cm), odometer %.1f m, roost %.2f L, ploughed %.2f L, %d parcels live"),
 			P.X / CmPerM, P.Y / CmPerM, HeadingDeg, VelocityMps.Size(), VelocityMps.Size() * 3.6f,
 			WheelOmega * RadiusM, LastSlipMps, LastSlipRatio, LastFriction, LastTractionN, LastSinkageCm, LastResistanceN,
 			LastHeapCm, LastCarried, LastPloughN,
+			LastPondCm, LastWaterDragN, LastHydroLiftN,
 			LastCompaction, LastMoisture, bOnGround ? TEXT("on ground") : TEXT("airborne"), AirTimeS, MaxAirCm, OdometerM, RoostLitresTotal,
 			PloughLitresTotal, B ? B->GetLiveParcels() : 0);
 	}
@@ -178,8 +180,10 @@ void ADirtWheel::Step(float Dt)
 	float GroundCm = 0.0f;
 	FVector Normal = FVector::UpVector;
 	FLinearColor State(0, 0, 0, 0);
+	float PondCm = 0.0f;
 	float LateralSlope = 0.0f;
-	bool bHaveGround = B && B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM, GroundCm, Normal, &State);
+	bool bHaveGround = B && B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM, GroundCm, Normal, &State, &PondCm);
+	LastPondCm = PondCm;
 	if (bHaveGround)
 	{
 		const FVector Right(-Forward.Y, Forward.X, 0.0f);
@@ -360,8 +364,10 @@ void ADirtWheel::Step(float Dt)
 	bWasOnGround = bOnGround;
 
 	// --- what the dirt under the tyre is like --------------------------------------
+	// Under standing water the surface is saturated whatever the moisture
+	// channel has had time to say: the knobs are in soup.
 	const float Compaction = FMath::Clamp(State.G, 0.0f, 1.0f);
-	const float Moisture = FMath::Clamp(State.B, 0.0f, 1.0f);
+	const float Moisture = FMath::Max(FMath::Clamp(State.B, 0.0f, 1.0f), FMath::Clamp(PondCm / 1.0f, 0.0f, 1.0f));
 	LastCompaction = Compaction;
 	LastMoisture = Moisture;
 
@@ -420,9 +426,39 @@ void ADirtWheel::Step(float Dt)
 		const FVector FwdGround = (Forward - FVector::DotProduct(Forward, Normal) * Normal).GetSafeNormal();
 		const FVector Lateral = FVector::CrossProduct(Normal, FwdGround).GetSafeNormal();
 
-		const float Load = MassKg * Gravity * FMath::Max(Normal.Z, 0.3f);
 		const float VForward = FVector::DotProduct(VelocityMps, FwdGround);
 		const float VLateral = FVector::DotProduct(VelocityMps, Lateral);
+		const float GroundSpeed = FMath::Sqrt(VForward * VForward + VLateral * VLateral);
+
+		// --- standing water --------------------------------------------------------------
+		// Deeper than the knobs, the water under the patch carries part of the
+		// load and the knobs float off the soil; and the submerged front of the
+		// tyre has to push the water aside.
+		const float PondM = PondCm / CmPerM;
+		const float RhoWater = 1000.0f;
+		float HydroLiftN = 0.0f;
+		float WaterDragN = 0.0f;
+		if (PondM > 0.0f)
+		{
+			const float Flooded = FMath::Clamp((PondCm - KnobHeightCm) / FMath::Max(KnobHeightCm, 0.1f), 0.0f, 1.0f);
+			const float PatchM2 = WidthM * FMath::Max(2.0f * FMath::Sqrt(2.0f * RadiusM * TyreDeflectionM), 0.03f);
+			HydroLiftN = 0.5f * RhoWater * GroundSpeed * GroundSpeed * PatchM2 * HydroLiftCoeff * Flooded;
+			const float FrontalM2 = WidthM * FMath::Min(PondM, 2.0f * RadiusM);
+			WaterDragN = 0.5f * RhoWater * WaterDragCoeff * FrontalM2 * GroundSpeed * GroundSpeed;
+		}
+		const float FullLoad = MassKg * Gravity * FMath::Max(Normal.Z, 0.3f);
+		HydroLiftN = FMath::Min(HydroLiftN, FullLoad);
+		const float Load = FullLoad - HydroLiftN;
+		const float Floating = HydroLiftN / FullLoad;      // share of the tyre that is on water, not soil
+		LastHydroLiftN = HydroLiftN;
+		LastWaterDragN = WaterDragN;
+		if (WaterDragN > 0.0f && GroundSpeed > 1e-3f)
+		{
+			// Opposes the motion through the water; can stop the tyre, never reverse it.
+			const FVector DirGround = (FwdGround * VForward + Lateral * VLateral) / GroundSpeed;
+			const float DragImpulse = FMath::Min(WaterDragN * Dt, GroundSpeed * MassKg);
+			VelocityMps -= DirGround * (DragImpulse / MassKg);
+		}
 
 		// --- a landing: the tyre punches into the dirt and splashes it out sideways ---
 		if (bTouchdown && bDeformsDirt && bPartSplash && FallSpeedMps > SplashImpactMps)
@@ -462,7 +498,8 @@ void ADirtWheel::Step(float Dt)
 		float TanPhi = 0.6f, CohesionKPa = 0.0f;
 		DirtSoilStrength(Compaction, Moisture, B->Settings, TanPhi, CohesionKPa);
 		const float PatchAreaM2 = WidthM * ContactLengthM;
-		const float MaxTractionN = CohesionKPa * 1000.0f * PatchAreaM2 + Load * TanPhi;
+		// Cohesion needs the knobs in the soil; the floating share of the patch has none.
+		const float MaxTractionN = CohesionKPa * 1000.0f * PatchAreaM2 * (1.0f - Floating) + Load * TanPhi;
 		LastFriction = MaxTractionN / FMath::Max(Load, 1.0f);
 
 		// Janosi-Hanamoto: shear stress builds along the patch with the shear

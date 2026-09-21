@@ -167,6 +167,31 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
 	float PloughReach = 0.5f;
 
+	// --- standing water ----------------------------------------------------------------
+	//
+	// A puddle does three things to a tyre. The mud under it is saturated
+	// whatever the moisture channel has had time to say, so the soil strength
+	// and stiffness the tyre feels are the saturated ones. The tyre has to push
+	// the water out of its way: drag 1/2 rho C_d A v^2 on the submerged front,
+	// which is what slows a bike through a puddle and throws the water. And once
+	// the water is deeper than the knobs it cannot escape between them fast
+	// enough: the wedge of water under the patch carries part of the load
+	// (1/2 rho v^2 A C_L) and the knobs float off the soil. NASA's hydroplaning
+	// speed v = 6.36 sqrt(p [psi]) mph puts a 12 psi tyre at 9.8 m/s, which is
+	// C_L = 0.68 on the tyre's own patch.
+
+	/** Knob height, cm. Water shallower than this drains between the knobs and only wets the soil. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	float KnobHeightCm = 1.8f;
+
+	/** Drag coefficient of the submerged tyre front. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	float WaterDragCoeff = 1.0f;
+
+	/** Lift coefficient of the water wedge under the patch, full hydroplaning at 9.8 m/s for a 12 psi tyre. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	float HydroLiftCoeff = 0.68f;
+
 	// --- roost: excavation past the traction limit --------------------------------
 
 	/** Depth of soil the lugs shear off per pass of tyre surface, in bulk cm, on loose dirt. Packed dirt gives less. */
@@ -243,6 +268,9 @@ public:
 	float LastHeapCm = 0.0f;          // how far the ground under the tyre stands above the ground around it
 	float LastCarried = 1.0f;         // the share of the load that heap can carry (1 = rides over it)
 	float LastPloughN = 0.0f;         // bulldozing resistance from the wedge ahead
+	float LastPondCm = 0.0f;          // standing water under the tyre
+	float LastWaterDragN = 0.0f;
+	float LastHydroLiftN = 0.0f;      // load carried by water rather than soil
 	double PloughLitresTotal = 0.0;   // solid litres shoved ahead of the tyre
 	double AirTimeS = 0.0;            // seconds spent off the ground since placed
 	float MaxAirCm = 0.0f;            // highest the tyre has been above the ground since placed

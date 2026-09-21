@@ -165,7 +165,7 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
   (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist,
-  Plough, Hills). Anything that touches the wheel or soil strength runs
+  Plough, Hills, WaterGrip). Anything that touches the wheel or soil strength runs
   `DirtboxHills.txt` too: the pad only exercises ruts, and every contact bug so
   far showed up on the dome, the jump faces or the berm. `DaDirt.Wheel` makes a
   new wheel with every part on, so `DaDirt.WheelParts` must follow it. Run them with

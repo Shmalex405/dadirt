@@ -1,0 +1,70 @@
+# Standing water and the tyre. A packed basin on the pad is filled to a puddle
+# about 8 cm deep (deeper than the 1.8 cm knobs), then:
+#   1. through the puddle at ~7 m/s: drag, lift, grip, speed lost
+#   2. flat out (~11 m/s): the knobs float, hydroplaning
+#   3. a locked-brake stop from the same speed on the dry pad and in the puddle
+# Status lines print pond / drag / lift. The pad runs Y = -30..30 at X = 3.
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -5 40
+wait 1
+
+# --- the puddle ------------------------------------------------------------------
+DaDirt.Dig 3 0 300 12
+wait 3 basin_settled
+DaDirt.Pack 3 0 340 0.9
+wait 1
+DaDirt.Water 3 0 2500 280
+wait 2 filled
+DaDirt.Probe 3 0
+DaDirt.Probe 3 1.5
+DaDirt.Probe 3 2.5
+DaDirt.Audit
+camera 3 -9 1.6 -22 90
+wait 0.4
+screenshot water_00_puddle
+
+# --- 1. through at ~7 m/s ----------------------------------------------------------
+DaDirt.Wheel 3 -14 90
+DaDirt.Follow 1
+DaDirt.Drive 0.6 0 0
+wait 2.4 approach
+wait 1.2 in_the_puddle
+screenshot water_01_through
+wait 2 out
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Probe 3 0
+DaDirt.Audit
+
+# --- 2. flat out ---------------------------------------------------------------------
+DaDirt.Wheel 3 -18 90
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 2.6 approach_fast
+wait 0.9 hydroplane
+screenshot water_02_flat_out
+wait 2.5 out
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+
+# --- 3. braking: dry, then wet. Fresh lines either side of the earlier runs, so
+#        neither starts in a spin-up hole; the same speed at the brake point. --------
+DaDirt.Wheel 1 -21 90
+DaDirt.Drive 0.6 0 0
+wait 2.9 dry_run_up
+DaDirt.Drive 0 0 1
+wait 2.5 dry_stop
+DaDirt.Wheel 5 -14 90
+DaDirt.Drive 0.6 0 0
+wait 2.9 wet_run_up
+DaDirt.Drive 0 0 1
+wait 2.5 wet_stop
+DaDirt.Audit
+quit
