@@ -1,0 +1,129 @@
+# DaDirt sandcastle test: the same tower of dirt built four ways, side by side on
+# the calibration pad, watched from close up under a low sun.
+#
+#   x=3, y=-24   dry loose      (compaction 0, moisture 0)     -> should collapse to ~32 deg
+#   x=3, y=-8    damp           (moisture 0.5, "packable" sand) -> should hold ~44 deg
+#   x=3, y=8     packed         (compaction 1)                  -> should hold ~70 deg
+#   x=3, y=24    saturated mud  (moisture 1)                    -> should run out to ~15 deg
+#
+# Each tower: Raise radius 100 cm, height 150 cm. That kernel peaks at about 66 deg,
+# steeper than anything but hardpack can hold.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+wait 1
+
+# --- build all four while paused so they start identical ---------------------
+DaDirt.Pause 1
+DaDirt.Reset
+wait 0.5
+DaDirt.Loosen 3 -24 400 1
+DaDirt.Raise  3 -24 100 150
+DaDirt.Loosen 3 -24 400 1
+
+DaDirt.Wet    3 -8 400 0.5
+DaDirt.Raise  3 -8 100 150
+
+DaDirt.Raise  3 8 100 150
+DaDirt.Pack   3 8 400 1
+
+DaDirt.Wet    3 24 400 1
+DaDirt.Raise  3 24 100 150
+wait 0.5
+
+# apex heights at t = 0 (pad surface is 60 cm)
+DaDirt.Probe 3 -24
+DaDirt.Probe 3 -8
+DaDirt.Probe 3 8
+DaDirt.Probe 3 24
+
+camera -30 0 9 -12 0
+wait 0.5
+screenshot sc_00_before
+DaDirt.DebugView 4
+wait 0.5
+screenshot sc_01_before_stability
+DaDirt.DebugView 0
+
+# --- let gravity work ---------------------------------------------------------
+DaDirt.Pause 0
+wait 1
+screenshot sc_02_after_1s
+wait 4 settle_5s
+screenshot sc_03_after_5s
+DaDirt.Probe 3 -24
+DaDirt.Probe 3 -8
+DaDirt.Probe 3 8
+DaDirt.Probe 3 24
+# flank profiles: dry, damp, packed, mud
+DaDirt.Probe 3.5 -24
+DaDirt.Probe 4 -24
+DaDirt.Probe 4.5 -24
+DaDirt.Probe 3.5 -8
+DaDirt.Probe 4 -8
+DaDirt.Probe 4.5 -8
+DaDirt.Probe 3.5 8
+DaDirt.Probe 4 8
+DaDirt.Probe 4.5 8
+DaDirt.Probe 3.5 24
+DaDirt.Probe 4 24
+DaDirt.Probe 4.5 24
+DaDirt.Probe 5 24
+DaDirt.Probe 6 24
+DaDirt.Audit
+
+# close-ups of each tower
+camera -3 -24 2.6 -18 0
+wait 0.5
+screenshot sc_10_dry
+camera -3 -8 2.6 -18 0
+wait 0.5
+screenshot sc_11_damp
+camera -3 8 2.6 -18 0
+wait 0.5
+screenshot sc_12_packed
+camera -3 24 2.6 -18 0
+wait 0.5
+screenshot sc_13_mud
+camera -30 0 9 -12 0
+wait 0.5
+DaDirt.DebugView 4
+wait 0.5
+screenshot sc_14_after_stability
+DaDirt.DebugView 2
+wait 0.5
+screenshot sc_15_after_compaction
+DaDirt.DebugView 3
+wait 0.5
+screenshot sc_16_after_moisture
+DaDirt.DebugView 0
+
+# --- how the scene reads now: a dug hole and a trench, close up ---------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Dig 3 0 200 30
+DaDirt.Test trench
+wait 3
+camera -6 0 3 -22 0
+wait 0.5
+screenshot sc_20_trench_closeup
+camera 3 -30 4 -30 90
+wait 0.5
+screenshot sc_21_trench_along
+
+# --- does more slump work per step speed up settling, and what does it cost? --
+DaDirt.Slump 3
+DaDirt.Reset
+wait 5 slump3_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Slump 8
+DaDirt.Reset
+wait 5 slump8_cone
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Slump 3
+quit

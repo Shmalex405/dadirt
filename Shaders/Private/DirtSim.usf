@@ -147,9 +147,14 @@ void MainBrushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 // flows IN from each neighbour — recomputing the neighbour's outflow with the
 // identical function. Every centimetre that leaves one texel arrives at another.
 //
-// PERF NOTE: that costs ~25 texture loads per texel. If this shows up hot on the
-// Arc iGPU, the fix is a groupshared tile with a 2-texel halo, which cuts it to
-// roughly 2 loads per texel. Measure before optimising.
+// Eight neighbours, not four: see DirtOffsets8 in DirtCommon.ush for why. Flow
+// across a diagonal is divided by its sqrt(2) distance (flux follows gradient),
+// which also keeps the total a cell can shed per iteration under ~0.7 of its
+// excess, so the scheme cannot overshoot and oscillate.
+//
+// PERF NOTE: that costs ~81 texture loads per texel (9 cells x 9 loads). If this
+// shows up hot on the Arc iGPU, the fix is a groupshared tile with a 2-texel
+// halo, which cuts it to roughly 2 loads per texel. Measure before optimising.
 
 #if DIRT_SLUMP_PASS
 
@@ -164,9 +169,9 @@ float DirtLooseningScaleCm;
 
 RWTexture2D<float4> DirtStateOut;
 
-// Unscaled outflow from P toward each of its four neighbours, plus the factor
+// Unscaled outflow from P toward each of its eight neighbours, plus the factor
 // needed to keep it from moving more dirt than P actually has.
-void ComputeOutflow(int2 P, out float Out[4], out float Scale)
+void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 {
 	const float4 S = DirtState(P);
 	const float Surface = S.a;              // bedrock + layer, maintained by every pass
@@ -177,9 +182,9 @@ void ComputeOutflow(int2 P, out float Out[4], out float Scale)
 	float Sum = 0.0f;
 
 	UNROLL
-	for (int i = 0; i < 4; ++i)
+	for (int i = 0; i < 8; ++i)
 	{
-		const int2 Q = P + DirtOffsets4[i];
+		const int2 Q = P + DirtOffsets8[i];
 		if (!DirtInBounds(Q))
 		{
 			Out[i] = 0.0f;              // the walls of the box are sealed
@@ -187,8 +192,11 @@ void ComputeOutflow(int2 P, out float Out[4], out float Scale)
 		}
 
 		// Only the part of the drop that is steeper than this dirt can hold moves.
-		const float Excess = max(0.0f, (Surface - DirtState(Q).a) - StableStep);
-		Out[i] = Excess * DirtSlumpRate;
+		// A diagonal neighbour is further away, so it tolerates a bigger drop and
+		// receives proportionally less flow.
+		const float Dist = DirtNeighbourDist[i];
+		const float Excess = max(0.0f, (Surface - DirtState(Q).a) - StableStep * Dist);
+		Out[i] = Excess * DirtSlumpRate / Dist;
 		Sum += Out[i];
 	}
 
@@ -207,28 +215,28 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	float4 S = DirtState(P);
 	const float Bed = DirtBedrock(P);
 
-	float OutP[4];
+	float OutP[8];
 	float ScaleP;
 	ComputeOutflow(P, OutP, ScaleP);
 
 	float TotalOut = 0.0f;
 	UNROLL
-	for (int i = 0; i < 4; ++i)
+	for (int i = 0; i < 8; ++i)
 	{
 		TotalOut += OutP[i] * ScaleP;
 	}
 
 	float TotalIn = 0.0f;
 	UNROLL
-	for (int j = 0; j < 4; ++j)
+	for (int j = 0; j < 8; ++j)
 	{
-		const int2 Q = P + DirtOffsets4[j];
+		const int2 Q = P + DirtOffsets8[j];
 		if (!DirtInBounds(Q))
 		{
 			continue;
 		}
 
-		float OutQ[4];
+		float OutQ[8];
 		float ScaleQ;
 		ComputeOutflow(Q, OutQ, ScaleQ);
 
@@ -335,14 +343,16 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float StableStep = DirtStableStep(S, DirtLooseReposeDeg, DirtPackedReposeDeg,
 												DirtMoistureCohesionDeg, DirtSaturatedPenaltyDeg,
 												DirtTexelSizeCm);
-		float MaxDrop = 0.0f;
+		// Same eight directions and distances the slump pass uses, so this view
+		// shows exactly what the sim considers unstable.
+		float Ratio = 0.0f;
 		UNROLL
-		for (int i = 0; i < 4; ++i)
+		for (int i = 0; i < 8; ++i)
 		{
-			const int2 Q = clamp(P + DirtOffsets4[i], int2(0, 0), DirtResolution - 1);
-			MaxDrop = max(MaxDrop, S.a - DirtStateIn.Load(int3(Q, 0)).a);
+			const int2 Q = clamp(P + DirtOffsets8[i], int2(0, 0), DirtResolution - 1);
+			const float Drop = S.a - DirtStateIn.Load(int3(Q, 0)).a;
+			Ratio = max(Ratio, Drop / max(StableStep * DirtNeighbourDist[i], 1e-4f));
 		}
-		const float Ratio = MaxDrop / max(StableStep, 1e-4f);
 		C = (Ratio <= 1.0f)
 			? lerp(float3(0.1f, 0.6f, 0.15f), float3(0.95f, 0.9f, 0.1f), Ratio)
 			: lerp(float3(0.95f, 0.9f, 0.1f), float3(0.95f, 0.05f, 0.05f), saturate(Ratio - 1.0f));
@@ -358,8 +368,10 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else                                 // 0 — plain dirt
 	{
-		C = lerp(float3(0.72f, 0.58f, 0.42f), float3(0.42f, 0.32f, 0.22f), saturate(S.g));
-		C = lerp(C, C * 0.35f, saturate(S.b));
+		// Real soil albedo is 0.15-0.35; the earlier 0.72 sand read as near-white
+		// under a full sun with auto exposure and hid every shape.
+		C = lerp(float3(0.40f, 0.29f, 0.19f), float3(0.24f, 0.16f, 0.10f), saturate(S.g));
+		C = lerp(C, C * 0.40f, saturate(S.b));
 		// where the dirt has been scraped away, cold grey bedrock shows through
 		C = lerp(float3(0.35f, 0.33f, 0.31f), C, saturate(S.r / 5.0f));
 	}

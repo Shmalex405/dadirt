@@ -33,8 +33,24 @@ Texture2D<float4> DirtStateIn;        // dirt state being read this pass
 #endif
 
 // The four axis-aligned neighbours, in a fixed order. Index ^ 1 gives the
-// opposite direction, which the slump pass relies on to match outflow to inflow.
+// opposite direction. Used by the smooth brush.
 static const int2 DirtOffsets4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
+
+// All eight neighbours, opposite pairs at i and i^1, which the slump pass relies
+// on to match outflow to inflow. Diagonals are sqrt(2) cells away, so a stable
+// step across one is sqrt(2) times bigger. Slumping over only the four axis
+// neighbours let dirt stand at atan(sqrt(2) * tan(repose)) along the diagonals —
+// 41 deg for a 32 deg setting — and every pile settled into a square pyramid.
+static const int2 DirtOffsets8[8] =
+{
+	int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1),
+	int2(1, 1), int2(-1, -1), int2(1, -1), int2(-1, 1)
+};
+static const float DirtNeighbourDist[8] =
+{
+	1.0f, 1.0f, 1.0f, 1.0f,
+	1.41421356f, 1.41421356f, 1.41421356f, 1.41421356f
+};
 
 bool DirtInBounds(int2 C)
 {

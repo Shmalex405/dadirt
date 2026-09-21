@@ -1,0 +1,41 @@
+# Long settle of the loose cone at (3,-45): where does the slump scheme actually end up?
+# Probes along the grid axis (+X) and along the diagonal (+X+Y), at 5, 15 and 30 s.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Slump 8
+DaDirt.Reset
+wait 5 settle_5s
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 6 -45
+DaDirt.Probe 3.707 -44.293
+DaDirt.Probe 4.414 -43.586
+DaDirt.Probe 5.121 -42.879
+DaDirt.Probe 5.828 -42.172
+wait 10 settle_15s
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 6 -45
+DaDirt.Probe 3.707 -44.293
+DaDirt.Probe 4.414 -43.586
+DaDirt.Probe 5.121 -42.879
+DaDirt.Probe 5.828 -42.172
+wait 15 settle_30s
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 6 -45
+DaDirt.Probe 3.707 -44.293
+DaDirt.Probe 4.414 -43.586
+DaDirt.Probe 5.121 -42.879
+DaDirt.Probe 5.828 -42.172
+sun -22 35
+camera -1 -50 3.2 -20 40
+wait 0.5
+screenshot ls_cone_30s
+DaDirt.DebugView 6
+wait 0.5
+screenshot ls_cone_30s_slope
+quit

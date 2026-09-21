@@ -12,8 +12,11 @@ from scripts, so it can be re-run the same way any time.
 - The track builds to the numbers the design predicted, and after one fix the
   earthmoving ledger balances with **0 m³ imported**.
 - Volume conservation is exact (drift under 0.0001 m³ on 8,000 m³).
-- Digging, focusing, mud and slumping all work. Slumping converges to the angle
-  of repose but slowly near the end — see "Open items".
+- Digging, focusing, mud and slumping all work. Slumping had a real bug: with
+  four neighbours the angle of repose depended on direction (32° along the grid,
+  41° on the diagonal) and piles settled into square pyramids. Fixed with an
+  8-neighbour slump; a loose cone now settles to 32° in every direction within
+  5 s and to the exact height volume conservation predicts.
 - Performance: 60 fps in track mode and ~80 fps in the testbed at 1080p once the
   template's volumetric clouds were removed. The dirt sim itself costs ~3 ms.
 
@@ -113,8 +116,46 @@ raised to 66.6 cm. Correct.
 | t = 5 s (cm) | 250 | 222 | 188 | 154 | 119 | 77 | 60 |
 | slope at 5 s | | 29° | 34° | 35° | 35° | 40° | 19° |
 
-It collapsed from 56° to ~35° flanks in 5 s and is still creeping toward 32°.
-A 32° cone of the same volume would be 227 cm tall; it is at 250 cm.
+It collapsed from 56° to ~35° flanks in 5 s — and then stopped. A 30 s run with
+8 slump passes per step gave the same heights at 5, 15 and 30 s, so this was not
+slow convergence but the scheme's own equilibrium. Probing along the diagonal
+explained it: 41° there against 32° along the axis, which is exactly
+atan(√2·tan 32°). The four-neighbour slump only measured drops along the grid
+axes, so a diagonal could stand √2 times steeper, and every pile settled into a
+square pyramid with flat facets (visible in the close-ups).
+
+**Fix:** slump over all eight neighbours with diagonals treated as √2 cells away,
+flow across a diagonal divided by that distance. The audit and the stability view
+use the same eight directions. Re-measured with the fix:
+
+| distance from apex | 0 | 1.0 | 2.0 | 3.0 m |
+|---|---|---|---|---|
+| along the axis (cm) | 227.6 | 169.0 | 106.4 | 60 |
+| along the diagonal (cm) | 227.6 | 171.6 | 109.1 | 60 |
+
+Both directions 32°, identical at 5 s, 15 s and 30 s, and the apex sits at
+227.6 cm — a 32° cone of the original 12.6 m³ works out to 227 cm. Volume drift
+−0.00003 m³.
+
+### Sandcastle test (`Tools/DirtboxSandcastle.txt`)
+
+Four identical 150 cm towers on the pad, built while paused, then released. The
+pad itself carries 0.15 moisture, so its "dry" dirt is really slightly damp:
+
+| tower | recipe | predicted repose | apex after 5 s | measured flank |
+|---|---|---|---|---|
+| loose | Loosen then Raise | 38° (32 + cohesion at m=0.15) | 147 cm | 35–38° |
+| damp | Wet 0.5 then Raise | 41° | 157 cm | 41–42° |
+| packed | Raise then Pack 1.0 | ~68° | 207.7 cm, did not move | held |
+| mud | Wet 1.0 then Raise | 15° | 93 cm | 13–17° |
+
+Every tower landed on the number the repose formula gives for its actual
+compaction and moisture. The packed tower keeps a sharp cone; the mud tower is a
+flat splat with a wide skirt.
+
+The `camera` and `sun` script commands were added for this, and the plain-dirt
+colour was darkened to a real soil albedo (0.40/0.29/0.19 loose, 0.24/0.16/0.10
+packed); with a low sun the shapes finally read.
 
 **Fresh loose pile on the pad** (Raise 100 cm over 150 cm core, ~45° peak slope):
 after 5 s the mid-flank went from 45° to 38°, the lower flank sits on the 32° line,
@@ -162,21 +203,22 @@ With the cloud actor removed from `L_Dirtbox` (final checklist run):
 Hitches of 300–400 ms happen on every `Audit`/`Probe` (blocking readback) and on
 mode/focus rebuilds. Expected.
 
-**Verdict on the slump optimisation:** not worth doing yet. The three slump passes
-are 1.8 ms of a ~13 ms frame; the scene costs four times as much as the sim.
+**After the 8-neighbour slump:** each slump pass does ~81 texture loads instead
+of ~25 and costs about 1.5 ms instead of 0.6. Testbed GPU went from ~12 to ~14.7 ms
+at 3 passes (60 fps), and 8 passes costs 23.5 ms (38 fps). The groupshared-tile
+optimisation is now worth doing when the frame needs the headroom; 3 passes
+converge a collapsing cone within 5 s, so there is no reason to run more.
 
 ## Open items (design calls, not bugs)
 
-1. **Slump convergence is slow near repose.** Moving 10% of the excess per
-   iteration means the last few degrees take tens of seconds. Options: more
-   `SlumpIterations` (each costs ~0.6 ms GPU), or a scheme that moves a fixed
-   fraction of the *full* drop above repose rather than a fraction of the excess.
-   The direction and the end state are right; only the tail is slow.
-2. **The repose test's metric needs a cleaner subject.** Measure the cone's own
-   profile (as `Tools/DirtboxProbe.txt` does) instead of the box-wide max, or
-   exclude cells adjacent to bare bedrock from "steepest loose".
-3. **The scene is washed out.** Auto-exposure with the template sky turns the dirt
-   nearly white, which hides shape. Worth pinning exposure in the sandbox map.
+1. **The repose test's metric needs a cleaner subject.** The box-wide "steepest
+   loose" is dominated by retreating scarps at the loose block and wedge tops.
+   Measure the cone's own profile (as `Tools/DirtboxProbe.txt` and
+   `Tools/DirtboxLongSettle.txt` do) or exclude cells adjacent to bare bedrock.
+2. **Slump cost.** With eight neighbours the three slump passes are ~4.5 ms of GPU.
+   The groupshared-tile version is the known fix if the frame gets tight.
+3. **Exposure.** The darker albedo helps a lot; pinning exposure in the sandbox
+   map would make screenshots comparable run to run.
 4. **Screenshots in unattended runs are captured one request late** by the
    engine (`HighResShot` and `FScreenshotRequest` alike), and a direct viewport
    read from the tick returns a black back buffer. The runner works around it by

@@ -43,6 +43,8 @@ private:
 	//
 	//   wait <seconds> [label]   pause, then log average frame / game / render / GPU ms
 	//   screenshot <name>        save a screenshot to Saved/Screenshots
+	//   camera <x> <y> <z> <pitch> <yaw>   place the camera (metres, degrees)
+	//   sun <pitch> <yaw>        aim the directional light
 	//   # anything               comment
 	//
 	// Everything else goes straight to the console, so "DaDirt.Test conserve" and

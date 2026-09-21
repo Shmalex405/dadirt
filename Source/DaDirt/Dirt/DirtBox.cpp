@@ -705,10 +705,12 @@ FDirtAudit ADirtBox::RunAudit()
 	Audit.MaxLayerCm = MaxLayer;
 	Audit.BedrockExposedCells = Exposed;
 
-	// Steepest cell-to-cell drop, measured the same way the slump pass measures
-	// it — per axis, not diagonally — so this checks the invariant the sim
-	// actually enforces rather than a different one.
+	// Steepest cell-to-cell slope, measured the same way the slump pass measures
+	// it — over all eight neighbours, with diagonals sqrt(2) cells away — so this
+	// checks the invariant the sim actually enforces rather than a different one.
 	const float TexelSize = Settings.TexelSizeCm();
+	const int32 Offsets[8] = { 1, -1, Res, -Res, Res + 1, -Res - 1, Res - 1, -Res + 1 };
+	const float Dists[8] = { 1.0f, 1.0f, 1.0f, 1.0f, UE_SQRT_2, UE_SQRT_2, UE_SQRT_2, UE_SQRT_2 };
 
 	for (int32 Y = 1; Y < Res - 1; ++Y)
 	{
@@ -717,13 +719,13 @@ FDirtAudit ADirtBox::RunAudit()
 			const int32 I = Y * Res + X;
 			const float Surface = Readback[I].A;
 
-			float MaxDrop = 0.0f;
-			MaxDrop = FMath::Max(MaxDrop, Surface - Readback[I + 1].A);
-			MaxDrop = FMath::Max(MaxDrop, Surface - Readback[I - 1].A);
-			MaxDrop = FMath::Max(MaxDrop, Surface - Readback[I + Res].A);
-			MaxDrop = FMath::Max(MaxDrop, Surface - Readback[I - Res].A);
+			float MaxTan = 0.0f;
+			for (int32 N = 0; N < 8; ++N)
+			{
+				MaxTan = FMath::Max(MaxTan, (Surface - Readback[I + Offsets[N]].A) / (TexelSize * Dists[N]));
+			}
 
-			const float SlopeDeg = FMath::RadiansToDegrees(FMath::Atan2(MaxDrop, TexelSize));
+			const float SlopeDeg = FMath::RadiansToDegrees(FMath::Atan(MaxTan));
 			Audit.MaxAnySlopeDeg = FMath::Max(Audit.MaxAnySlopeDeg, SlopeDeg);
 
 			// Only dirt that is both genuinely loose and genuinely present tells

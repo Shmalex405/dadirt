@@ -1,6 +1,7 @@
 #include "DaDirtGameMode.h"
 
 #include "Dirt/DirtBox.h"
+#include "Engine/DirectionalLight.h"
 #include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -204,6 +205,45 @@ void ADaDirtGameMode::RunScriptLine(const FString& RawLine)
 	if (!PC)
 	{
 		UE_LOG(LogDaDirtGameMode, Warning, TEXT("DirtScript: no player controller to run '%s'."), *Line);
+		return;
+	}
+
+	if (Cmd.Equals(TEXT("camera"), ESearchCase::IgnoreCase))
+	{
+		// camera <x> <y> <z> <pitch> <yaw>  — metres from the world origin, degrees.
+		TArray<FString> A;
+		Rest.ParseIntoArrayWS(A);
+		if (A.Num() < 5)
+		{
+			UE_LOG(LogDaDirtGameMode, Warning, TEXT("DirtScript: camera needs x y z pitch yaw."));
+			return;
+		}
+		if (APawn* Pawn = PC->GetPawn())
+		{
+			const FVector Loc(FCString::Atof(*A[0]) * 100.0f, FCString::Atof(*A[1]) * 100.0f, FCString::Atof(*A[2]) * 100.0f);
+			const FRotator Rot(FCString::Atof(*A[3]), FCString::Atof(*A[4]), 0.0f);
+			Pawn->SetActorLocation(Loc);
+			Pawn->SetActorRotation(Rot);
+			PC->SetControlRotation(Rot);
+		}
+		return;
+	}
+
+	if (Cmd.Equals(TEXT("sun"), ESearchCase::IgnoreCase))
+	{
+		// sun <pitch> <yaw> — aim the level's directional light. Low sun shows shape.
+		TArray<FString> A;
+		Rest.ParseIntoArrayWS(A);
+		if (A.Num() < 2)
+		{
+			UE_LOG(LogDaDirtGameMode, Warning, TEXT("DirtScript: sun needs pitch yaw."));
+			return;
+		}
+		for (TActorIterator<ADirectionalLight> It(GetWorld()); It; ++It)
+		{
+			It->SetActorRotation(FRotator(FCString::Atof(*A[0]), FCString::Atof(*A[1]), 0.0f));
+			break;
+		}
 		return;
 	}
 

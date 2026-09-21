@@ -108,8 +108,13 @@ a steep face while packed dirt holds it.
       (~32° loose, ~70° packed). Avalanching dirt arrives loose
 - [x] **Moisture parameter:** changes the angle dirt holds and its colour. Cohesion
       peaks at half-saturation, so damp loam holds better than dry sand *or* soup
+- [x] **Verified on hardware (2026-09-21, `docs/DirtboxFirstRun.md`):** a loose
+      cone settles to 32° in every direction within 5 s and to the exact height
+      volume conservation predicts; damp holds 41°, mud runs to 15°, packed does
+      not move; volume drift < 0.0001 m³. Slumping is now 8-neighbour — the
+      4-neighbour version let diagonals stand at 41° and made square pyramids
 - [ ] Riding over loose dirt packs it down — needs the test wheel (1e)
-- [ ] Tuning pass: none of these numbers have been looked at on real hardware yet
+- [ ] Tuning pass on feel (rates, moisture curve) now that the numbers are trusted
 
 ### 1b-test — The testbed *(new, code written)*
 The box is a measuring instrument, not a landscape. Built procedurally at startup:
