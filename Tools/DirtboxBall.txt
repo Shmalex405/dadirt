@@ -1,0 +1,50 @@
+# DaDirt ball test: gravity meets dirt.
+#   1. a 30 cm ball dropped 5 m onto the flat pad     -> dent, bounce, rest in the dent
+#   2. a 60 cm ball dropped 12 m onto the pad          -> bigger dent
+#   3. a 30 cm ball dropped on the flank of the 11 m dome -> rolls downhill, grooves, stops
+#   4. a 30 cm ball thrown across the pad at 6 m/s     -> skips and rolls to a stop
+# The rest positions are logged by the balls; probes confirm the dents.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+
+DaDirt.Ball 3 -10 5 30
+DaDirt.Ball 3 10 12 60
+DaDirt.Ball 36 -32 2 30
+DaDirt.Ball -3 24 1 30 6 0
+camera -9 0 4 -18 0
+wait 0.4
+screenshot ball_00_falling
+wait 0.6
+screenshot ball_01_landing
+wait 6 balls_settle
+screenshot ball_02_rest
+camera -1 -10 1.6 -22 0
+wait 0.4
+screenshot ball_10_small_closeup
+camera 0 10 2.4 -24 0
+wait 0.4
+screenshot ball_11_big_closeup
+camera 30 -32 6 -20 0
+wait 0.4
+screenshot ball_12_dome_closeup
+camera -8 24 2 -14 0
+wait 0.4
+screenshot ball_13_thrown_closeup
+
+# dents: pad surface is 60 cm; under each resting ball it should be lower
+DaDirt.Probe 3 -10
+DaDirt.Probe 3.6 -10
+DaDirt.Probe 3 10
+DaDirt.Probe 4.2 10
+DaDirt.Audit
+DaDirt.DebugView 1
+wait 0.4
+camera -9 0 4 -18 0
+wait 0.4
+screenshot ball_20_layer_depth
+DaDirt.DebugView 0
+quit

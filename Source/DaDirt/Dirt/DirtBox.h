@@ -20,6 +20,24 @@ class UProceduralMeshComponent;
 class UTexture2D;
 class UTextureRenderTarget2D;
 
+struct FDirtWindowSlot;
+
+/**
+ * A small patch of the dirt state that is kept current from the GPU without ever
+ * stalling: a sub-rectangle readback is in flight every frame and lands one or
+ * two frames later. Physics objects (balls, wheels) each own one, centred on
+ * themselves, and sample height and normal from it every substep.
+ */
+struct FDirtHeightWindow
+{
+	/** Texel origin of Data within the sim grid. */
+	FIntPoint Origin = FIntPoint::ZeroValue;
+	int32 Size = 0;
+	/** Size x Size texels: R layer cm, G compaction, B moisture, A surface height cm. */
+	TArray<FLinearColor> Data;
+	bool bValid = false;
+};
+
 /** Result of a volume-conservation audit. */
 struct FDirtAudit
 {
@@ -130,6 +148,25 @@ public:
 	/** True if the world XY lies inside the box. */
 	bool IsInsideBox(FVector2D WorldXYCm) const;
 
+	// --- height windows (non-stalling ground queries for physics objects) ------
+
+	/** Create a window of SizeTexels x SizeTexels. Returns its id. */
+	int32 CreateHeightWindow(int32 SizeTexels = 32);
+	void ReleaseHeightWindow(int32 Id);
+
+	/** Ask for the window to follow this world position from the next frame on. */
+	void SetHeightWindowCentre(int32 Id, FVector2D WorldXYCm);
+
+	/**
+	 * Surface height (world Z, cm) and world-space normal at a point, from the
+	 * window's latest data. False if the window has no data yet or the point lies
+	 * outside it. OutState, if given, receives the bilinear dirt state there.
+	 */
+	bool SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
+							FLinearColor* OutState = nullptr) const;
+
+	float GetTexelSizeCm() const { return Settings.TexelSizeCm(); }
+
 	/** The live Dirtbox, for console commands. */
 	static ADirtBox* GetActive() { return ActiveBox.Get(); }
 
@@ -148,6 +185,11 @@ private:
 	void BuildDisplayMesh();
 	void UpdateMaterialParameters();
 	void StepSimulation(bool bForceReinit);
+
+	/** Harvest finished window readbacks and enqueue the next ones. Once per frame. */
+	void UpdateHeightWindows();
+
+	TArray<TSharedPtr<FDirtWindowSlot, ESPMode::ThreadSafe>> Windows;
 
 	/** Convert world XY in cm to grid coordinates. */
 	FVector2f WorldToTexel(FVector2D WorldXYCm) const;

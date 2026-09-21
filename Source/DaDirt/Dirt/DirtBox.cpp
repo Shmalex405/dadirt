@@ -1,21 +1,52 @@
 #include "DirtBox.h"
 
+#include "DirtBall.h"
 #include "DirtSimulation.h"
 #include "DirtTestbed.h"
 #include "DirtTrack.h"
 
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Math/RandomStream.h"
 #include "ProceduralMeshComponent.h"
+#include "RHIGPUReadback.h"
 #include "RenderingThread.h"
 #include "TextureResource.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogDirt, Log, All);
 
 TWeakObjectPtr<ADirtBox> ADirtBox::ActiveBox;
+
+/**
+ * One height window's plumbing. Shared between the game thread (which moves it
+ * and reads Game) and the render thread (which owns the readbacks). Two
+ * readbacks alternate so one can be in flight while the other is harvested.
+ */
+struct FDirtWindowSlot
+{
+	explicit FDirtWindowSlot(int32 InSize) : Size(InSize) {}
+
+	const int32 Size;
+	bool bReleased = false;
+
+	// Game thread only.
+	FDirtHeightWindow Game;
+
+	// Shared, under Lock.
+	FCriticalSection Lock;
+	FIntPoint RequestedOrigin = FIntPoint::ZeroValue;
+	FIntPoint ReadyOrigin = FIntPoint::ZeroValue;
+	TArray<FLinearColor> ReadyData;
+	bool bReady = false;
+
+	// Render thread only.
+	TUniquePtr<FRHIGPUTextureReadback> Readback[2];
+	FIntPoint PendingOrigin[2];
+	bool bPending[2] = { false, false };
+};
 
 ADirtBox::ADirtBox()
 {
@@ -412,6 +443,208 @@ void ADirtBox::Tick(float DeltaSeconds)
 	{
 		StepAccumulator = 0.0f;
 	}
+
+	// After the step is enqueued, so a window reads this frame's surface.
+	UpdateHeightWindows();
+}
+
+// ---------------------------------------------------------------------------
+// Height windows
+// ---------------------------------------------------------------------------
+
+int32 ADirtBox::CreateHeightWindow(int32 SizeTexels)
+{
+	const int32 Size = FMath::Clamp(SizeTexels, 4, 256);
+	Windows.Add(MakeShared<FDirtWindowSlot, ESPMode::ThreadSafe>(Size));
+	return Windows.Num() - 1;
+}
+
+void ADirtBox::ReleaseHeightWindow(int32 Id)
+{
+	if (Windows.IsValidIndex(Id) && Windows[Id])
+	{
+		// Keep the slot so ids stay stable; the render side stops touching it.
+		Windows[Id]->bReleased = true;
+		Windows[Id]->Game.bValid = false;
+	}
+}
+
+void ADirtBox::SetHeightWindowCentre(int32 Id, FVector2D WorldXYCm)
+{
+	if (!Windows.IsValidIndex(Id) || !Windows[Id] || Windows[Id]->bReleased)
+	{
+		return;
+	}
+
+	FDirtWindowSlot& Slot = *Windows[Id];
+	const FVector2f Centre = WorldToTexel(WorldXYCm);
+	const int32 Res = Settings.SimResolution;
+	const int32 Max = FMath::Max(Res - Slot.Size, 0);
+
+	FIntPoint Origin;
+	Origin.X = FMath::Clamp(FMath::FloorToInt(Centre.X) - Slot.Size / 2, 0, Max);
+	Origin.Y = FMath::Clamp(FMath::FloorToInt(Centre.Y) - Slot.Size / 2, 0, Max);
+
+	FScopeLock L(&Slot.Lock);
+	Slot.RequestedOrigin = Origin;
+}
+
+bool ADirtBox::SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
+								  FLinearColor* OutState) const
+{
+	if (!Windows.IsValidIndex(Id) || !Windows[Id] || Windows[Id]->bReleased)
+	{
+		return false;
+	}
+
+	const FDirtHeightWindow& W = Windows[Id]->Game;
+	const int32 N = W.Size;
+	if (!W.bValid || W.Data.Num() < N * N)
+	{
+		return false;
+	}
+
+	// Texel-centre space, relative to the window. Need one texel of margin for
+	// the normal's central differences.
+	const FVector2f T = WorldToTexel(WorldXYCm) - FVector2f(0.5f, 0.5f) - FVector2f(W.Origin.X, W.Origin.Y);
+	if (T.X < 1.0f || T.Y < 1.0f || T.X > static_cast<float>(N - 3) || T.Y > static_cast<float>(N - 3))
+	{
+		return false;
+	}
+
+	const int32 X0 = FMath::FloorToInt(T.X);
+	const int32 Y0 = FMath::FloorToInt(T.Y);
+	const float FX = T.X - X0;
+	const float FY = T.Y - Y0;
+
+	const auto At = [&W, N](int32 X, int32 Y) -> const FLinearColor& { return W.Data[Y * N + X]; };
+
+	const FLinearColor Bottom = FMath::Lerp(At(X0, Y0), At(X0 + 1, Y0), FX);
+	const FLinearColor Top = FMath::Lerp(At(X0, Y0 + 1), At(X0 + 1, Y0 + 1), FX);
+	const FLinearColor S = FMath::Lerp(Bottom, Top, FY);
+
+	OutHeightCm = static_cast<float>(GetActorLocation().Z) + S.A;
+	if (OutState)
+	{
+		*OutState = S;
+	}
+
+	// Normal from central differences around the nearest texel.
+	const int32 XN = FMath::RoundToInt(T.X);
+	const int32 YN = FMath::RoundToInt(T.Y);
+	const float Texel = Settings.TexelSizeCm();
+	const float DHDX = (At(XN + 1, YN).A - At(XN - 1, YN).A) / (2.0f * Texel);
+	const float DHDY = (At(XN, YN + 1).A - At(XN, YN - 1).A) / (2.0f * Texel);
+	OutNormal = FVector(-DHDX, -DHDY, 1.0).GetSafeNormal();
+
+	return true;
+}
+
+void ADirtBox::UpdateHeightWindows()
+{
+	if (Windows.Num() == 0 || !DisplayRT)
+	{
+		return;
+	}
+
+	// 1. Pull anything the render thread has finished over to the game side.
+	for (const TSharedPtr<FDirtWindowSlot, ESPMode::ThreadSafe>& Slot : Windows)
+	{
+		if (!Slot || Slot->bReleased)
+		{
+			continue;
+		}
+		FScopeLock L(&Slot->Lock);
+		if (Slot->bReady)
+		{
+			Slot->Game.Origin = Slot->ReadyOrigin;
+			Slot->Game.Size = Slot->Size;
+			Swap(Slot->Game.Data, Slot->ReadyData);
+			Slot->Game.bValid = true;
+			Slot->bReady = false;
+		}
+	}
+
+	// 2. Harvest and re-arm on the render thread.
+	FTextureRenderTargetResource* Resource = DisplayRT->GameThread_GetRenderTargetResource();
+	if (!Resource)
+	{
+		return;
+	}
+
+	TArray<TSharedPtr<FDirtWindowSlot, ESPMode::ThreadSafe>> Slots = Windows;
+
+	ENQUEUE_RENDER_COMMAND(DirtHeightWindows)(
+		[Slots, Resource](FRHICommandListImmediate& RHICmdList)
+		{
+			FRHITexture* Texture = Resource->GetRenderTargetTexture();
+			if (!Texture)
+			{
+				return;
+			}
+
+			for (const TSharedPtr<FDirtWindowSlot, ESPMode::ThreadSafe>& Slot : Slots)
+			{
+				if (!Slot || Slot->bReleased)
+				{
+					continue;
+				}
+				const int32 N = Slot->Size;
+
+				// Finished copies become ReadyData.
+				for (int32 i = 0; i < 2; ++i)
+				{
+					if (!Slot->bPending[i] || !Slot->Readback[i]->IsReady())
+					{
+						continue;
+					}
+
+					int32 RowPitchPixels = 0;
+					if (const void* Src = Slot->Readback[i]->Lock(RowPitchPixels))
+					{
+						TArray<FLinearColor> Copy;
+						Copy.SetNumUninitialized(N * N);
+						const FLinearColor* Rows = static_cast<const FLinearColor*>(Src);
+						for (int32 Y = 0; Y < N; ++Y)
+						{
+							FMemory::Memcpy(Copy.GetData() + Y * N, Rows + Y * RowPitchPixels, N * sizeof(FLinearColor));
+						}
+						Slot->Readback[i]->Unlock();
+
+						FScopeLock L(&Slot->Lock);
+						Slot->ReadyData = MoveTemp(Copy);
+						Slot->ReadyOrigin = Slot->PendingOrigin[i];
+						Slot->bReady = true;
+					}
+					Slot->bPending[i] = false;
+				}
+
+				// Start the next copy in a free readback.
+				for (int32 i = 0; i < 2; ++i)
+				{
+					if (Slot->bPending[i])
+					{
+						continue;
+					}
+					if (!Slot->Readback[i])
+					{
+						Slot->Readback[i] = MakeUnique<FRHIGPUTextureReadback>(TEXT("DirtHeightWindow"));
+					}
+
+					FIntPoint Origin;
+					{
+						FScopeLock L(&Slot->Lock);
+						Origin = Slot->RequestedOrigin;
+					}
+
+					Slot->Readback[i]->EnqueueCopy(RHICmdList, Texture,
+						FResolveRect(Origin.X, Origin.Y, Origin.X + N, Origin.Y + N));
+					Slot->PendingOrigin[i] = Origin;
+					Slot->bPending[i] = true;
+					break;
+				}
+			}
+		});
 }
 
 void ADirtBox::StepSimulation(bool bForceReinit)
@@ -1270,6 +1503,70 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtViewCmd(
 					PC->SetControlRotation(Rot);
 				}
 			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtBallCmd(
+	TEXT("DaDirt.Ball"),
+	TEXT("DaDirt.Ball <Xm> <Ym> [dropM=5] [radiusCm=30] [vxMps=0] [vyMps=0] - drop a ball onto the dirt. ")
+	TEXT("It dents where it lands, rolls downhill and comes to rest on the deformed ground."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box || !World)
+			{
+				return;
+			}
+			if (Args.Num() < 2)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Ball <Xm> <Ym> [dropM] [radiusCm] [vxMps] [vyMps]"));
+				return;
+			}
+
+			const float Xm = ArgFloat(Args, 0, 0.0f);
+			const float Ym = ArgFloat(Args, 1, 0.0f);
+			const float DropM = ArgFloat(Args, 2, 5.0f);
+			const float RadiusCm = FMath::Clamp(ArgFloat(Args, 3, 30.0f), 5.0f, 300.0f);
+			const FVector Origin = Box->GetActorLocation();
+			const FVector2D World2D(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
+
+			if (!Box->IsInsideBox(World2D))
+			{
+				UE_LOG(LogDirt, Warning, TEXT("(%.1f, %.1f) m is outside the box."), Xm, Ym);
+				return;
+			}
+
+			// One blocking readback to find the ground under the drop point. The
+			// ball itself never blocks: it reads a height window.
+			Box->RefreshReadback();
+			const float Ground = Box->GetSurfaceHeightAtWorld(World2D);
+
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ADirtBall* Ball = World->SpawnActor<ADirtBall>(ADirtBall::StaticClass(),
+				FVector(World2D.X, World2D.Y, Ground + DropM * 100.0f + RadiusCm), FRotator::ZeroRotator, Params);
+			if (Ball)
+			{
+				Ball->SetRadius(RadiusCm);
+				Ball->Velocity = FVector(ArgFloat(Args, 4, 0.0f) * 100.0f, ArgFloat(Args, 5, 0.0f) * 100.0f, 0.0f);
+				UE_LOG(LogDirt, Log, TEXT("Dropped a %.0f cm ball at (%.1f, %.1f) m from %.1f m above the ground (Z %.1f cm)."),
+					RadiusCm, Xm, Ym, DropM, Ground);
+			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtClearBallsCmd(
+	TEXT("DaDirt.ClearBalls"),
+	TEXT("DaDirt.ClearBalls - remove every ball."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>&, UWorld* World)
+		{
+			int32 Count = 0;
+			for (TActorIterator<ADirtBall> It(World); It; ++It)
+			{
+				It->Destroy();
+				++Count;
+			}
+			UE_LOG(LogDirt, Log, TEXT("Removed %d balls."), Count);
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtInfoCmd(

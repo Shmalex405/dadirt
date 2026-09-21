@@ -99,6 +99,9 @@ struct FDirtSimFrame
 
 namespace DirtSim
 {
+	/** Strokes applied per brush pass. Must match DIRT_MAX_STROKES in DirtSim.usf. */
+	constexpr int32 MaxStrokesPerPass = 16;
+
 	/** Run one simulation step. Render thread only. */
 	DADIRTSHADERS_API void Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const FDirtSimFrame& Frame);
 }

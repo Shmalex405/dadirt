@@ -44,78 +44,99 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 #if DIRT_BRUSH_PASS
 
-float2 DirtBrushCenter;               // in cell coordinates
-float DirtBrushCoreRadius;
-float DirtBrushRimRadius;
-float DirtBrushCoreNorm;
-float DirtBrushRimNorm;
-float DirtBrushAmount;
-float DirtBrushDisturb;
-int DirtBrushMode;
+// Up to DIRT_MAX_STROKES strokes are applied in one pass, in order. A rolling
+// ball or a spinning wheel emits strokes every frame, and one full-grid pass per
+// stroke would not scale; one pass per batch does. Must match
+// DirtSim::MaxStrokesPerPass in DirtSimulation.h.
+#define DIRT_MAX_STROKES 16
+
+int DirtStrokeCount;
+float4 DirtStrokeA[DIRT_MAX_STROKES];   // centre.xy (cells), core radius, rim radius
+float4 DirtStrokeB[DIRT_MAX_STROKES];   // core norm, rim norm, amount, disturb
+float4 DirtStrokeC[DIRT_MAX_STROKES];   // mode (as float), unused x3
 
 RWTexture2D<float4> DirtStateOut;
+
+void ApplyStroke(int2 P, int K, inout float4 S)
+{
+	const float2 Centre     = DirtStrokeA[K].xy;
+	const float  CoreRadius = DirtStrokeA[K].z;
+	const float  RimRadius  = DirtStrokeA[K].w;
+	const float  CoreNorm   = DirtStrokeB[K].x;
+	const float  RimNorm    = DirtStrokeB[K].y;
+	const float  Amount     = DirtStrokeB[K].z;
+	const float  Disturb    = DirtStrokeB[K].w;
+	const int    Mode       = (int)DirtStrokeC[K].x;
+
+	const float R = length((float2(P) + 0.5f) - Centre);
+	if (R >= RimRadius + 1.0f)
+	{
+		return;
+	}
+
+	const float Core = DirtBrushCoreWeight(R, CoreRadius);
+	const float Rim  = DirtBrushRimWeight(R, CoreRadius, RimRadius);
+
+	// Normalised so that summing each kernel over the whole footprint gives
+	// exactly 1.0. That is what makes dig and raise zero-sum: whatever the
+	// core loses, the rim gains.
+	const float CoreW = (CoreNorm > 0.0f) ? Core / CoreNorm : 0.0f;
+	const float RimW  = (RimNorm  > 0.0f) ? Rim  / RimNorm  : 0.0f;
+	const float Mask  = saturate(Core + Rim);
+
+	if (Mode == 0)         // DIG — scoop the core out, heap it on the rim
+	{
+		S.r += Amount * (RimW - CoreW);
+	}
+	else if (Mode == 1)    // RAISE — pile the core up, borrow from the rim
+	{
+		S.r += Amount * (CoreW - RimW);
+	}
+	else if (Mode == 2)    // SMOOTH — pull toward the local average (of the pre-pass state)
+	{
+		float Sum = S.r;
+		float Count = 1.0f;
+		UNROLL
+		for (int i = 0; i < 4; ++i)
+		{
+			const int2 Q = P + DirtOffsets4[i];
+			if (DirtInBounds(Q))
+			{
+				Sum += DirtState(Q).r;
+				Count += 1.0f;
+			}
+		}
+		S.r = lerp(S.r, Sum / Count, saturate(Amount) * Mask);
+	}
+	else if (Mode == 3)    // WET
+	{
+		S.b = saturate(S.b + Amount * Mask);
+	}
+	else if (Mode == 4)    // PACK
+	{
+		S.g = saturate(S.g + Amount * Mask);
+	}
+	else if (Mode == 5)    // LOOSEN
+	{
+		S.g = saturate(S.g - Amount * Mask);
+	}
+
+	// Dirt you have just moved is broken-up dirt — it loses its pack.
+	if (Mode <= 2)
+	{
+		S.g = saturate(S.g - Disturb * Mask);
+	}
+}
 
 void ApplyBrush(int2 P)
 {
 	float4 S = DirtState(P);
 	const float Bed = DirtBedrock(P);
 
-	const float R = length((float2(P) + 0.5f) - DirtBrushCenter);
-
-	if (R < DirtBrushRimRadius + 1.0f)
+	[loop]
+	for (int K = 0; K < DirtStrokeCount; ++K)
 	{
-		const float Core = DirtBrushCoreWeight(R, DirtBrushCoreRadius);
-		const float Rim  = DirtBrushRimWeight(R, DirtBrushCoreRadius, DirtBrushRimRadius);
-
-		// Normalised so that summing each kernel over the whole footprint gives
-		// exactly 1.0. That is what makes dig and raise zero-sum: whatever the
-		// core loses, the rim gains.
-		const float CoreW = (DirtBrushCoreNorm > 0.0f) ? Core / DirtBrushCoreNorm : 0.0f;
-		const float RimW  = (DirtBrushRimNorm  > 0.0f) ? Rim  / DirtBrushRimNorm  : 0.0f;
-		const float Mask  = saturate(Core + Rim);
-
-		if (DirtBrushMode == 0)         // DIG — scoop the core out, heap it on the rim
-		{
-			S.r += DirtBrushAmount * (RimW - CoreW);
-		}
-		else if (DirtBrushMode == 1)    // RAISE — pile the core up, borrow from the rim
-		{
-			S.r += DirtBrushAmount * (CoreW - RimW);
-		}
-		else if (DirtBrushMode == 2)    // SMOOTH — pull toward the local average
-		{
-			float Sum = S.r;
-			float Count = 1.0f;
-			UNROLL
-			for (int i = 0; i < 4; ++i)
-			{
-				const int2 Q = P + DirtOffsets4[i];
-				if (DirtInBounds(Q))
-				{
-					Sum += DirtState(Q).r;
-					Count += 1.0f;
-				}
-			}
-			S.r = lerp(S.r, Sum / Count, saturate(DirtBrushAmount) * Mask);
-		}
-		else if (DirtBrushMode == 3)    // WET
-		{
-			S.b = saturate(S.b + DirtBrushAmount * Mask);
-		}
-		else if (DirtBrushMode == 4)    // PACK
-		{
-			S.g = saturate(S.g + DirtBrushAmount * Mask);
-		}
-		else if (DirtBrushMode == 5)    // LOOSEN
-		{
-			S.g = saturate(S.g - DirtBrushAmount * Mask);
-		}
-
-		// Dirt you have just moved is broken-up dirt — it loses its pack.
-		if (DirtBrushMode <= 2)
-		{
-			S.g = saturate(S.g - DirtBrushDisturb * Mask);
-		}
+		ApplyStroke(P, K, S);
 	}
 
 	// Bedrock is the floor. You cannot dig below it, and this clamp is the one

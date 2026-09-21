@@ -75,14 +75,10 @@ public:
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		SHADER_PARAMETER(FIntPoint, DirtResolution)
-		SHADER_PARAMETER(FVector2f, DirtBrushCenter)
-		SHADER_PARAMETER(float, DirtBrushCoreRadius)
-		SHADER_PARAMETER(float, DirtBrushRimRadius)
-		SHADER_PARAMETER(float, DirtBrushCoreNorm)
-		SHADER_PARAMETER(float, DirtBrushRimNorm)
-		SHADER_PARAMETER(float, DirtBrushAmount)
-		SHADER_PARAMETER(float, DirtBrushDisturb)
-		SHADER_PARAMETER(int32, DirtBrushMode)
+		SHADER_PARAMETER(int32, DirtStrokeCount)
+		SHADER_PARAMETER_ARRAY(FVector4f, DirtStrokeA, [DirtSim::MaxStrokesPerPass])
+		SHADER_PARAMETER_ARRAY(FVector4f, DirtStrokeB, [DirtSim::MaxStrokesPerPass])
+		SHADER_PARAMETER_ARRAY(FVector4f, DirtStrokeC, [DirtSim::MaxStrokesPerPass])
 		SHADER_PARAMETER_TEXTURE(Texture2D<float>, DirtBaseHeight)
 		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtStateIn)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
@@ -233,19 +229,22 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Flip();
 	}
 
-	// --- brush strokes -----------------------------------------------------
-	for (const FDirtBrushStroke& Stroke : Frame.Strokes)
+	// --- brush strokes, batched ------------------------------------------------
+	for (int32 First = 0; First < Frame.Strokes.Num(); First += DirtSim::MaxStrokesPerPass)
 	{
+		const int32 Count = FMath::Min(DirtSim::MaxStrokesPerPass, Frame.Strokes.Num() - First);
+
 		FDirtBrushCS::FParameters* Params = GraphBuilder.AllocParameters<FDirtBrushCS::FParameters>();
 		Params->DirtResolution = Frame.Resolution;
-		Params->DirtBrushCenter = Stroke.CenterTexel;
-		Params->DirtBrushCoreRadius = Stroke.CoreRadiusTexels;
-		Params->DirtBrushRimRadius = Stroke.RimRadiusTexels;
-		Params->DirtBrushCoreNorm = Stroke.CoreNorm;
-		Params->DirtBrushRimNorm = Stroke.RimNorm;
-		Params->DirtBrushAmount = Stroke.Amount;
-		Params->DirtBrushDisturb = Stroke.Disturb;
-		Params->DirtBrushMode = Stroke.Mode;
+		Params->DirtStrokeCount = Count;
+		for (int32 K = 0; K < Count; ++K)
+		{
+			const FDirtBrushStroke& Stroke = Frame.Strokes[First + K];
+			Params->DirtStrokeA[K] = FVector4f(Stroke.CenterTexel.X, Stroke.CenterTexel.Y,
+											   Stroke.CoreRadiusTexels, Stroke.RimRadiusTexels);
+			Params->DirtStrokeB[K] = FVector4f(Stroke.CoreNorm, Stroke.RimNorm, Stroke.Amount, Stroke.Disturb);
+			Params->DirtStrokeC[K] = FVector4f(static_cast<float>(Stroke.Mode), 0.0f, 0.0f, 0.0f);
+		}
 		Params->DirtBaseHeight = BaseHeightRHI;
 		Params->DirtStateIn = Current;
 		Params->DirtStateOut = GraphBuilder.CreateUAV(Other);

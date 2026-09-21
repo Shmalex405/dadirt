@@ -97,8 +97,11 @@ a steep face while packed dirt holds it.
       core and rim are normalised against discrete sums over the exact cells the
       shader touches, so the spoil equals the hole
 - [x] Volume-conservation audit (`DaDirt.Audit`) reporting drift against a baseline
-- [ ] Physics objects (a dropped ball) read the deformed ground and rest in dents
-      — the height query exists (`DaDirt.Probe`), the collision hookup does not
+- [x] Physics objects read the deformed ground and rest in dents: `DaDirt.Ball`
+      drops a ball that dents where it lands, bounces, rolls downhill leaving a
+      groove, and sleeps in its own crater. It reads the ground through a
+      non-stalling GPU height window, the same path the wheel will use
+      (verified 2026-09-21: 5 m drop hits at 9.9 m/s, rests 15 cm into the pad)
 
 ### 1b — Granular behavior (what makes it feel like *dirt*, not clay)
 - [x] **Angle of repose:** mass-conserving slump relaxation. Slopes steeper than
@@ -175,10 +178,17 @@ worst class of bug available: invisible, plausible-looking, and a lie.
 - Known limit: 384 m site at 1024 cells is **37.5 cm per cell**, so this mode is for
   layout and scale. Dirt behaviour gets tuned in testbed mode at 12.5 cm. See G2.
 
-### 1c — Loose dirt particle layer
-- Niagara GPU particles spawn when dirt is moved aggressively
+### 1c — Loose dirt particle layer ★ first-class, not decoration
+Alex (2026-09-21): individual particles "in their most intense but clean sense"
+are half of what the dirt simulator *is*. Push this as hard as the hardware allows.
+- Niagara GPU particles spawn when dirt is moved aggressively (roost, throws,
+  spray off a berm, grains shedding down an over-steep face)
 - Particles collide with the heightfield, roll/bounce, then settle and
-  write their volume back into the ground (nothing vanishes)
+  write their volume back into the ground (nothing vanishes; the hand-off both
+  ways is volume-conserving and audited)
+- Clean: no popping, no fake puffs; particles are dirt that temporarily left the
+  heightfield, and the audit still balances with them in the air
+- Budget by measurement on the Arc: find the particle count that holds 60 fps
 
 ### 1d — Sandbox tools & feel
 - [x] Debug views: dirt, layer depth, compaction, moisture, stability vs repose,

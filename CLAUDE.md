@@ -27,6 +27,14 @@ having been moved to make it, that is a bug, however good it looks.
 Tracks are modelled the way they are felt in the real world, which means the way they
 are made in the real world: graded, cut, filled, piled, packed, watered.
 
+**Individual particles are half the point.** (Alex, 2026-09-21.) The heightfield
+gives dirt its structure; discrete particles give it life: roost, thrown dirt,
+grains rolling down a face, spray off a berm. Treat the particle layer (Phase 1c)
+as a first-class system to push as hard as the hardware allows, "intense but
+clean": particles collide with the heightfield, roll, settle and hand their volume
+back to it, nothing pops or vanishes, and the hand-off in both directions is
+volume-conserving. It is not a decorative effect bolted on at the end.
+
 ## Locked technical decisions
 
 - **Engine:** UE 5.8 (binary install via Epic Launcher). Fallback to 5.7 only if
