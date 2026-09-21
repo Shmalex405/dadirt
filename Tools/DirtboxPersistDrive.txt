@@ -1,0 +1,51 @@
+# Which part of a moving wheel leaks across slides? Three drives north over four
+# tiles with the window following: rut+pack only, then roost added, then all.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -15 40
+wait 1
+
+# --- rut and pack only ---------------------------------------------------------
+DaDirt.WheelParts 1 1 0 0 0
+DaDirt.Wheel 3 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_rutpack
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- rut, pack, roost ------------------------------------------------------------
+DaDirt.Focus 10 -15 40
+wait 0.5
+DaDirt.WheelParts 1 1 1 0 0
+DaDirt.Wheel 10 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_roost
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- everything, parcels off (thrown dirt lands where scooped) --------------------
+DaDirt.Focus -4 -15 40
+wait 0.5
+DaDirt.WheelParts 1 1 1 1 1
+DaDirt.Parcels 0
+DaDirt.Wheel -4 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_noparcels
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+DaDirt.Parcels 1
+quit

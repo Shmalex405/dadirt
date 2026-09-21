@@ -13,6 +13,8 @@
 //   MainParcelInitCS   fill the free list; every slot is empty
 //   MainParcelSpawnCS  turn the frame's spawn requests into live parcels
 //   MainParcelSimCS    fly, hit the ground, bounce, roll, come to rest, deposit
+//   MainParcelFlushCS  before the window slides: parcels over ground that is
+//                      leaving land at once, into the ground that leaves with them
 //
 // The same three passes run a second pool for DUST (DirtIsDust = 1): the
 // sub-millimetre tail of a roost that carries no auditable volume, drifts with
@@ -404,3 +406,45 @@ void MainParcelSimCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupInd
 }
 
 #endif // DIRT_PARCEL_SIM_PASS
+
+// ---------------------------------------------------------------------------
+// Flush — the window is about to slide; anything over a leaving tile lands now
+// ---------------------------------------------------------------------------
+
+#if DIRT_PARCEL_FLUSH_PASS
+
+int2 DirtShiftTexels;                 // the coming shift: new texel = old texel - shift
+
+[numthreads(64, 1, 1)]
+void MainParcelFlushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint I = DispatchThreadId.x;
+	if (I >= ParcelCount())
+	{
+		return;
+	}
+	const int2 T = ParcelTexel(I);
+	const float4 P = DirtParcelPos[T];
+	if (P.w <= 0.0f)
+	{
+		return;
+	}
+
+	const int2 OldCell = ParcelCell(P.xy);
+	const int2 NewCell = OldCell - DirtShiftTexels;
+	if (DirtInBounds(NewCell))
+	{
+		return;                       // still inside after the slide
+	}
+
+	// Land it where it is, in the ground that is about to be read back and cached.
+	if (DirtIsDust == 0)
+	{
+		DepositAt(OldCell, P.w, DirtParcelProp[T].x);
+	}
+	DirtParcelPos[T] = float4(P.xyz, 0.0f);
+	DirtParcelVel[T] = float4(0, 0, 0, 0);
+	ParcelPush(I);
+}
+
+#endif // DIRT_PARCEL_FLUSH_PASS

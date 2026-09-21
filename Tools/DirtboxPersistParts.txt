@@ -1,0 +1,83 @@
+# Which stroke leaks across slides? Drives north over four tiles, window following.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Parcels 0
+
+# --- none ---
+DaDirt.Focus 3 -15 40
+wait 0.5
+DaDirt.WheelParts 0 0 0 0 0
+
+DaDirt.Wheel 3 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_none
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- rut ---
+DaDirt.Focus 10 -15 40
+wait 0.5
+DaDirt.WheelParts 1 0 0 0 0
+
+DaDirt.Wheel 10 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_rut
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- pack ---
+DaDirt.Focus -4 -15 40
+wait 0.5
+DaDirt.WheelParts 0 1 0 0 0
+
+DaDirt.Wheel -4 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_pack
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- rut_noslump ---
+DaDirt.Focus 17 -15 40
+wait 0.5
+DaDirt.WheelParts 1 0 0 0 0
+DaDirt.Slump 0
+DaDirt.Wheel 17 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_rut_noslump
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- rut_nowater ---
+DaDirt.Focus -11 -15 40
+wait 0.5
+DaDirt.WheelParts 1 0 0 0 0
+DaDirt.Slump 3
+DaDirt.WaterSim 0
+DaDirt.Wheel -11 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_rut_nowater
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+quit

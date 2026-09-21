@@ -1,6 +1,7 @@
 // DaDirt — dirt simulation compute passes.
 //
 //   MainInitCS     seed the state from the CPU-built terrain
+//   MainShiftCS    slide the window by whole tiles; entering cells come from a patch
 //   MainDepositCS  fold landed parcels (airborne dirt) back into the layer
 //   MainBrushCS    apply a batch of deformation strokes (dig / raise / smooth / wet / pack ...)
 //   MainSlumpCS    angle-of-repose relaxation: dirt too steep to stand avalanches
@@ -43,6 +44,55 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 }
 
 #endif // DIRT_INIT_PASS
+
+// ---------------------------------------------------------------------------
+// Shift — the simulated window slides by whole tiles over a bigger world
+// ---------------------------------------------------------------------------
+// The tiles that stay are moved within the texture; the cells that enter are
+// read from a patch the CPU uploaded (a cached tile that comes back, or fresh
+// ground from the builder). Bedrock was already shifted and re-uploaded by the
+// CPU, so the surface is recomputed here rather than trusted.
+
+#if DIRT_SHIFT_PASS
+
+int2 DirtShiftTexels;                 // old texel = new texel + shift
+Texture2D<float4> DirtPatchState;     // entering cells, already in NEW texel coordinates
+Texture2D<float> DirtPatchPond;
+Texture2D<float> DirtPondIn;
+RWTexture2D<float4> DirtStateOut;
+RWTexture2D<float> DirtPondOut;
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+
+	const int2 Q = P + DirtShiftTexels;
+	float4 S;
+	float Pond;
+	if (DirtInBounds(Q))
+	{
+		S = DirtState(Q);
+		Pond = DirtPondIn.Load(int3(Q, 0)).x;
+	}
+	else
+	{
+		// Taken exactly as stored: any clamp here would create or destroy dirt
+		// that the ledger has already counted.
+		S = DirtPatchState.Load(int3(P, 0));
+		Pond = DirtPatchPond.Load(int3(P, 0)).x;
+	}
+	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g);
+
+	DirtStateOut[P] = S;
+	DirtPondOut[P] = Pond;
+}
+
+#endif // DIRT_SHIFT_PASS
 
 // ---------------------------------------------------------------------------
 // Deposit — airborne dirt that has landed joins the layer
@@ -337,6 +387,7 @@ RWTexture2D<float4> DirtStateOut;
 // of 81 per thread. TILE_OUT is the tile plus one ring: the cells whose outflow
 // is computed and then gathered from.
 #define SLUMP_TILE 16
+#define DIRT_SLUMP_MIN_FLOW_CM 1e-4f      // solid cm per iteration per neighbour; see ComputeOutflowTile
 #define SLUMP_HALO 2
 #define SLUMP_W (SLUMP_TILE + 2 * SLUMP_HALO)     // 20
 #define SLUMP_OUT (SLUMP_TILE + 2)                // 18
@@ -394,6 +445,15 @@ void ComputeOutflowTile(int2 T, out float Out[8], out float Scale)
 		const float Excess = max(0.0f, Drop - DirtAllowedDrop(Drop, DirtTexelSizeCm * Dist, TanPhi, CohesionKPa,
 															 DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm));
 		Out[i] = Excess * Solid * DirtSlumpRate / Dist;
+
+		// Flows are moved in float: taken from this cell in one subtraction and
+		// added to the neighbour in another. Below half a float step of either
+		// cell's depth the rounding is one-sided (a thick cell giving to a thin
+		// one drops the flow, the thin one still receives it) and the slump
+		// quietly manufactures dirt on every face that is still creeping. A floor
+		// far above that step (a 0.03 degree excess at 4 cm cells) stops the
+		// creep instead. docs/SoilPhysics.md 9h.
+		Out[i] = (Out[i] >= DIRT_SLUMP_MIN_FLOW_CM) ? Out[i] : 0.0f;
 		Sum += Out[i];
 	}
 

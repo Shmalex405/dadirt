@@ -1,0 +1,20 @@
+# Negative dirt at the window edge? Park fixed windows whose edges cut sloped
+# ground (the 7.5 m dome at (22, 30), the 11 m dome at (28, -32), the ridge at X=40).
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 6 36 40
+wait 6 dome_cut_east_edge
+DaDirt.Audit
+DaDirt.Focus 6 -34 40
+wait 6 big_dome_cut
+DaDirt.Audit
+DaDirt.Focus 26 0 40
+wait 6 ridge_cut
+DaDirt.Audit
+DaDirt.Slump 0
+DaDirt.Focus 26 30 40
+wait 6 noslump_cut
+DaDirt.Audit
+quit

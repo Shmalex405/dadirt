@@ -128,7 +128,18 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
 - The slump runs on a 16 x 16 group-shared tile with a two-cell halo
   (`SLUMP_TILE`); the shed-grain spawn lives inside it. Any change to the slump
   must be checked against `Tools/DirtboxSoil.txt` (60 cm face, damp wall stands,
-  cone at 32°) before it replaces the old numbers.
+  cone at 32°) before it replaces the old numbers. Flows under
+  `DIRT_SLUMP_MIN_FLOW_CM` are dropped on purpose: float rounding below that
+  creates dirt (docs/SoilPhysics.md 9h). Print drift in cm³ when hunting a leak.
+- **The window is a view onto a tiled world.** A focused region is 4 x 4 tiles
+  (`FDirtTile`, `TileCache` in DirtBox); it slides by whole tiles (`ShiftWindow`
+  → `MainShiftCS`), reads leaving tiles back into the cache, flushes parcels
+  over leaving ground first (`MainParcelFlushCS`), and the audit counts
+  ground + air + cached tiles against a baseline that grows with every tile
+  first generated. Anything that addresses the grid by texel (strokes, water
+  sources, height windows) must be offset or invalidated on a slide; anything
+  in box centimetres (parcels, the wheel) needs nothing. The far mesh draws the
+  rest of the box from the cache. `Tools/DirtboxPersist.txt` is the test.
 - Alex works on a Mac; the project only builds on the Windows machine. Code
   written on the Mac has never seen a compiler, so hand it over with that said
   plainly and expect a first-compile fixing pass.
@@ -147,6 +158,6 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   dirt in the air included. Water is audited separately (pore water and pond)
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
-  (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf). Run them with
+  (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist). Run them with
   the `-DirtScript=` launch and read the numbers out of the log; a change that
   moves a measured number is not done until the doc that quotes it is updated.

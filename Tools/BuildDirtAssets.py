@@ -33,6 +33,7 @@ MAT_PATH = DIRT_DIR + "/M_DirtGround"
 PARCEL_MAT_PATH = DIRT_DIR + "/M_DirtParcel"
 DUST_MAT_PATH = DIRT_DIR + "/M_DirtDust"
 MAP_PATH = MAPS_DIR + "/L_Dirtbox"
+FAR_MAT_PATH = DIRT_DIR + "/M_DirtFar"
 TEMPLATE = "/Engine/Maps/Templates/Template_Default"
 
 
@@ -52,6 +53,7 @@ fresh(MAP_PATH)
 fresh(MAT_PATH)
 fresh(PARCEL_MAT_PATH)
 fresh(DUST_MAT_PATH)
+fresh(FAR_MAT_PATH)
 fresh(RT_PATH)
 
 
@@ -456,6 +458,27 @@ connect_prop(op3, "", unreal.MaterialProperty.MP_OPACITY)
 MEL.recompile_material(dm)
 EAL.save_asset(DUST_MAT_PATH)
 log("material saved: %s (%d expressions)" % (DUST_MAT_PATH, MEL.get_num_material_expressions(dm)))
+
+
+# ---------------------------------------------------------------------------
+# Far ground material
+# ---------------------------------------------------------------------------
+# The world outside the simulated window is a CPU-built mesh with real heights,
+# vertex normals and a vertex colour that mirrors the resolve pass's plain dirt.
+# Nothing to sample: colour from the vertex, normal from the vertex.
+
+fm = TOOLS.create_asset("M_DirtFar", DIRT_DIR, unreal.Material, unreal.MaterialFactoryNew())
+vc = MEL.create_material_expression(fm, unreal.MaterialExpressionVertexColor, -600, -100)
+if not MEL.connect_material_property(vc, "", unreal.MaterialProperty.MP_BASE_COLOR):
+    raise RuntimeError("could not connect vertex colour to base colour")
+for value, prop, y in ((0.9, unreal.MaterialProperty.MP_ROUGHNESS, 200), (0.05, unreal.MaterialProperty.MP_SPECULAR, 300)):
+    node = MEL.create_material_expression(fm, unreal.MaterialExpressionConstant, -600, y)
+    node.set_editor_property("r", value)
+    if not MEL.connect_material_property(node, "", prop):
+        raise RuntimeError("could not connect a constant on the far material")
+MEL.recompile_material(fm)
+EAL.save_asset(FAR_MAT_PATH)
+log("material saved: %s" % FAR_MAT_PATH)
 
 
 # ---------------------------------------------------------------------------

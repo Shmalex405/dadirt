@@ -24,7 +24,7 @@ and volume drift has to stay at 0.000 m³. *(Phases A–E measured 2026-09-21:
 strength, solid volume, water, terramechanics and parcels, sections 9b–9f. The
 audit counts solids, in the ground and in the air.)*
 
-**G2 — A rut reads as a rut.** *(resolution: done. persistence: not yet.)*
+**G2 — A rut reads as a rut.** *(resolution: done. persistence: done 2026-09-21.)*
 A rear tyre is 110–120 mm wide, so a rut is ~12 cm across at the bottom and 25–35 cm
 with its spoil edges. Four to eight cells across it means **cells of 3–6 cm**. One
 fixed grid over a whole track cannot do that: 1024² over 384 m is 37.5 cm.
@@ -42,11 +42,14 @@ full resolution* for wherever they are pointed, so nothing is upsampled or smear
 `DaDirt.Focus <x> <y> [sizeM]` drops the simulator onto any corner of the real track
 at rut resolution. `DaDirt.Focus off` goes back to the whole site.
 
-**Not done —** deformation does not persist outside the focused region. Dig a rut,
-focus elsewhere, come back, and it is gone. Making it stick needs a world-resolution
-deformation layer that the region writes back to and reads in from when it moves.
-That matters when something is *travelling* through the world, so it is the piece to
-build alongside the test wheel — not before it.
+**Done —** deformation persists outside the focused region. The world is tiled at a
+quarter of the window; the window slides over it by whole tiles, reading leaving
+tiles back into a cache and bringing them back as they were. `DaDirt.Focus follow`
+keeps the window on the wheel as it drives; the rest of the box is drawn as a far
+mesh updated from the cache. The audit counts the cached tiles, so a lap of ruts
+still books to zero (docs/SoilPhysics.md 9h). Not yet: changing the cell size
+(`DaDirt.Focus off`, or a different size) starts a fresh world, because the cache
+is at one cell size.
 
 **G3 — The track is a real track.**
 1,520 m lap, 8 m wide, tightest corner 17 m radius, ~22 m of elevation, no jumps on
@@ -224,6 +227,8 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] Console-driven tools (dig, raise, smooth, wet, pack, loosen). Deliberately
       console-first: it needs no input assets and makes every action repeatable
 - [x] Focus the simulation on part of the box (`DaDirt.Focus`) for rut-scale work
+- [x] Ruts persist outside the window: tiled world, sliding window, cache,
+      far ground, `DaDirt.Focus follow` (2026-09-21)
 - [ ] Mouse tools: click and drag to sculpt
 - [ ] Droppable objects (ball, plate, block)
 - [ ] Camera + controls that make poking at dirt satisfying

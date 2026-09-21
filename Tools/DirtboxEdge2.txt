@@ -1,0 +1,36 @@
+# The +11.5 cm3 in a window over the 100 m3 block / dome: which system?
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 6 36 40
+wait 6 A_default
+DaDirt.Audit
+DaDirt.Parcels 0
+DaDirt.Reset
+wait 6 B_parcels_off
+DaDirt.Audit
+DaDirt.Parcels 1
+DaDirt.Shed 0
+DaDirt.Reset
+wait 6 C_shed_off
+DaDirt.Audit
+DaDirt.Shed 1
+DaDirt.Slump 0
+DaDirt.Reset
+wait 6 D_slump_off
+DaDirt.Audit
+DaDirt.Slump 3
+DaDirt.Focus -14 36 40
+DaDirt.Reset
+wait 6 E_block_only
+DaDirt.Audit
+DaDirt.Focus 26 36 40
+DaDirt.Reset
+wait 6 F_dome_only
+DaDirt.Audit
+DaDirt.Focus 6 36 80
+DaDirt.Reset
+wait 6 G_bigger_window
+DaDirt.Audit
+quit

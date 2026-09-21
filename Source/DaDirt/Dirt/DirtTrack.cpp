@@ -53,6 +53,8 @@ namespace
 	}
 }
 
+float FDirtTrack::SitePitRadiusM = 0.0f;
+
 FDirtTrack::FDirtTrack(const FDirtSimSettings& InSettings)
 	: Settings(InSettings)
 	, Resolution(FMath::Max(InSettings.SimResolution, 1))
@@ -732,8 +734,20 @@ void FDirtTrack::DigBorrowPits()
 	// pits cannot supply is reported honestly as imported rather than conjured.
 	constexpr float MaxPitRadiusM = 30.0f;
 	constexpr double CosineBowlFactor = 0.5 - 2.0 / (PI * PI);   // ~0.2974
-	const float R = FMath::Min(
+	// The pits are sized by the WHOLE site's ledger. A build of part of the
+	// site (a focused region, or one tile of the persistent world) only saw part
+	// of the cut and fill, so it reuses the radius the last whole-site build
+	// settled on; otherwise every tile would dig a different hole.
+	float R = FMath::Min(
 		FMath::Sqrt(static_cast<float>(PerPit / (CosineBowlFactor * PI * PitDepthM))), MaxPitRadiusM);
+	if (!Settings.IsFocused())
+	{
+		SitePitRadiusM = R;
+	}
+	else if (SitePitRadiusM > 0.0f)
+	{
+		R = SitePitRadiusM;
+	}
 
 	for (const FVector2f& Centre : PitCentres)
 	{

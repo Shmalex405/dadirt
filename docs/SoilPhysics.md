@@ -502,6 +502,50 @@ strokes, rut only, pack only, roost only (dumped in place), all parts with
 parcels off, and the hand-tool conserve test. Every one audits to 0.00000 m³.
 The culprit was the wheel's rut stroke passing over cells its launch spin had already emptied to bedrock: the Dig's core could not give the full amount, but its rim still received it, and every such stroke created dirt. The same clamp bit the roost scoop, whose parcels then landed dirt that never left. Both are fixed the same way: every mass-moving stroke is now two halves, a taking half that runs first and reports per stroke what it could not find (`DirtScoopShortfall`, fixed point), and a giving half (the rim of a dig, the core of a raise, a dump, or the parcels of a scoop) dispatched afterwards that gives only what was taken. With that, the four-pass rut at 3.9 cm cells reads **0.00000 m³** with parcels flying and grains shedding, as does every other case in the script. Parcels switched off now means the throw lands where it started through the same books, rather than a dump the shortfall could not reach.
 
+## 9h. The world outside the window (2026-09-21, later)
+
+**Ruts persist.** The simulated window is now a view onto a bigger world. The
+world is cut into tiles of a quarter of the window (10 m at a 40 m window, 256
+cells each) and the window slides over it by whole tiles. A tile leaving the
+window is read back from the GPU (state and pond) into a CPU cache; a tile
+entering comes back from that cache or, the first time, from the builders,
+which generate exactly that tile at the window's cell size. The slide itself is
+one compute pass (`MainShiftCS`): staying cells move within the texture,
+entering cells are read from a patch the CPU uploaded, bedrock is shifted on the
+CPU and re-uploaded, the surface is recomputed. Before the slide, every parcel
+over ground that is leaving lands at once into that ground (`MainParcelFlushCS`),
+so the tile carries its dirt with it. Strokes queued in the old coordinates are
+offset by the shift; height windows from before the slide are discarded by
+generation. `DaDirt.Focus follow` keeps the window on the wheel, sliding when it
+comes within a tile of the edge; `DaDirt.Focus <x> <y>` snaps to the tile grid
+and slides there if the cell size is unchanged, so nothing is lost on the way.
+
+**The ledger grew a column.** The baseline is now the sum of every tile ever
+generated, and the audit counts ground + air + *tiles out of the window*, read
+from the cache. `Tools/DirtboxPersist.txt`: a straight rut cut north over four
+tiles, the window sent five tiles back to where it started, the rut probed
+(2.1 cm deep, compaction 0.50 at the centre, 0.25 on the shoulders, exactly as
+left), then a second pass south that deepens it to 3.9 cm at compaction 0.78.
+Drift over the whole trip: +1.1 cm³ on 1,261 m³.
+
+**A bias in the slump, found by the finer books.** Printing the drift in cm³
+showed +11.6 cm³ appearing in six seconds from nothing but slumping over the
+100 m³ block and the cut dome. Flows are moved in float: the giver subtracts
+its total outflow, each receiver adds its share. Below half a float step of the
+giver's depth (4 µm at 33 cm, 8 µm at 100 cm) the subtraction rounds to
+nothing while the thinner receiver still gains, and every face that is still
+creeping manufactures dirt. A floor of `DIRT_SLUMP_MIN_FLOW_CM` = 10⁻⁴ cm per
+iteration per neighbour (a 0.03° excess at 4 cm cells) stops the creep instead:
+the same six seconds now read +0.37 cm³, and the residual is a random walk
+rather than a bias. The audit also counts cells holding less than no dirt and
+warns if there are any; there are none.
+
+**The far ground.** What the window does not simulate is still drawn: a CPU
+mesh of the whole box, one section per world tile at 25 cm spacing, coloured
+with the resolve pass's plain tint from the whole-site build, hidden under the
+window and rebuilt per tile from the cache when a tile leaves, so a rut stays
+visible after the window has moved on (`M_DirtFar`).
+
 ## 10. Implementation plan
 
 - **Phase A — strength (done 2026-09-21):** Mohr–Coulomb φ_eff and c_eff per cell

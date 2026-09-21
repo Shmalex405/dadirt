@@ -22,6 +22,25 @@ class UTextureRenderTarget2D;
 
 struct FDirtWindowSlot;
 struct FDirtParcelResources;
+struct FDirtTileReadback;
+
+/**
+ * One tile of the persistent world at the current cell size. The simulated
+ * window is 4 x 4 of these and slides over the world by whole tiles; a tile
+ * that leaves the window is read back here, a tile that enters comes back
+ * from here or is generated fresh. This is what makes a rut you cut in one
+ * corner still be there when you come round again.
+ */
+struct FDirtTile
+{
+	TArray<FLinearColor> State;      // R solid cm, G compaction, B moisture, A surface
+	TArray<float> Pond;
+	/** Solid m^3 the builder gave this tile: its share of the world baseline. */
+	double PristineM3 = 0.0;
+	/** Solid m^3 it held when it last left the window; counted while it is out. */
+	double StoredM3 = 0.0;
+	bool bHasState = false;
+};
 
 /**
  * A small patch of the dirt state that is kept current from the GPU without ever
@@ -46,6 +65,8 @@ struct FDirtAudit
 	double GroundM3 = 0.0;
 	/** Solid dirt in the air, carried by live parcels. */
 	double AirborneM3 = 0.0;
+	/** Solid dirt in tiles that are out of the simulated window. */
+	double StoredM3 = 0.0;
 	/** Ground + airborne: what must match the baseline. */
 	double VolumeM3 = 0.0;
 	double BaselineM3 = 0.0;
@@ -60,6 +81,10 @@ struct FDirtAudit
 	float MinLayerCm = 0.0f;
 	float MaxLayerCm = 0.0f;
 	int32 BedrockExposedCells = 0;
+	/** Cells holding less than no dirt: a bug wherever they come from. */
+	int32 NegativeCells = 0;
+	double NegativeCm3 = 0.0;
+	float MinSolidCm = 0.0f;
 	float MaxLooseSlopeDeg = 0.0f;
 	float MaxAnySlopeDeg = 0.0f;
 };
@@ -122,6 +147,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt",
 			  meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
 	FSoftObjectPath DustMaterialPath = FSoftObjectPath(TEXT("/Game/Dirt/M_DirtDust.M_DirtDust"));
+
+	/** Material for the far ground (the world outside the simulated window): vertex colour and vertex normals. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt")
+	TObjectPtr<UMaterialInterface> FarMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt",
+			  meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath FarMaterialPath = FSoftObjectPath(TEXT("/Game/Dirt/M_DirtFar.M_DirtFar"));
 
 	/** Which channel the ground is coloured by. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt|Debug")
@@ -210,6 +243,16 @@ public:
 	/** A camera position and rotation that frames whatever is currently built. */
 	void GetSuggestedViewpoint(FVector& OutLocation, FRotator& OutRotation) const;
 
+	/** Keep the simulated window centred on the test wheel, sliding by tiles as it drives. */
+	void SetFollowWheel(bool bFollow);
+	bool IsFollowingWheel() const { return bFollowWheel; }
+
+	/** Tile coordinates of the window's first tile, and cells per tile. */
+	FIntPoint GetWindowTile() const { return WindowTile; }
+	int32 GetTileCells() const { return TileCells; }
+	int32 GetCachedTileCount() const { return TileCache.Num(); }
+	int32 GetShiftCount() const { return ShiftsThisSession; }
+
 	// --- queries -----------------------------------------------------------
 
 	/** Refresh the CPU copy of the dirt state. Blocking — debug use only. */
@@ -291,6 +334,38 @@ public:
 private:
 	void ApplyModeDefaults();
 	void CreateResources();
+
+	/** Build one tile of the world with the current builder, converted to solids. Records its pristine volume. */
+	void BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState);
+
+	/** Run the whole-site builder once for its feature log and site-wide constants. */
+	void BuildWholeSiteLog();
+
+	/** Slide the window by whole tiles; the next sim step performs it on the GPU. */
+	void ShiftWindow(FIntPoint DeltaTiles);
+
+	/** Pull finished tile readbacks into the cache. Blocking waits for every one in flight. */
+	void HarvestTileReadbacks(bool bBlock);
+
+	/** Slide the window after the wheel when following. */
+	void UpdateFollow();
+
+	/** Snap a requested region centre onto the tile grid. */
+	FIntPoint TileForCentre(FVector2D CentreCm, float RegionCm) const;
+
+	/**
+	 * The far ground: the whole box outside the simulated window, one mesh
+	 * section per world tile, built from the whole-site ground and updated from
+	 * the cache as tiles leave the window. The window's own tiles are hidden.
+	 */
+	void BuildFarMesh();
+	void UpdateFarTile(FIntPoint Tile);
+	void UpdateFarVisibility();
+	void FillFarTile(FIntPoint Tile, const FDirtTile* Cached, TArray<FVector>& Verts, TArray<FVector>& Normals, TArray<FLinearColor>& Colors) const;
+	static FLinearColor FarTint(float SolidCm, float Compaction, float Moisture);
+	float TileSizeCm() const { return Settings.RegionSizeCm() / TilesPerSide; }
+	void UploadFloats(UTexture2D* Texture, const TArray<float>& Data);
+	void UploadColors(UTexture2D* Texture, const TArray<FLinearColor>& Data);
 	void ReleaseResources();
 	void BuildTerrainAndUpload();
 	void RebuildTerrainAndMesh();
@@ -331,13 +406,25 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> ParcelMID;
 
+	/** The actor's root; the ground mesh sits under it and moves with the window. */
+	UPROPERTY(Transient)
+	TObjectPtr<USceneComponent> SceneRoot;
+
+	/** The world outside the window, drawn from CPU data. */
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> FarMesh;
+
 	/** Static bedrock, R32F. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> BaseHeightTex;
 
-	/** CPU-built starting state, RGBA32F. Kept so Reset can reseed from it. */
+	/** CPU-built starting state, RGBA32F. Also the patch of entering cells on a slide. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> InitialStateTex;
+
+	/** Entering pond on a slide, R32F. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> InitialPondTex;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> StateA;
@@ -425,8 +512,34 @@ private:
 
 	TArray<FString> FeatureLog;
 
-	/** Solid m^3 in the ground at build time. */
+	/** Solid m^3 in the ground at build time: the world baseline, every tile ever generated. */
 	double BaselineVolumeM3 = 0.0;
+
+	// --- the persistent world ------------------------------------------------
+	static constexpr int32 TilesPerSide = 4;
+	int32 TileCells = 256;
+	FIntPoint WindowTile = FIntPoint::ZeroValue;
+	TMap<FIntPoint, TSharedPtr<FDirtTile>> TileCache;
+	/** Solid m^3 held by tiles that are out of the window right now. */
+	double WorldStoredM3 = 0.0;
+	TArray<TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>> PendingTileReadbacks;
+	TArray<TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>> InFlightTileReadbacks;
+	FIntPoint PendingShiftTexels = FIntPoint::ZeroValue;
+	/** Bumped on every slide; height-window data from an older window is discarded. */
+	uint32 WindowGeneration = 0;
+	bool bFollowWheel = false;
+	int32 ShiftsThisSession = 0;
+
+	/** The whole site as first built, at whole-box resolution: what the far ground shows until a tile is touched. */
+	int32 WholeRes = 0;
+	TArray<float> WholeSurfaceCm;
+	TArray<float> WholeSolidCm;
+	TArray<float> WholeCompaction;
+	TArray<float> WholeMoisture;
+	/** Far mesh layout: sections are world tiles, FarVerts x FarVerts each. */
+	int32 FarTilesPerSide = 0;
+	int32 FarVerts = 0;
+	float FarTileCm = 0.0f;
 
 	/** Lap length in metres when a track is built, 0 for the testbed. */
 	float LapLengthM = 0.0f;

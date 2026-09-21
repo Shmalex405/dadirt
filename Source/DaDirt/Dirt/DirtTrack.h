@@ -78,6 +78,9 @@ class FDirtTrack
 public:
 	explicit FDirtTrack(const FDirtSimSettings& InSettings);
 
+	/** Borrow-pit radius settled by the last whole-site build, reused by partial builds. */
+	static float SitePitRadiusM;
+
 	void Build();
 
 	TArray<float> Bedrock;      // cm

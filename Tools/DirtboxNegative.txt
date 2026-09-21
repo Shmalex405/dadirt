@@ -1,0 +1,43 @@
+# Where does negative dirt come from? Fixed 40 m window; one thing at a time.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -5 40
+wait 1
+DaDirt.Audit
+DaDirt.Parcels 0
+DaDirt.WheelParts 0 1 0 0 0
+DaDirt.Wheel 3 -22 90
+DaDirt.Drive 0.5 0 0
+wait 10 pack_only
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+DaDirt.Slump 0
+DaDirt.WheelParts 1 0 0 0 0
+DaDirt.Wheel 6 -22 90
+DaDirt.Drive 0.5 0 0
+wait 10 rut_noslump
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+DaDirt.Slump 3
+DaDirt.Shed 0
+DaDirt.Wheel 0 -22 90
+DaDirt.Drive 0.5 0 0
+wait 10 rut_slump_noshed
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+DaDirt.Shed 1
+DaDirt.Wheel -3 -22 90
+DaDirt.Drive 0.5 0 0
+wait 10 rut_slump_shed
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Audit
+DaDirt.Dig 8 5 150 60
+wait 2 dig_to_rock
+DaDirt.Audit
+quit

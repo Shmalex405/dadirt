@@ -2,6 +2,7 @@
 
 #include "DirtBall.h"
 #include "DirtWheel.h"
+#include "Async/Async.h"
 #include "DirtSimulation.h"
 #include "DirtTestbed.h"
 #include "DirtTrack.h"
@@ -39,13 +40,16 @@ struct FDirtWindowSlot
 	// Shared, under Lock.
 	FCriticalSection Lock;
 	FIntPoint RequestedOrigin = FIntPoint::ZeroValue;
+	uint32 RequestedGeneration = 0;
 	FIntPoint ReadyOrigin = FIntPoint::ZeroValue;
+	uint32 ReadyGeneration = 0;
 	TArray<FLinearColor> ReadyData;
 	bool bReady = false;
 
 	// Render thread only.
 	TUniquePtr<FRHIGPUTextureReadback> Readback[2];
 	FIntPoint PendingOrigin[2];
+	uint32 PendingGeneration[2] = { 0, 0 };
 	bool bPending[2] = { false, false };
 };
 
@@ -53,8 +57,13 @@ ADirtBox::ADirtBox()
 {
 	PrimaryActorTick.bCanEverTick = true;
 
+	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	SetRootComponent(SceneRoot);
+
+	// The ground mesh is a child so it can move with the simulated window;
+	// parcels and dust are box-relative and stay under the root.
 	GroundMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("GroundMesh"));
-	SetRootComponent(GroundMesh);
+	GroundMesh->SetupAttachment(SceneRoot);
 
 	// The mesh is displaced entirely in the vertex shader, so its collision would
 	// be a flat plane and lie about where the ground is. Physics queries go
@@ -68,16 +77,21 @@ ADirtBox::ADirtBox()
 	// million shadow casters is not a cost the Arc can carry, and dust does not
 	// need them.
 	ParcelMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ParcelMesh"));
-	ParcelMesh->SetupAttachment(GroundMesh);
+	ParcelMesh->SetupAttachment(SceneRoot);
 	ParcelMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	ParcelMesh->bUseAsyncCooking = false;
 	ParcelMesh->SetCastShadow(false);
 
 	DustMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("DustMesh"));
-	DustMesh->SetupAttachment(GroundMesh);
+	DustMesh->SetupAttachment(SceneRoot);
 	DustMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	DustMesh->bUseAsyncCooking = false;
 	DustMesh->SetCastShadow(false);
+
+	FarMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("FarMesh"));
+	FarMesh->SetupAttachment(SceneRoot);
+	FarMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	FarMesh->bUseAsyncCooking = false;
 }
 
 void ADirtBox::BeginPlay()
@@ -96,6 +110,10 @@ void ADirtBox::BeginPlay()
 	{
 		ParcelMaterial = Cast<UMaterialInterface>(ParcelMaterialPath.TryLoad());
 	}
+	if (!FarMaterial && FarMaterialPath.IsValid())
+	{
+		FarMaterial = Cast<UMaterialInterface>(FarMaterialPath.TryLoad());
+	}
 	if (!DustMaterial && DustMaterialPath.IsValid())
 	{
 		DustMaterial = Cast<UMaterialInterface>(DustMaterialPath.TryLoad());
@@ -103,8 +121,13 @@ void ADirtBox::BeginPlay()
 
 	ApplyModeDefaults();
 	CreateResources();
+	BuildWholeSiteLog();
+	WindowTile = TileForCentre(Settings.SimRegionCentreCm, Settings.RegionSizeCm());
+	Settings.SimRegionCentreCm = FVector2D(-Settings.WorldSizeCm * 0.5 + (WindowTile.X + TilesPerSide * 0.5) * TileSizeCm(),
+										   -Settings.WorldSizeCm * 0.5 + (WindowTile.Y + TilesPerSide * 0.5) * TileSizeCm());
 	BuildTerrainAndUpload();
 	BuildDisplayMesh();
+	BuildFarMesh();
 	BuildParcelMesh();
 	BuildDustMesh();
 	UpdateMaterialParameters();
@@ -255,6 +278,15 @@ void ADirtBox::CreateResources()
 	InitialStateTex->AddressX = TA_Clamp;
 	InitialStateTex->AddressY = TA_Clamp;
 	InitialStateTex->NeverStream = true;
+
+	InitialPondTex = UTexture2D::CreateTransient(Res, Res, PF_R32_FLOAT);
+	InitialPondTex->SRGB = false;
+	InitialPondTex->Filter = TF_Nearest;
+	InitialPondTex->AddressX = TA_Clamp;
+	InitialPondTex->AddressY = TA_Clamp;
+	InitialPondTex->NeverStream = true;
+
+	TileCells = Res / TilesPerSide;
 }
 
 void ADirtBox::ReleaseResources()
@@ -289,78 +321,609 @@ void ADirtBox::BuildTerrainAndUpload()
 {
 	const int32 Res = FMath::Max(Settings.SimResolution, 16);
 	const int32 Count = Res * Res;
+	TileCells = Res / TilesPerSide;
 
-	TArray<float> SrcBedrock, SrcLayer, SrcCompaction, SrcMoisture;
+	// The window is assembled tile by tile: a tile the cache remembers comes
+	// back as it was left, anything else is built fresh and its pristine volume
+	// joins the world baseline.
+	TArray<float> Bedrock;
+	TArray<FLinearColor> Initial;
+	TArray<float> InitialPond;
+	Bedrock.SetNumZeroed(Count);
+	Initial.SetNumZeroed(Count);
+	InitialPond.SetNumZeroed(Count);
 
+	TArray<float> TileBedrock;
+	TArray<FLinearColor> TileState;
+	for (int32 TY = 0; TY < TilesPerSide; ++TY)
+	{
+		for (int32 TX = 0; TX < TilesPerSide; ++TX)
+		{
+			const FIntPoint Tile = WindowTile + FIntPoint(TX, TY);
+			BuildTile(Tile, TileBedrock, TileState);
+
+			TSharedPtr<FDirtTile>* Cached = TileCache.Find(Tile);
+			const bool bFromCache = Cached && (*Cached)->bHasState;
+			for (int32 Y = 0; Y < TileCells; ++Y)
+			{
+				const int32 Row = (TY * TileCells + Y) * Res + TX * TileCells;
+				FMemory::Memcpy(Bedrock.GetData() + Row, TileBedrock.GetData() + Y * TileCells, TileCells * sizeof(float));
+				if (bFromCache)
+				{
+					FMemory::Memcpy(Initial.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
+					FMemory::Memcpy(InitialPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(float));
+				}
+				else
+				{
+					FMemory::Memcpy(Initial.GetData() + Row, TileState.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
+				}
+			}
+			if (bFromCache)
+			{
+				// Its dirt is in the window now, not in storage.
+				WorldStoredM3 -= (*Cached)->StoredM3;
+				(*Cached)->StoredM3 = 0.0;
+				(*Cached)->bHasState = false;
+			}
+		}
+	}
+
+	BedrockCm = Bedrock;
+	UploadFloats(BaseHeightTex, Bedrock);
+	UploadColors(InitialStateTex, Initial);
+	UploadFloats(InitialPondTex, InitialPond);
+
+	// Make sure the uploads have actually landed before the first sim step
+	// reads them. This happens on a rebuild, so the stall does not matter.
+	FlushRenderingCommands();
+}
+
+void ADirtBox::UploadFloats(UTexture2D* Texture, const TArray<float>& Data)
+{
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(Dest, Data.GetData(), Data.Num() * sizeof(float));
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+}
+
+void ADirtBox::UploadColors(UTexture2D* Texture, const TArray<FLinearColor>& Data)
+{
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(Dest, Data.GetData(), Data.Num() * sizeof(FLinearColor));
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+}
+
+void ADirtBox::BuildWholeSiteLog()
+{
+	// The builders describe the whole site (and the track settles its borrow
+	// pits) only when asked for all of it. Tiles are built afterwards from the
+	// same rules, so this is the one place the feature list comes from.
+	FDirtSimSettings Whole = Settings;
+	Whole.SimRegionSizeCm = 0.0f;
+	Whole.SimRegionCentreCm = FVector2D::ZeroVector;
+	TArray<float> Bedrock, Layer;
 	if (TerrainMode == EDirtTerrainMode::Track)
 	{
-		FDirtTrack Track(Settings);
+		FDirtTrack Track(Whole);
 		Track.Build();
 		FeatureLog = Track.FeatureLog;
-		BaselineVolumeM3 = Track.BaselineVolumeM3;
 		LapLengthM = Track.LapLengthM;
-		SrcBedrock = MoveTemp(Track.Bedrock);   SrcLayer = MoveTemp(Track.Layer);
-		SrcCompaction = MoveTemp(Track.Compaction); SrcMoisture = MoveTemp(Track.Moisture);
+		Bedrock = MoveTemp(Track.Bedrock); Layer = MoveTemp(Track.Layer);
+		WholeCompaction = MoveTemp(Track.Compaction); WholeMoisture = MoveTemp(Track.Moisture);
 	}
 	else
 	{
-		FDirtTestbed Testbed(Settings);
+		FDirtTestbed Testbed(Whole);
 		Testbed.Build();
 		FeatureLog = Testbed.FeatureLog;
-		BaselineVolumeM3 = Testbed.BaselineVolumeM3;
 		LapLengthM = 0.0f;
-		SrcBedrock = MoveTemp(Testbed.Bedrock); SrcLayer = MoveTemp(Testbed.Layer);
-		SrcCompaction = MoveTemp(Testbed.Compaction); SrcMoisture = MoveTemp(Testbed.Moisture);
+		Bedrock = MoveTemp(Testbed.Bedrock); Layer = MoveTemp(Testbed.Layer);
+		WholeCompaction = MoveTemp(Testbed.Compaction); WholeMoisture = MoveTemp(Testbed.Moisture);
 	}
 
-	BedrockCm = SrcBedrock;
-
-	// The builders think in bulk centimetres (what a ruler would measure). The
-	// simulation stores solids, so convert here, once, and take the baseline
-	// from the converted values so the audit measures exactly what was uploaded.
+	// Kept for the far ground: the surface a ruler would measure, and the solids.
+	WholeRes = FMath::Max(Whole.SimResolution, 16);
+	const int32 Count = WholeRes * WholeRes;
+	WholeSurfaceCm.SetNumUninitialized(Count);
+	WholeSolidCm.SetNumUninitialized(Count);
+	for (int32 i = 0; i < Count; ++i)
 	{
+		const float Bulk = FMath::Max(Layer[i], 0.0f);
+		WholeSurfaceCm[i] = Bedrock[i] + Bulk;
+		WholeSolidCm[i] = DirtSolidCm(Bulk, WholeCompaction[i], Settings);
+	}
+}
+
+FLinearColor ADirtBox::FarTint(float SolidCm, float Compaction, float Moisture)
+{
+	// The resolve pass's plain dirt, mirrored (DirtSim.usf, MainResolveCS).
+	FLinearColor C = FMath::Lerp(FLinearColor(0.40f, 0.29f, 0.19f), FLinearColor(0.24f, 0.16f, 0.10f), FMath::Clamp(Compaction, 0.0f, 1.0f));
+	C = FMath::Lerp(C, C * 0.40f, FMath::Clamp(Moisture, 0.0f, 1.0f));
+	C = FMath::Lerp(FLinearColor(0.35f, 0.33f, 0.31f), C, FMath::Clamp(SolidCm / 3.0f, 0.0f, 1.0f));
+	C.A = 1.0f;
+	return C;
+}
+
+void ADirtBox::FillFarTile(FIntPoint Tile, const FDirtTile* Cached, TArray<FVector>& Verts, TArray<FVector>& Normals, TArray<FLinearColor>& Colors) const
+{
+	const int32 V = FarVerts;
+	const float Step = FarTileCm / (V - 1);
+	const float Half = Settings.WorldSizeCm * 0.5f;
+	const FVector2D Origin(-Half + Tile.X * FarTileCm, -Half + Tile.Y * FarTileCm);
+
+	// Height, solids, packing and moisture at a box-relative point, bilinear.
+	const auto Sample = [&](float Xcm, float Ycm, float& OutSurface, float& OutSolid, float& OutComp, float& OutMoist)
+	{
+		if (Cached && Cached->bHasState)
+		{
+			const float Texel = Settings.TexelSizeCm();
+			const int32 N = TileCells;
+			const float FX = FMath::Clamp((Xcm - Origin.X) / Texel - 0.5f, 0.0f, N - 1.0f);
+			const float FY = FMath::Clamp((Ycm - Origin.Y) / Texel - 0.5f, 0.0f, N - 1.0f);
+			const int32 X0 = FMath::FloorToInt(FX), Y0 = FMath::FloorToInt(FY);
+			const int32 X1 = FMath::Min(X0 + 1, N - 1), Y1 = FMath::Min(Y0 + 1, N - 1);
+			const float TX = FX - X0, TY = FY - Y0;
+			const FLinearColor S = FMath::Lerp(FMath::Lerp(Cached->State[Y0 * N + X0], Cached->State[Y0 * N + X1], TX),
+											   FMath::Lerp(Cached->State[Y1 * N + X0], Cached->State[Y1 * N + X1], TX), TY);
+			OutSurface = S.A; OutSolid = S.R; OutComp = S.G; OutMoist = S.B;
+		}
+		else
+		{
+			const float Texel = Settings.WorldSizeCm / WholeRes;
+			const int32 N = WholeRes;
+			const float FX = FMath::Clamp((Xcm + Half) / Texel - 0.5f, 0.0f, N - 1.0f);
+			const float FY = FMath::Clamp((Ycm + Half) / Texel - 0.5f, 0.0f, N - 1.0f);
+			const int32 X0 = FMath::FloorToInt(FX), Y0 = FMath::FloorToInt(FY);
+			const int32 X1 = FMath::Min(X0 + 1, N - 1), Y1 = FMath::Min(Y0 + 1, N - 1);
+			const float TX = FX - X0, TY = FY - Y0;
+			const auto Bi = [&](const TArray<float>& A)
+			{
+				return FMath::Lerp(FMath::Lerp(A[Y0 * N + X0], A[Y0 * N + X1], TX), FMath::Lerp(A[Y1 * N + X0], A[Y1 * N + X1], TX), TY);
+			};
+			OutSurface = Bi(WholeSurfaceCm); OutSolid = Bi(WholeSolidCm); OutComp = Bi(WholeCompaction); OutMoist = Bi(WholeMoisture);
+		}
+	};
+
+	// One ring beyond the tile so the normals are centred differences everywhere.
+	const int32 W = V + 2;
+	TArray<float> Hs;
+	Hs.SetNumUninitialized(W * W);
+	Verts.SetNumUninitialized(V * V);
+	Normals.SetNumUninitialized(V * V);
+	Colors.SetNumUninitialized(V * V);
+	for (int32 J = 0; J < W; ++J)
+	{
+		for (int32 I = 0; I < W; ++I)
+		{
+			const float X = Origin.X + (I - 1) * Step;
+			const float Y = Origin.Y + (J - 1) * Step;
+			float Surface, Solid, Comp, Moist;
+			Sample(X, Y, Surface, Solid, Comp, Moist);
+			Hs[J * W + I] = Surface;
+			if (I >= 1 && I <= V && J >= 1 && J <= V)
+			{
+				const int32 K = (J - 1) * V + (I - 1);
+				Verts[K] = FVector(X, Y, Surface);
+				Colors[K] = FarTint(Solid, Comp, Moist);
+			}
+		}
+	}
+	for (int32 J = 1; J <= V; ++J)
+	{
+		for (int32 I = 1; I <= V; ++I)
+		{
+			const float DX = (Hs[J * W + I + 1] - Hs[J * W + I - 1]) / (2.0f * Step);
+			const float DY = (Hs[(J + 1) * W + I] - Hs[(J - 1) * W + I]) / (2.0f * Step);
+			Normals[(J - 1) * V + (I - 1)] = FVector(-DX, -DY, 1.0f).GetSafeNormal();
+		}
+	}
+}
+
+void ADirtBox::BuildFarMesh()
+{
+	FarMesh->ClearAllMeshSections();
+	FarTilesPerSide = 0;
+	if (!Settings.IsFocused() || WholeRes == 0)
+	{
+		return;                              // the window is the whole box: nothing is outside it
+	}
+
+	FarTileCm = TileSizeCm();
+	FarTilesPerSide = FMath::CeilToInt(Settings.WorldSizeCm / FarTileCm);
+	FarVerts = FMath::Clamp(FMath::RoundToInt(FarTileCm / 25.0f), 2, 256) + 1;
+	if (FarMaterial)
+	{
+		FarMesh->SetMaterial(0, FarMaterial);
+	}
+
+	const int32 V = FarVerts;
+	TArray<int32> Triangles;
+	Triangles.Reserve((V - 1) * (V - 1) * 6);
+	for (int32 Y = 0; Y < V - 1; ++Y)
+	{
+		for (int32 X = 0; X < V - 1; ++X)
+		{
+			const int32 I0 = Y * V + X, I1 = I0 + 1, I2 = I0 + V, I3 = I2 + 1;
+			Triangles.Add(I0); Triangles.Add(I2); Triangles.Add(I1);
+			Triangles.Add(I1); Triangles.Add(I2); Triangles.Add(I3);
+		}
+	}
+
+	TArray<FVector> Verts, Normals;
+	TArray<FLinearColor> Colors;
+	TArray<FVector2D> UVs;
+	TArray<FProcMeshTangent> Tangents;
+	for (int32 TY = 0; TY < FarTilesPerSide; ++TY)
+	{
+		for (int32 TX = 0; TX < FarTilesPerSide; ++TX)
+		{
+			const FIntPoint Tile(TX, TY);
+			const TSharedPtr<FDirtTile>* Cached = TileCache.Find(Tile);
+			FillFarTile(Tile, Cached ? Cached->Get() : nullptr, Verts, Normals, Colors);
+			const int32 Section = TY * FarTilesPerSide + TX;
+			FarMesh->CreateMeshSection_LinearColor(Section, Verts, Triangles, Normals, UVs, Colors, Tangents, false);
+			if (FarMaterial)
+			{
+				FarMesh->SetMaterial(Section, FarMaterial);
+			}
+		}
+	}
+	UpdateFarVisibility();
+	UE_LOG(LogDirt, Log, TEXT("Far ground: %d x %d tiles of %.1f m, %d x %d verts each (%.0f cm spacing)."),
+		FarTilesPerSide, FarTilesPerSide, FarTileCm * 0.01f, V, V, FarTileCm / (V - 1));
+}
+
+void ADirtBox::UpdateFarTile(FIntPoint Tile)
+{
+	if (FarTilesPerSide == 0 || Tile.X < 0 || Tile.Y < 0 || Tile.X >= FarTilesPerSide || Tile.Y >= FarTilesPerSide)
+	{
+		return;
+	}
+	const TSharedPtr<FDirtTile>* Cached = TileCache.Find(Tile);
+	TArray<FVector> Verts, Normals;
+	TArray<FLinearColor> Colors;
+	TArray<FVector2D> UVs;
+	TArray<FProcMeshTangent> Tangents;
+	FillFarTile(Tile, Cached ? Cached->Get() : nullptr, Verts, Normals, Colors);
+	FarMesh->UpdateMeshSection_LinearColor(Tile.Y * FarTilesPerSide + Tile.X, Verts, Normals, UVs, Colors, Tangents);
+}
+
+void ADirtBox::UpdateFarVisibility()
+{
+	for (int32 TY = 0; TY < FarTilesPerSide; ++TY)
+	{
+		for (int32 TX = 0; TX < FarTilesPerSide; ++TX)
+		{
+			const FIntPoint Rel = FIntPoint(TX, TY) - WindowTile;
+			const bool bInWindow = Rel.X >= 0 && Rel.X < TilesPerSide && Rel.Y >= 0 && Rel.Y < TilesPerSide;
+			FarMesh->SetMeshSectionVisible(TY * FarTilesPerSide + TX, !bInWindow);
+		}
+	}
+}
+
+FIntPoint ADirtBox::TileForCentre(FVector2D CentreCm, float RegionCm) const
+{
+	const float TileCm = RegionCm / TilesPerSide;
+	const float Half = Settings.WorldSizeCm * 0.5f;
+	const int32 MaxTile = FMath::Max(FMath::FloorToInt(Settings.WorldSizeCm / TileCm) - TilesPerSide, 0);
+	const FVector2D Origin = CentreCm - FVector2D(RegionCm * 0.5);
+	return FIntPoint(
+		FMath::Clamp(FMath::RoundToInt((Origin.X + Half) / TileCm), 0, MaxTile),
+		FMath::Clamp(FMath::RoundToInt((Origin.Y + Half) / TileCm), 0, MaxTile));
+}
+
+void ADirtBox::BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState)
+{
+	// The builders take a region and a resolution; a tile is just a small one.
+	const float TileCm = TileSizeCm();
+	FDirtSimSettings TileSettings = Settings;
+	TileSettings.SimResolution = TileCells;
+	TileSettings.SimRegionSizeCm = TileCm;
+	TileSettings.SimRegionCentreCm = FVector2D(-Settings.WorldSizeCm * 0.5 + (Tile.X + 0.5) * TileCm,
+											   -Settings.WorldSizeCm * 0.5 + (Tile.Y + 0.5) * TileCm);
+
+	TArray<float> Layer, Compaction, Moisture;
+	if (TerrainMode == EDirtTerrainMode::Track)
+	{
+		FDirtTrack Track(TileSettings);
+		Track.Build();
+		OutBedrock = MoveTemp(Track.Bedrock); Layer = MoveTemp(Track.Layer);
+		Compaction = MoveTemp(Track.Compaction); Moisture = MoveTemp(Track.Moisture);
+	}
+	else
+	{
+		FDirtTestbed Testbed(TileSettings);
+		Testbed.Build();
+		OutBedrock = MoveTemp(Testbed.Bedrock); Layer = MoveTemp(Testbed.Layer);
+		Compaction = MoveTemp(Testbed.Compaction); Moisture = MoveTemp(Testbed.Moisture);
+	}
+
+	// The builders think in bulk centimetres; the simulation stores solids.
+	const int32 Count = TileCells * TileCells;
+	OutState.SetNumUninitialized(Count);
+	double SumSolidCm = 0.0;
+	for (int32 i = 0; i < Count; ++i)
+	{
+		const float Solid = DirtSolidCm(FMath::Max(Layer[i], 0.0f), Compaction[i], Settings);
+		SumSolidCm += Solid;
+		FLinearColor& S = OutState[i];
+		S.R = Solid;
+		S.G = Compaction[i];
+		S.B = Moisture[i];
+		S.A = OutBedrock[i] + DirtBulkCm(Solid, Compaction[i], Settings);
+	}
+
+	TSharedPtr<FDirtTile>& Entry = TileCache.FindOrAdd(Tile);
+	if (!Entry.IsValid())
+	{
+		Entry = MakeShared<FDirtTile>();
+		Entry->PristineM3 = SumSolidCm * Settings.TexelAreaCm2() / 1000000.0;
+		BaselineVolumeM3 += Entry->PristineM3;
+	}
+}
+
+void ADirtBox::SetFollowWheel(bool bFollow)
+{
+	bFollowWheel = bFollow;
+}
+
+void ADirtBox::UpdateFollow()
+{
+	if (!bFollowWheel || !bResourcesReady || PendingShiftTexels != FIntPoint::ZeroValue || bNeedsReinit)
+	{
+		return;
+	}
+	ADirtWheel* Wheel = nullptr;
+	for (TActorIterator<ADirtWheel> It(GetWorld()); It; ++It)
+	{
+		Wheel = *It;
+		break;
+	}
+	if (!Wheel)
+	{
+		return;
+	}
+
+	// Keep the wheel inside the middle two by two tiles. One tile per frame.
+	const FVector2D Local = FVector2D(Wheel->GetActorLocation() - GetActorLocation());
+	const float TileCm = TileSizeCm();
+	const FVector2D Origin = Settings.SimRegionCentreCm - FVector2D(Settings.RegionSizeCm() * 0.5);
+	const int32 TX = FMath::FloorToInt((Local.X - Origin.X) / TileCm);
+	const int32 TY = FMath::FloorToInt((Local.Y - Origin.Y) / TileCm);
+	FIntPoint Delta(0, 0);
+	if (TX < 1) Delta.X = -1; else if (TX > TilesPerSide - 2) Delta.X = 1;
+	if (TY < 1) Delta.Y = -1; else if (TY > TilesPerSide - 2) Delta.Y = 1;
+	if (Delta != FIntPoint::ZeroValue)
+	{
+		ShiftWindow(Delta);
+	}
+}
+
+void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
+{
+	if (!bResourcesReady)
+	{
+		return;
+	}
+	const float TileCm = TileSizeCm();
+	const int32 MaxTile = FMath::Max(FMath::FloorToInt(Settings.WorldSizeCm / TileCm) - TilesPerSide, 0);
+	const FIntPoint NewTile(FMath::Clamp(WindowTile.X + DeltaTiles.X, 0, MaxTile),
+							FMath::Clamp(WindowTile.Y + DeltaTiles.Y, 0, MaxTile));
+	DeltaTiles = NewTile - WindowTile;
+	if (DeltaTiles == FIntPoint::ZeroValue)
+	{
+		return;
+	}
+
+	// A tile still on its way to the cache must land before it can come back.
+	HarvestTileReadbacks(true);
+
+	const int32 Res = Settings.SimResolution;
+	const int32 Count = Res * Res;
+	const FIntPoint Shift = DeltaTiles * TileCells;
+
+	// 1. The leaving tiles are read back by the next step, before the slide.
+	for (int32 TY = 0; TY < TilesPerSide; ++TY)
+	{
+		for (int32 TX = 0; TX < TilesPerSide; ++TX)
+		{
+			const FIntPoint Tile = WindowTile + FIntPoint(TX, TY);
+			const FIntPoint Rel = Tile - NewTile;
+			const bool bStays = Rel.X >= 0 && Rel.X < TilesPerSide && Rel.Y >= 0 && Rel.Y < TilesPerSide;
+			if (bStays)
+			{
+				continue;
+			}
+			TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe> RB = MakeShared<FDirtTileReadback, ESPMode::ThreadSafe>();
+			RB->Tile = Tile;
+			RB->OriginTexel = FIntPoint(TX * TileCells, TY * TileCells);
+			RB->SizeTexels = TileCells;
+			PendingTileReadbacks.Add(RB);
+			InFlightTileReadbacks.Add(RB);
+		}
+	}
+
+	// 2. Bedrock slides on the CPU (it is static and deterministic), the
+	//    entering cells are filled, and the patch of entering state is uploaded.
+	TArray<float> NewBedrock;
+	TArray<FLinearColor> Patch;
+	TArray<float> PatchPond;
+	NewBedrock.SetNumZeroed(Count);
+	Patch.SetNumZeroed(Count);
+	PatchPond.SetNumZeroed(Count);
+	for (int32 Y = 0; Y < Res; ++Y)
+	{
+		const int32 OY = Y + Shift.Y;
+		if (OY < 0 || OY >= Res)
+		{
+			continue;
+		}
+		for (int32 X = 0; X < Res; ++X)
+		{
+			const int32 OX = X + Shift.X;
+			if (OX >= 0 && OX < Res)
+			{
+				NewBedrock[Y * Res + X] = BedrockCm[OY * Res + OX];
+			}
+		}
+	}
+
+	TArray<float> TileBedrock;
+	TArray<FLinearColor> TileState;
+	int32 Entered = 0, FromCache = 0;
+	for (int32 TY = 0; TY < TilesPerSide; ++TY)
+	{
+		for (int32 TX = 0; TX < TilesPerSide; ++TX)
+		{
+			const FIntPoint Tile = NewTile + FIntPoint(TX, TY);
+			const FIntPoint Rel = Tile - WindowTile;
+			const bool bWasIn = Rel.X >= 0 && Rel.X < TilesPerSide && Rel.Y >= 0 && Rel.Y < TilesPerSide;
+			if (bWasIn)
+			{
+				continue;
+			}
+			BuildTile(Tile, TileBedrock, TileState);
+			TSharedPtr<FDirtTile>* Cached = TileCache.Find(Tile);
+			const bool bFromCache = Cached && (*Cached)->bHasState;
+			for (int32 Y = 0; Y < TileCells; ++Y)
+			{
+				const int32 Row = (TY * TileCells + Y) * Res + TX * TileCells;
+				FMemory::Memcpy(NewBedrock.GetData() + Row, TileBedrock.GetData() + Y * TileCells, TileCells * sizeof(float));
+				if (bFromCache)
+				{
+					FMemory::Memcpy(Patch.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
+					FMemory::Memcpy(PatchPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(float));
+				}
+				else
+				{
+					FMemory::Memcpy(Patch.GetData() + Row, TileState.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
+				}
+			}
+			if (bFromCache)
+			{
+				WorldStoredM3 -= (*Cached)->StoredM3;
+				(*Cached)->StoredM3 = 0.0;
+				(*Cached)->bHasState = false;
+				++FromCache;
+			}
+			++Entered;
+		}
+	}
+
+	BedrockCm = MoveTemp(NewBedrock);
+	UploadFloats(BaseHeightTex, BedrockCm);
+	UploadColors(InitialStateTex, Patch);
+	UploadFloats(InitialPondTex, PatchPond);
+
+	// 3. Everything that addresses the window by texel moves with it.
+	WindowTile = NewTile;
+	Settings.SimRegionCentreCm += FVector2D(DeltaTiles.X * TileCm, DeltaTiles.Y * TileCm);
+	PendingShiftTexels = Shift;
+	for (FDirtBrushStroke& Stroke : PendingStrokes) { Stroke.CenterTexel -= FVector2f(Shift.X, Shift.Y); }
+	for (FDirtBrushStroke& Stroke : PendingGiving) { Stroke.CenterTexel -= FVector2f(Shift.X, Shift.Y); }
+	for (FDirtWaterSource& W : PendingWater) { W.CenterTexel -= FVector2f(Shift.X, Shift.Y); }
+	++WindowGeneration;
+	Readback.Empty();
+	PondReadback.Empty();
+	if (GroundMesh)
+	{
+		GroundMesh->SetRelativeLocation(FVector(Settings.SimRegionCentreCm.X, Settings.SimRegionCentreCm.Y, 0.0));
+	}
+	UpdateFarVisibility();
+	++ShiftsThisSession;
+
+	UE_LOG(LogDirt, Log, TEXT("Window slid by (%d, %d) tiles to (%d, %d): centre (%.1f, %.1f) m, %d tiles entered (%d from the cache), %d stored."),
+		DeltaTiles.X, DeltaTiles.Y, WindowTile.X, WindowTile.Y,
+		Settings.SimRegionCentreCm.X * 0.01, Settings.SimRegionCentreCm.Y * 0.01, Entered, FromCache, TileCache.Num());
+}
+
+void ADirtBox::HarvestTileReadbacks(bool bBlock)
+{
+	if (InFlightTileReadbacks.Num() == 0)
+	{
+		return;
+	}
+
+	const int32 TileCellsLocal = TileCells;
+	const auto Harvest = [this, TileCellsLocal](bool bWait)
+	{
+		TArray<TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>> InFlight = InFlightTileReadbacks;
+		ENQUEUE_RENDER_COMMAND(DirtTileHarvest)(
+			[InFlight, TileCellsLocal, bWait](FRHICommandListImmediate& RHICmdList)
+			{
+				for (const TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>& RB : InFlight)
+				{
+					if (!RB->bEnqueued || RB->bDone || !RB->State || !RB->Pond)
+					{
+						continue;
+					}
+					if (!RB->State->IsReady() || !RB->Pond->IsReady())
+					{
+						if (!bWait)
+						{
+							continue;
+						}
+						RHICmdList.SubmitAndBlockUntilGPUIdle();
+					}
+					const int32 N = RB->SizeTexels;
+					int32 Pitch = 0;
+					if (const FLinearColor* Src = static_cast<const FLinearColor*>(RB->State->Lock(Pitch)))
+					{
+						RB->ResultState.SetNumUninitialized(N * N);
+						for (int32 Y = 0; Y < N; ++Y)
+						{
+							FMemory::Memcpy(RB->ResultState.GetData() + Y * N, Src + Y * Pitch, N * sizeof(FLinearColor));
+						}
+						RB->State->Unlock();
+					}
+					if (const float* Src = static_cast<const float*>(RB->Pond->Lock(Pitch)))
+					{
+						RB->ResultPond.SetNumUninitialized(N * N);
+						for (int32 Y = 0; Y < N; ++Y)
+						{
+							FMemory::Memcpy(RB->ResultPond.GetData() + Y * N, Src + Y * Pitch, N * sizeof(float));
+						}
+						RB->Pond->Unlock();
+					}
+					RB->bDone = true;
+				}
+			});
+	};
+
+	Harvest(bBlock);
+	if (bBlock)
+	{
+		FlushRenderingCommands();
+	}
+
+	for (int32 i = InFlightTileReadbacks.Num() - 1; i >= 0; --i)
+	{
+		const TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>& RB = InFlightTileReadbacks[i];
+		if (!RB->bDone)
+		{
+			continue;
+		}
+		TSharedPtr<FDirtTile>& Entry = TileCache.FindOrAdd(RB->Tile);
+		if (!Entry.IsValid())
+		{
+			Entry = MakeShared<FDirtTile>();
+		}
+		Entry->State = MoveTemp(RB->ResultState);
+		Entry->Pond = MoveTemp(RB->ResultPond);
 		double SumSolidCm = 0.0;
-		for (int32 i = 0; i < Count; ++i)
+		for (const FLinearColor& S : Entry->State)
 		{
-			SrcLayer[i] = DirtSolidCm(FMath::Max(SrcLayer[i], 0.0f), SrcCompaction[i], Settings);
-			SumSolidCm += SrcLayer[i];
+			SumSolidCm += S.R;
 		}
-		BaselineVolumeM3 = SumSolidCm * Settings.TexelAreaCm2() / 1000000.0;
+		Entry->StoredM3 = SumSolidCm * Settings.TexelAreaCm2() / 1000000.0;
+		Entry->bHasState = Entry->State.Num() == TileCells * TileCells;
+		WorldStoredM3 += Entry->StoredM3;
+		InFlightTileReadbacks.RemoveAt(i);
+		UpdateFarTile(RB->Tile);
 	}
-
-	// --- bedrock -> R32F ---------------------------------------------------
-	{
-		FTexture2DMipMap& Mip = BaseHeightTex->GetPlatformData()->Mips[0];
-		void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
-		FMemory::Memcpy(Dest, SrcBedrock.GetData(), Count * sizeof(float));
-		Mip.BulkData.Unlock();
-		BaseHeightTex->UpdateResource();
-	}
-
-	// --- initial dirt state -> RGBA32F ------------------------------------
-	{
-		TArray<FLinearColor> Initial;
-		Initial.SetNumUninitialized(Count);
-
-		for (int32 i = 0; i < Count; ++i)
-		{
-			FLinearColor& C = Initial[i];
-			C.R = SrcLayer[i];                                       // solid dirt, cm
-			C.G = SrcCompaction[i];
-			C.B = SrcMoisture[i];
-			C.A = SrcBedrock[i] + DirtBulkCm(SrcLayer[i], SrcCompaction[i], Settings);   // total surface, cm
-		}
-
-		FTexture2DMipMap& Mip = InitialStateTex->GetPlatformData()->Mips[0];
-		void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
-		FMemory::Memcpy(Dest, Initial.GetData(), Count * sizeof(FLinearColor));
-		Mip.BulkData.Unlock();
-		InitialStateTex->UpdateResource();
-	}
-
-	// Make sure both uploads have actually landed before the first sim step
-	// reads them. This happens once, at startup, so the stall does not matter.
-	FlushRenderingCommands();
 }
 
 void ADirtBox::BuildDisplayMesh()
@@ -370,10 +933,12 @@ void ADirtBox::BuildDisplayMesh()
 	const float Half = Size * 0.5f;
 	const float Step = Size / static_cast<float>(N - 1);
 
-	// The mesh covers exactly what is simulated. When the sim is focused on part
-	// of the box, the mesh follows it there.
-	const float CentreX = static_cast<float>(Settings.SimRegionCentreCm.X);
-	const float CentreY = static_cast<float>(Settings.SimRegionCentreCm.Y);
+	// The mesh covers exactly what is simulated. It is built around its own
+	// origin and the component is moved to the window's centre, so a sliding
+	// window costs a transform, not a rebuild.
+	const float CentreX = 0.0f;
+	const float CentreY = 0.0f;
+	GroundMesh->SetRelativeLocation(FVector(Settings.SimRegionCentreCm.X, Settings.SimRegionCentreCm.Y, 0.0));
 
 	TArray<FVector> Vertices;
 	TArray<FVector2D> UVs;
@@ -436,10 +1001,11 @@ void ADirtBox::BuildDisplayMesh()
 		const float MaxUpCm = 3000.0f;
 		const float MaxDownCm = -2500.0f;
 
+		const float BoxHalf = Settings.WorldSizeCm;      // generous: the window can be anywhere in the box
 		TArray<FVector> BoundsVerts;
-		BoundsVerts.Add(FVector(CentreX - Half, CentreY - Half, MaxDownCm));
-		BoundsVerts.Add(FVector(CentreX + Half, CentreY + Half, MaxUpCm));
-		BoundsVerts.Add(FVector(CentreX - Half, CentreY - Half, MaxDownCm));
+		BoundsVerts.Add(FVector(-BoxHalf, -BoxHalf, MaxDownCm));
+		BoundsVerts.Add(FVector(BoxHalf, BoxHalf, MaxUpCm));
+		BoundsVerts.Add(FVector(-BoxHalf, -BoxHalf, MaxDownCm));
 
 		TArray<int32> BoundsTris = { 0, 1, 2 };
 		TArray<FVector> BoundsNormals = { FVector::UpVector, FVector::UpVector, FVector::UpVector };
@@ -720,6 +1286,9 @@ void ADirtBox::Tick(float DeltaSeconds)
 		return;
 	}
 
+	HarvestTileReadbacks(false);
+	UpdateFollow();
+
 	if (bPaused)
 	{
 		// Paused stops the dirt settling, but sculpting still works — otherwise
@@ -860,6 +1429,7 @@ void ADirtBox::SetHeightWindowCentre(int32 Id, FVector2D WorldXYCm)
 
 	FScopeLock L(&Slot.Lock);
 	Slot.RequestedOrigin = Origin;
+	Slot.RequestedGeneration = WindowGeneration;
 }
 
 bool ADirtBox::SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
@@ -930,10 +1500,18 @@ void ADirtBox::UpdateHeightWindows()
 		FScopeLock L(&Slot->Lock);
 		if (Slot->bReady)
 		{
-			Slot->Game.Origin = Slot->ReadyOrigin;
-			Slot->Game.Size = Slot->Size;
-			Swap(Slot->Game.Data, Slot->ReadyData);
-			Slot->Game.bValid = true;
+			// Data read from a window that has since slid is addressed wrongly; drop it.
+			if (Slot->ReadyGeneration == WindowGeneration)
+			{
+				Slot->Game.Origin = Slot->ReadyOrigin;
+				Slot->Game.Size = Slot->Size;
+				Swap(Slot->Game.Data, Slot->ReadyData);
+				Slot->Game.bValid = true;
+			}
+			else
+			{
+				Slot->Game.bValid = false;
+			}
 			Slot->bReady = false;
 		}
 	}
@@ -987,6 +1565,7 @@ void ADirtBox::UpdateHeightWindows()
 						FScopeLock L(&Slot->Lock);
 						Slot->ReadyData = MoveTemp(Copy);
 						Slot->ReadyOrigin = Slot->PendingOrigin[i];
+						Slot->ReadyGeneration = Slot->PendingGeneration[i];
 						Slot->bReady = true;
 					}
 					Slot->bPending[i] = false;
@@ -1005,14 +1584,17 @@ void ADirtBox::UpdateHeightWindows()
 					}
 
 					FIntPoint Origin;
+					uint32 Generation;
 					{
 						FScopeLock L(&Slot->Lock);
 						Origin = Slot->RequestedOrigin;
+						Generation = Slot->RequestedGeneration;
 					}
 
 					Slot->Readback[i]->EnqueueCopy(RHICmdList, Texture,
 						FResolveRect(Origin.X, Origin.Y, Origin.X + N, Origin.Y + N));
 					Slot->PendingOrigin[i] = Origin;
+					Slot->PendingGeneration[i] = Generation;
 					Slot->bPending[i] = true;
 					break;
 				}
@@ -1032,6 +1614,7 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	// are pulled out on the render thread, where they belong.
 	FTextureResource* BaseHeightRes = BaseHeightTex->GetResource();
 	FTextureResource* InitialStateRes = InitialStateTex->GetResource();
+	FTextureResource* InitialPondRes = InitialPondTex ? InitialPondTex->GetResource() : nullptr;
 	FTextureRenderTargetResource* StateARes = StateA->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* StateBRes = StateB->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* PondARes = PondA->GameThread_GetRenderTargetResource();
@@ -1040,7 +1623,7 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	FTextureRenderTargetResource* NormalRes = NormalRT->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* DebugRes = DebugRT->GameThread_GetRenderTargetResource();
 
-	if (!BaseHeightRes || !InitialStateRes || !StateARes || !StateBRes || !PondARes || !PondBRes
+	if (!BaseHeightRes || !InitialStateRes || !InitialPondRes || !StateARes || !StateBRes || !PondARes || !PondBRes
 		|| !DisplayRes || !NormalRes || !DebugRes)
 	{
 		return;
@@ -1115,6 +1698,13 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	Frame.DebugMode = static_cast<int32>(DebugView);
 	Frame.DebugLayerRangeCm = DebugLayerRangeCm;
 	Frame.bReinitialise = bForceReinit;
+	if (!bForceReinit)
+	{
+		Frame.ShiftTexels = PendingShiftTexels;
+		Frame.TileReadbacks = PendingTileReadbacks;
+		PendingTileReadbacks.Reset();
+	}
+	PendingShiftTexels = FIntPoint::ZeroValue;
 	Frame.Strokes = MoveTemp(PendingStrokes);
 	Frame.GivingStrokes = MoveTemp(PendingGiving);
 	PendingStrokes.Reset();
@@ -1136,12 +1726,13 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	}
 
 	ENQUEUE_RENDER_COMMAND(DirtSimStep)(
-		[Frame, BaseHeightRes, InitialStateRes, StateARes, StateBRes, PondARes, PondBRes, DisplayRes, NormalRes, DebugRes,
+		[Frame, BaseHeightRes, InitialStateRes, InitialPondRes, StateARes, StateBRes, PondARes, PondBRes, DisplayRes, NormalRes, DebugRes,
 		 ParcelPosRes, ParcelVelRes, ParcelPropRes, ParcelRes, DustPosRes, DustVelRes, DustPropRes, DustRes]
 		(FRHICommandListImmediate& RHICmdList) mutable
 		{
 			Frame.BaseHeight = BaseHeightRes->TextureRHI;
 			Frame.InitialState = InitialStateRes->TextureRHI;
+			Frame.InitialPond = InitialPondRes->TextureRHI;
 			Frame.StateA = StateARes->GetRenderTargetTexture();
 			Frame.StateB = StateBRes->GetRenderTargetTexture();
 			Frame.PondA = PondARes->GetRenderTargetTexture();
@@ -1509,7 +2100,16 @@ void ADirtBox::ResetToTestbed()
 	PendingSpawns.Reset();
 	PendingDust.Reset();
 	PendingWater.Reset();
+	// The world starts over: every tile pristine, nothing stored.
+	HarvestTileReadbacks(true);
+	InFlightTileReadbacks.Reset();
+	PendingTileReadbacks.Reset();
+	PendingShiftTexels = FIntPoint::ZeroValue;
+	TileCache.Empty();
+	BaselineVolumeM3 = 0.0;
+	WorldStoredM3 = 0.0;
 	BuildTerrainAndUpload();
+	BuildFarMesh();
 	bNeedsReinit = true;
 
 	UE_LOG(LogDirt, Log, TEXT("Dirtbox reset. Baseline volume %.3f m3."), BaselineVolumeM3);
@@ -1523,11 +2123,20 @@ void ADirtBox::RebuildTerrainAndMesh()
 	PendingDust.Reset();
 	PendingWater.Reset();
 	Readback.Empty();
+	HarvestTileReadbacks(true);
+	InFlightTileReadbacks.Reset();
+	PendingTileReadbacks.Reset();
+	PendingShiftTexels = FIntPoint::ZeroValue;
+	TileCache.Empty();
+	BaselineVolumeM3 = 0.0;
+	WorldStoredM3 = 0.0;
+	++WindowGeneration;
 
 	// The simulation textures keep their resolution; only the ground they cover
 	// and the mesh that displays it change.
 	BuildTerrainAndUpload();
 	BuildDisplayMesh();
+	BuildFarMesh();
 	UpdateMaterialParameters();
 	bNeedsReinit = true;
 }
@@ -1542,6 +2151,9 @@ void ADirtBox::SetTerrainMode(EDirtTerrainMode NewMode)
 
 	TerrainMode = NewMode;
 	ApplyModeDefaults();
+	bFollowWheel = false;
+	BuildWholeSiteLog();
+	WindowTile = TileForCentre(Settings.SimRegionCentreCm, Settings.RegionSizeCm());
 	RebuildTerrainAndMesh();
 
 	for (const FString& Line : FeatureLog)
@@ -1552,27 +2164,41 @@ void ADirtBox::SetTerrainMode(EDirtTerrainMode NewMode)
 
 void ADirtBox::SetSimRegion(FVector2D CentreCm, float SizeCm)
 {
-	const float Half = Settings.WorldSizeCm * 0.5f;
 	const float Clamped = (SizeCm > 0.0f) ? FMath::Clamp(SizeCm, 200.0f, Settings.WorldSizeCm) : 0.0f;
+	const float OldCell = Settings.TexelSizeCm();
 
-	// Keep the region inside the box, or the generators would be asked to build
-	// ground that does not exist.
-	const float Margin = (Clamped > 0.0f) ? Half - Clamped * 0.5f : 0.0f;
-	Settings.SimRegionCentreCm.X = FMath::Clamp(CentreCm.X, -Margin, Margin);
-	Settings.SimRegionCentreCm.Y = FMath::Clamp(CentreCm.Y, -Margin, Margin);
 	Settings.SimRegionSizeCm = Clamped;
+	const float RegionCm = Settings.RegionSizeCm();
+	const FIntPoint NewTile = TileForCentre(CentreCm, RegionCm);
+	const float TileCm = RegionCm / TilesPerSide;
+	const FVector2D SnappedCentre(-Settings.WorldSizeCm * 0.5 + (NewTile.X + TilesPerSide * 0.5) * TileCm,
+								  -Settings.WorldSizeCm * 0.5 + (NewTile.Y + TilesPerSide * 0.5) * TileCm);
 
 	if (!bResourcesReady)
 	{
+		WindowTile = NewTile;
+		Settings.SimRegionCentreCm = SnappedCentre;
 		return;
 	}
 
-	RebuildTerrainAndMesh();
+	const bool bSameCells = FMath::IsNearlyEqual(Settings.TexelSizeCm(), OldCell, 1e-3f);
+	if (bSameCells && NewTile != WindowTile)
+	{
+		// Same world, different place: slide there and keep every rut.
+		ShiftWindow(NewTile - WindowTile);
+	}
+	else if (!bSameCells)
+	{
+		// New cell size: a new world. The cache is at the old size and is thrown away.
+		WindowTile = NewTile;
+		Settings.SimRegionCentreCm = SnappedCentre;
+		RebuildTerrainAndMesh();
+	}
 
-	UE_LOG(LogDirt, Log, TEXT("Sim region: %.1f m square centred on (%.0f, %.0f) m -> %.2f cm per cell."),
+	UE_LOG(LogDirt, Log, TEXT("Sim region: %.1f m square centred on (%.1f, %.1f) m -> %.2f cm per cell, tiles of %.1f m, window tile (%d, %d)."),
 		Settings.RegionSizeCm() * 0.01f,
 		Settings.SimRegionCentreCm.X * 0.01, Settings.SimRegionCentreCm.Y * 0.01,
-		Settings.TexelSizeCm());
+		Settings.TexelSizeCm(), TileCm * 0.01f, WindowTile.X, WindowTile.Y);
 }
 
 void ADirtBox::GetSuggestedViewpoint(FVector& OutLocation, FRotator& OutRotation) const
@@ -1665,7 +2291,14 @@ FDirtAudit ADirtBox::RunAudit()
 		{
 			++Exposed;
 		}
+		if (S.R < 0.0f)
+		{
+			++Audit.NegativeCells;
+			Audit.NegativeCm3 += S.R;
+		}
+		Audit.MinSolidCm = FMath::Min(Audit.MinSolidCm, S.R);
 	}
+	Audit.NegativeCm3 *= Settings.TexelAreaCm2();
 
 	const double AreaM3PerCm = Settings.TexelAreaCm2() / 1000000.0;
 	Audit.GroundM3 = SumSolidCm * AreaM3PerCm;
@@ -1693,7 +2326,11 @@ FDirtAudit ADirtBox::RunAudit()
 		}
 	}
 
-	Audit.VolumeM3 = Audit.GroundM3 + Audit.AirborneM3;
+	// Tiles out of the window hold dirt too. Anything still on its way to the
+	// cache is waited for, so the books are complete.
+	HarvestTileReadbacks(true);
+	Audit.StoredM3 = WorldStoredM3;
+	Audit.VolumeM3 = Audit.GroundM3 + Audit.AirborneM3 + Audit.StoredM3;
 	Audit.DriftM3 = Audit.VolumeM3 - Audit.BaselineM3;
 	Audit.DriftPercent = (Audit.BaselineM3 > 0.0) ? 100.0 * Audit.DriftM3 / Audit.BaselineM3 : 0.0;
 	Audit.MinLayerCm = MinLayer;
@@ -2087,12 +2724,17 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtAuditCmd(
 			UE_LOG(LogDirt, Log, TEXT("--- volume audit (solid m3: grains only, voids squeezed out) ---"));
 			UE_LOG(LogDirt, Log, TEXT("  in the ground     %.4f m3   (%.4f m3 bulk, the way a ruler sees it)"), A.GroundM3, A.BulkM3);
 			UE_LOG(LogDirt, Log, TEXT("  in the air        %.4f m3   (%d parcels)"), A.AirborneM3, A.LiveParcels);
+			UE_LOG(LogDirt, Log, TEXT("  out of the window %.4f m3   (%d tiles cached, %d slides)"), A.StoredM3, Box->GetCachedTileCount(), Box->GetShiftCount());
 			UE_LOG(LogDirt, Log, TEXT("  total             %.4f m3"), A.VolumeM3);
 			UE_LOG(LogDirt, Log, TEXT("  baseline          %.4f m3"), A.BaselineM3);
-			UE_LOG(LogDirt, Log, TEXT("  drift             %+.5f m3  (%+.4f %%)"), A.DriftM3, A.DriftPercent);
+			UE_LOG(LogDirt, Log, TEXT("  drift             %+.5f m3  (%+.4f %%)  = %+.2f cm3"), A.DriftM3, A.DriftPercent, A.DriftM3 * 1000000.0);
 			UE_LOG(LogDirt, Log, TEXT("  water             %.3f m3 in the pores, %.4f m3 ponded"), A.PoreWaterM3, A.PondM3);
 			UE_LOG(LogDirt, Log, TEXT("  layer min / max   %.1f / %.1f cm (bulk)"), A.MinLayerCm, A.MaxLayerCm);
 			UE_LOG(LogDirt, Log, TEXT("  scraped to rock   %d cells"), A.BedrockExposedCells);
+			if (A.NegativeCells > 0)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("  NEGATIVE dirt     %d cells, %.3f cm3 in total, worst %.5f cm"), A.NegativeCells, A.NegativeCm3, A.MinSolidCm);
+			}
 			UE_LOG(LogDirt, Log, TEXT("  steepest loose    %.1f deg  (repose setting %.1f)"),
 				A.MaxLooseSlopeDeg, Box->Settings.LooseReposeDeg);
 			UE_LOG(LogDirt, Log, TEXT("  steepest anywhere %.1f deg"), A.MaxAnySlopeDeg);
@@ -2250,11 +2892,12 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtModeCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtFocusCmd(
 	TEXT("DaDirt.Focus"),
-	TEXT("DaDirt.Focus <xM> <yM> [sizeM=51.2] | off - point the simulation at part of ")
+	TEXT("DaDirt.Focus <xM> <yM> [sizeM=51.2] | follow [sizeM] | off - point the simulation at part of ")
 	TEXT("the box. Same 1024 cells over less ground means finer cells: 51 m gives 5 cm ")
-	TEXT("cells, which is where ruts start to look like ruts."),
+	TEXT("cells. The window slides over the world in tiles and keeps every rut it leaves behind; ")
+	TEXT("'follow' keeps it centred on the wheel."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
-		[](const TArray<FString>& Args, UWorld*)
+		[](const TArray<FString>& Args, UWorld* World)
 		{
 			ADirtBox* Box = GetDirtBoxOrWarn();
 			if (!Box)
@@ -2264,14 +2907,32 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtFocusCmd(
 
 			if (Args.IsValidIndex(0) && Args[0].ToLower() == TEXT("off"))
 			{
+				Box->SetFollowWheel(false);
 				Box->SetSimRegion(FVector2D::ZeroVector, 0.0f);
 				UE_LOG(LogDirt, Log, TEXT("Simulating the whole box again."));
 				return;
 			}
 
+			if (Args.IsValidIndex(0) && Args[0].ToLower() == TEXT("follow"))
+			{
+				// Centre on the wheel and keep it there, sliding by tiles as it drives.
+				FVector2D Centre = Box->Settings.SimRegionCentreCm;
+				for (TActorIterator<ADirtWheel> It(World); It; ++It)
+				{
+					Centre = FVector2D(It->GetActorLocation() - Box->GetActorLocation());
+					break;
+				}
+				const float SizeM = ArgFloat(Args, 1, Box->Settings.IsFocused() ? Box->Settings.RegionSizeCm() * 0.01f : 40.0f);
+				Box->SetSimRegion(Centre, SizeM * 100.0f);
+				Box->SetFollowWheel(true);
+				UE_LOG(LogDirt, Log, TEXT("Following the wheel: the window slides by %.1f m tiles and every rut is kept."),
+					Box->Settings.RegionSizeCm() * 0.01f / 4.0f);
+				return;
+			}
+
 			if (Args.Num() < 2)
 			{
-				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Focus <xM> <yM> [sizeM] | off"));
+				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Focus <xM> <yM> [sizeM] | follow [sizeM] | off"));
 				return;
 			}
 
@@ -2279,6 +2940,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtFocusCmd(
 			const float Ym = ArgFloat(Args, 1, 0.0f);
 			const float SizeM = ArgFloat(Args, 2, 51.2f);
 
+			Box->SetFollowWheel(false);
 			Box->SetSimRegion(FVector2D(Xm * 100.0f, Ym * 100.0f), SizeM * 100.0f);
 			UE_LOG(LogDirt, Log, TEXT("Run DaDirt.View to look at it."));
 		}));
@@ -2505,9 +3167,11 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtInfoCmd(
 			UE_LOG(LogDirt, Log, TEXT("  box            %.0f m square"), S.WorldSizeCm * 0.01f);
 			if (S.IsFocused())
 			{
-				UE_LOG(LogDirt, Log, TEXT("  sim region     %.1f m square at (%.0f, %.0f) m  [DaDirt.Focus off to widen]"),
+				UE_LOG(LogDirt, Log, TEXT("  sim region     %.1f m square at (%.1f, %.1f) m, window tile (%d, %d), %d tiles cached%s  [DaDirt.Focus off to widen]"),
 					S.RegionSizeCm() * 0.01f,
-					S.SimRegionCentreCm.X * 0.01, S.SimRegionCentreCm.Y * 0.01);
+					S.SimRegionCentreCm.X * 0.01, S.SimRegionCentreCm.Y * 0.01,
+					Box->GetWindowTile().X, Box->GetWindowTile().Y, Box->GetCachedTileCount(),
+					Box->IsFollowingWheel() ? TEXT(", following the wheel") : TEXT(""));
 			}
 			else
 			{

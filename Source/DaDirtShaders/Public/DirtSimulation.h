@@ -20,6 +20,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <atomic>
 #include "RenderGraphResources.h"
 
 class FRHICommandListImmediate;
@@ -122,6 +123,27 @@ struct DADIRTSHADERS_API FDirtParcelResources
 	~FDirtParcelResources();
 };
 
+/**
+ * A tile of the window to read back before it slides out, and where to put it.
+ * The readbacks land a frame or two later; the Dirtbox harvests them.
+ */
+struct DADIRTSHADERS_API FDirtTileReadback
+{
+	FIntPoint Tile = FIntPoint::ZeroValue;      // tile coordinates, for the cache
+	FIntPoint OriginTexel = FIntPoint::ZeroValue;   // in the window BEFORE the shift
+	int32 SizeTexels = 256;
+	class FRHIGPUTextureReadback* State = nullptr;
+	class FRHIGPUTextureReadback* Pond = nullptr;
+	bool bEnqueued = false;
+
+	/** Filled on the render thread once the copies have landed; bDone last. */
+	TArray<FLinearColor> ResultState;
+	TArray<float> ResultPond;
+	std::atomic<bool> bDone{ false };
+
+	~FDirtTileReadback();
+};
+
 /** One simulation step's worth of work and resources. Built on the game thread. */
 struct FDirtSimFrame
 {
@@ -212,11 +234,22 @@ struct FDirtSimFrame
 	/** Reseed the state from InitialState before doing anything else. */
 	bool bReinitialise = false;
 
+	/**
+	 * Slide the window by this many texels (old texel = new texel + shift)
+	 * before anything else this step. Entering cells come from InitialState and
+	 * InitialPond, which the CPU filled for exactly those cells. Parcels over
+	 * leaving ground land first, and the leaving tiles are read back for the
+	 * cache before the slide.
+	 */
+	FIntPoint ShiftTexels = FIntPoint::ZeroValue;
+	TArray<TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>> TileReadbacks;
+
 	// --- resources ---------------------------------------------------------
 	// Raw RHI textures. Fill these in ON THE RENDER THREAD, from the texture
 	// resources the Dirtbox owns; they are only valid there.
 	FRHITexture* BaseHeight = nullptr;     // R32F,    static bedrock
-	FRHITexture* InitialState = nullptr;   // RGBA32F, CPU-built start state
+	FRHITexture* InitialState = nullptr;   // RGBA32F, CPU-built start state, or the entering patch on a shift
+	FRHITexture* InitialPond = nullptr;    // R32F, entering pond on a shift
 	FRHITexture* StateA = nullptr;         // RGBA32F, ping
 	FRHITexture* StateB = nullptr;         // RGBA32F, pong
 	FRHITexture* PondA = nullptr;          // R32F, ponded water ping
@@ -239,7 +272,7 @@ struct FDirtSimFrame
 
 	bool IsValid() const
 	{
-		return BaseHeight && InitialState && StateA && StateB && PondA && PondB && Display && NormalOut && DebugOut;
+		return BaseHeight && InitialState && InitialPond && StateA && StateB && PondA && PondB && Display && NormalOut && DebugOut;
 	}
 
 	/** The dirt pool exists (its resources are bound even when parcels are switched off: the slump pass needs them). */

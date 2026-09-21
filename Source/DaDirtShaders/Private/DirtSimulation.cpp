@@ -105,6 +105,36 @@ public:
 IMPLEMENT_GLOBAL_SHADER(FDirtInitCS, "/DaDirt/Private/DirtSim.usf", "MainInitCS", SF_Compute);
 
 // ---------------------------------------------------------------------------
+// Shift (the window slides over the world)
+// ---------------------------------------------------------------------------
+
+class FDirtShiftCS : public FDirtPassCS
+{
+public:
+	DECLARE_GLOBAL_SHADER(FDirtShiftCS);
+	SHADER_USE_PARAMETER_STRUCT(FDirtShiftCS, FDirtPassCS);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		DIRT_SHARED_PARAMETERS()
+		SHADER_PARAMETER(FIntPoint, DirtShiftTexels)
+		SHADER_PARAMETER_TEXTURE(Texture2D<float4>, DirtPatchState)
+		SHADER_PARAMETER_TEXTURE(Texture2D<float>, DirtPatchPond)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, DirtPondOut)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
+											 FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FDirtPassCS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("DIRT_SHIFT_PASS"), 1);
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FDirtShiftCS, "/DaDirt/Private/DirtSim.usf", "MainShiftCS", SF_Compute);
+
+// ---------------------------------------------------------------------------
 // Deposit
 // ---------------------------------------------------------------------------
 
@@ -370,6 +400,31 @@ public:
 
 IMPLEMENT_GLOBAL_SHADER(FDirtParcelSimCS, "/DaDirt/Private/DirtParcels.usf", "MainParcelSimCS", SF_Compute);
 
+class FDirtParcelFlushCS : public FDirtPassCS
+{
+public:
+	DECLARE_GLOBAL_SHADER(FDirtParcelFlushCS);
+	SHADER_USE_PARAMETER_STRUCT(FDirtParcelFlushCS, FDirtPassCS);
+
+	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		DIRT_SHARED_PARAMETERS()
+		DIRT_PARCEL_PARAMETERS()
+		SHADER_PARAMETER(float, DirtTexelSizeCm)
+		SHADER_PARAMETER(int32, DirtIsDust)
+		SHADER_PARAMETER(FIntPoint, DirtShiftTexels)
+	END_SHADER_PARAMETER_STRUCT()
+
+	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
+											 FShaderCompilerEnvironment& OutEnvironment)
+	{
+		FDirtPassCS::ModifyCompilationEnvironment(Parameters, OutEnvironment);
+		OutEnvironment.SetDefine(TEXT("DIRT_PARCEL_FLUSH_PASS"), 1);
+		DIRT_ALLOW_TYPED_UAV_LOADS();
+	}
+};
+
+IMPLEMENT_GLOBAL_SHADER(FDirtParcelFlushCS, "/DaDirt/Private/DirtParcels.usf", "MainParcelFlushCS", SF_Compute);
+
 // ---------------------------------------------------------------------------
 // Parcel resources
 // ---------------------------------------------------------------------------
@@ -378,6 +433,12 @@ FDirtParcelResources::~FDirtParcelResources()
 {
 	delete Readback;
 	Readback = nullptr;
+}
+
+FDirtTileReadback::~FDirtTileReadback()
+{
+	delete State;
+	delete Pond;
 }
 
 namespace
@@ -669,6 +730,80 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 						   Frame.DustRes, Frame.Resolution, &Parcels, TEXT("DirtDust"));
 	}
 
+	const auto AddDepositPass = [&]()
+	{
+		FDirtDepositCS::FParameters* Params = GraphBuilder.AllocParameters<FDirtDepositCS::FParameters>();
+		BindSharedParameters(Params, Frame, Current);
+		BindParcelParameters(GraphBuilder, Params, Frame, Parcels);
+		Params->DirtDepositCompaction = Frame.DepositCompaction;
+		Params->DirtResetLiveMax = (Frame.SlumpIterations > 0) ? 1 : 0;
+		Params->DirtStateOut = GraphBuilder.CreateUAV(Other);
+
+		TShaderMapRef<FDirtDepositCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("DirtDeposit"), Shader, Params, GroupCount);
+		Flip();
+	};
+
+	// --- slide the window ----------------------------------------------------
+	// Parcels over leaving ground land first and are folded in, the leaving
+	// tiles are read back for the cache, then everything shifts.
+	if (Frame.ShiftTexels != FIntPoint::ZeroValue && !Frame.bReinitialise)
+	{
+		if (bPool && Frame.Parcels->bInitialised)
+		{
+			const auto AddFlush = [&](FDirtParcelResources& R, const FParcelGraphResources& G, bool bIsDust)
+			{
+				FDirtParcelFlushCS::FParameters* Params = GraphBuilder.AllocParameters<FDirtParcelFlushCS::FParameters>();
+				BindSharedParameters(Params, Frame, Current);
+				BindParcelParameters(GraphBuilder, Params, Frame, G);
+				Params->DirtTexelSizeCm = Frame.TexelSizeCm;
+				Params->DirtIsDust = bIsDust ? 1 : 0;
+				Params->DirtShiftTexels = Frame.ShiftTexels;
+				TShaderMapRef<FDirtParcelFlushCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+				FComputeShaderUtils::AddPass(GraphBuilder, bIsDust ? RDG_EVENT_NAME("DirtDustFlush") : RDG_EVENT_NAME("DirtParcelFlush"),
+											 Shader, Params, FComputeShaderUtils::GetGroupCount(G.Res * G.Res, GParcelThreadGroupSize));
+			};
+			AddFlush(*Frame.Parcels, Parcels, false);
+			if (bDust && Frame.Dust->bInitialised)
+			{
+				AddFlush(*Frame.Dust, Dust, true);
+			}
+			AddDepositPass();
+		}
+
+		for (const TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>& RB : Frame.TileReadbacks)
+		{
+			if (!RB.IsValid() || RB->bEnqueued)
+			{
+				continue;
+			}
+			if (!RB->State)
+			{
+				RB->State = new FRHIGPUTextureReadback(TEXT("DirtTileState"));
+				RB->Pond = new FRHIGPUTextureReadback(TEXT("DirtTilePond"));
+			}
+			const FResolveRect Rect(RB->OriginTexel.X, RB->OriginTexel.Y,
+									RB->OriginTexel.X + RB->SizeTexels, RB->OriginTexel.Y + RB->SizeTexels);
+			AddEnqueueCopyPass(GraphBuilder, RB->State, Current, Rect);
+			AddEnqueueCopyPass(GraphBuilder, RB->Pond, PondCur, Rect);
+			RB->bEnqueued = true;
+		}
+
+		FDirtShiftCS::FParameters* Params = GraphBuilder.AllocParameters<FDirtShiftCS::FParameters>();
+		BindSharedParameters(Params, Frame, Current);
+		Params->DirtShiftTexels = Frame.ShiftTexels;
+		Params->DirtPatchState = Frame.InitialState;
+		Params->DirtPatchPond = Frame.InitialPond;
+		Params->DirtPondIn = PondCur;
+		Params->DirtStateOut = GraphBuilder.CreateUAV(Other);
+		Params->DirtPondOut = GraphBuilder.CreateUAV(PondOther);
+
+		TShaderMapRef<FDirtShiftCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("DirtShift"), Shader, Params, GroupCount);
+		Flip();
+		FlipPond();
+	}
+
 	// --- init --------------------------------------------------------------
 	if (Frame.bReinitialise)
 	{
@@ -806,16 +941,7 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 	// still reaches the game thread.
 	if (bPool)
 	{
-		FDirtDepositCS::FParameters* Params = GraphBuilder.AllocParameters<FDirtDepositCS::FParameters>();
-		BindSharedParameters(Params, Frame, Current);
-		BindParcelParameters(GraphBuilder, Params, Frame, Parcels);
-		Params->DirtDepositCompaction = Frame.DepositCompaction;
-		Params->DirtResetLiveMax = (Frame.SlumpIterations > 0) ? 1 : 0;
-		Params->DirtStateOut = GraphBuilder.CreateUAV(Other);
-
-		TShaderMapRef<FDirtDepositCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
-		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("DirtDeposit"), Shader, Params, GroupCount);
-		Flip();
+		AddDepositPass();
 	}
 
 	// --- resolve -----------------------------------------------------------

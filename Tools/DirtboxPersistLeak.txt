@@ -1,0 +1,76 @@
+# Isolate the slide leak: which path gains volume when the window slides?
+#   A. slide with nothing disturbed
+#   B. slide with a dug hole and its rim in a leaving tile (no parcels)
+#   C. slide with parcels in flight over leaving ground (flush path)
+#   D. slide while the wheel digs (shift with strokes pending)
+#   E. slide with parcels in flight over STAYING ground
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -15 40
+wait 2
+DaDirt.Audit
+
+# --- A --------------------------------------------------------------------------
+DaDirt.Focus 3 15 40
+wait 1 A_1
+DaDirt.Audit
+DaDirt.Focus 3 -15 40
+wait 1 A_2
+DaDirt.Audit
+
+# --- B --------------------------------------------------------------------------
+DaDirt.Parcels 0
+DaDirt.Dig 3 -25 150 15
+DaDirt.Dig 3 -20 150 15
+wait 2 B_dug
+DaDirt.Audit
+DaDirt.Focus 3 15 40
+wait 1 B_1
+DaDirt.Audit
+DaDirt.Focus 3 -15 40
+wait 1 B_2
+DaDirt.Audit
+DaDirt.Parcels 1
+
+# --- C --------------------------------------------------------------------------
+DaDirt.Throw 3 -25 4 10 90 60 20
+DaDirt.Throw 3 -22 4 10 90 60 20
+wait 0.3 C_thrown
+DaDirt.Focus 3 15 40
+wait 0.05 C_slid
+DaDirt.Audit
+wait 3 C_landed
+DaDirt.Audit
+DaDirt.Focus 3 -15 40
+wait 1
+DaDirt.Audit
+
+# --- D --------------------------------------------------------------------------
+DaDirt.Wheel 3 -12 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 D_burnout
+DaDirt.Audit
+DaDirt.Focus 3 -5 40
+wait 0.05 D_slid_while_digging
+DaDirt.Audit
+wait 1
+DaDirt.Focus 3 5 40
+wait 0.05 D_slid_again
+DaDirt.Audit
+DaDirt.Drive 0 0 1
+wait 3 D_stopped
+DaDirt.Audit
+
+# --- E --------------------------------------------------------------------------
+DaDirt.Throw 3 8 4 10 90 60 20
+DaDirt.Throw 3 12 4 10 90 60 20
+wait 0.3 E_thrown
+DaDirt.Focus 3 -5 40
+wait 0.05 E_slid
+DaDirt.Audit
+wait 3 E_landed
+DaDirt.Audit
+quit

@@ -1,0 +1,48 @@
+# Is the slide leak really the slide? Same pack-only drive in a FIXED window,
+# then with the window following, drift printed in cm3.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Parcels 0
+DaDirt.WheelParts 1 1 0 0 0
+
+# --- fixed window, wheel drives 35 m inside it -------------------------------
+DaDirt.Focus 3 -5 40
+wait 0.5
+DaDirt.Wheel 3 -22 90
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_fixed
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- following window, same drive ----------------------------------------------
+DaDirt.Focus 10 -15 40
+wait 0.5
+DaDirt.Wheel 10 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_follow
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- following window, no slump at all -----------------------------------------
+DaDirt.Slump 0
+DaDirt.Focus -4 -15 40
+wait 0.5
+DaDirt.Wheel -4 -26 90
+DaDirt.Focus follow
+wait 0.5
+DaDirt.Audit
+DaDirt.Drive 0.5 0 0
+wait 12 drive_follow_noslump
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+quit
