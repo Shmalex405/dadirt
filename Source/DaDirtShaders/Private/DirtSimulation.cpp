@@ -109,8 +109,11 @@ public:
 		SHADER_PARAMETER(float, DirtTexelSizeCm)
 		SHADER_PARAMETER(float, DirtLooseReposeDeg)
 		SHADER_PARAMETER(float, DirtPackedReposeDeg)
-		SHADER_PARAMETER(float, DirtMoistureCohesionDeg)
-		SHADER_PARAMETER(float, DirtSaturatedPenaltyDeg)
+		SHADER_PARAMETER(float, DirtSuctionCohesionKPa)
+		SHADER_PARAMETER(float, DirtPackedCohesionKPa)
+		SHADER_PARAMETER(float, DirtUnitWeightKNm3)
+		SHADER_PARAMETER(float, DirtSaturationFrictionLoss)
+		SHADER_PARAMETER(float, DirtMaxCohesiveHeightCm)
 		SHADER_PARAMETER(float, DirtSlumpRate)
 		SHADER_PARAMETER(float, DirtLooseningRate)
 		SHADER_PARAMETER(float, DirtLooseningScaleCm)
@@ -144,8 +147,11 @@ public:
 		SHADER_PARAMETER(float, DirtTexelSizeCm)
 		SHADER_PARAMETER(float, DirtLooseReposeDeg)
 		SHADER_PARAMETER(float, DirtPackedReposeDeg)
-		SHADER_PARAMETER(float, DirtMoistureCohesionDeg)
-		SHADER_PARAMETER(float, DirtSaturatedPenaltyDeg)
+		SHADER_PARAMETER(float, DirtSuctionCohesionKPa)
+		SHADER_PARAMETER(float, DirtPackedCohesionKPa)
+		SHADER_PARAMETER(float, DirtUnitWeightKNm3)
+		SHADER_PARAMETER(float, DirtSaturationFrictionLoss)
+		SHADER_PARAMETER(float, DirtMaxCohesiveHeightCm)
 		SHADER_PARAMETER(int32, DirtDebugMode)
 		SHADER_PARAMETER(float, DirtDebugLayerRangeCm)
 		SHADER_PARAMETER_TEXTURE(Texture2D<float>, DirtBaseHeight)
@@ -263,8 +269,11 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Params->DirtTexelSizeCm = Frame.TexelSizeCm;
 		Params->DirtLooseReposeDeg = Frame.LooseReposeDeg;
 		Params->DirtPackedReposeDeg = Frame.PackedReposeDeg;
-		Params->DirtMoistureCohesionDeg = Frame.MoistureCohesionDeg;
-		Params->DirtSaturatedPenaltyDeg = Frame.SaturatedPenaltyDeg;
+		Params->DirtSuctionCohesionKPa = Frame.SuctionCohesionKPa;
+		Params->DirtPackedCohesionKPa = Frame.PackedCohesionKPa;
+		Params->DirtUnitWeightKNm3 = Frame.UnitWeightKNm3;
+		Params->DirtSaturationFrictionLoss = Frame.SaturationFrictionLoss;
+		Params->DirtMaxCohesiveHeightCm = Frame.MaxCohesiveHeightCm;
 		Params->DirtSlumpRate = Frame.SlumpRate;
 		Params->DirtLooseningRate = Frame.LooseningRate;
 		Params->DirtLooseningScaleCm = Frame.LooseningScaleCm;
@@ -285,8 +294,11 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Params->DirtTexelSizeCm = Frame.TexelSizeCm;
 		Params->DirtLooseReposeDeg = Frame.LooseReposeDeg;
 		Params->DirtPackedReposeDeg = Frame.PackedReposeDeg;
-		Params->DirtMoistureCohesionDeg = Frame.MoistureCohesionDeg;
-		Params->DirtSaturatedPenaltyDeg = Frame.SaturatedPenaltyDeg;
+		Params->DirtSuctionCohesionKPa = Frame.SuctionCohesionKPa;
+		Params->DirtPackedCohesionKPa = Frame.PackedCohesionKPa;
+		Params->DirtUnitWeightKNm3 = Frame.UnitWeightKNm3;
+		Params->DirtSaturationFrictionLoss = Frame.SaturationFrictionLoss;
+		Params->DirtMaxCohesiveHeightCm = Frame.MaxCohesiveHeightCm;
 		Params->DirtDebugMode = Frame.DebugMode;
 		Params->DirtDebugLayerRangeCm = Frame.DebugLayerRangeCm;
 		Params->DirtBaseHeight = BaseHeightRHI;

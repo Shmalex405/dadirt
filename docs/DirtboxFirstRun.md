@@ -242,6 +242,14 @@ not stay in its own rut: a point contact tips off a shoulder. A three-point cont
 across the tyre's width (rest on the highest point, get pushed toward the lower
 edge) made the rut hold it.
 
+## Soil model (end of day)
+
+At Alex's request the strength model was rederived from soil mechanics. See
+`docs/SoilPhysics.md` for the whole treatment and its measured Phase A results:
+the same 1 m block keeps a 60 cm vertical face barely damp, stands a full metre
+vertical when damp, and runs out as 16° mud when soaked, while the dry cone still
+settles at 32°.
+
 ## Open items (design calls, not bugs)
 
 1. **The repose test's metric needs a cleaner subject.** The box-wide "steepest

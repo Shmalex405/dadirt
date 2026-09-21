@@ -1,0 +1,83 @@
+# DaDirt soil-strength test (docs/SoilPhysics.md, Phase A).
+# The testbed's 100 m3 block at (3,45) is 1 m tall with vertical walls, compaction
+# 0.1, moisture 0.05. Same block, three states:
+#   1. as built, barely damp   c ~ 1.4 kPa -> Culmann vertical height ~60 cm: the top
+#                              of the wall should shear off, the bottom ~60 cm stand
+#   2. dampened to ~0.4        c ~ 3.8 kPa -> vertical height ~1.6 m: the wall stands
+#   3. soaked                  c -> 0, friction x0.4 -> mud at ~14 deg: it runs out
+# The dry cone at (3,-45) is the control: moisture 0, no cohesion, must still go to 32 deg.
+# Probes cross the X = 8 wall at Y = 45; the pad is at 60 cm, the block top at 160.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Info
+DaDirt.Reset
+wait 5 stage1_asbuilt
+DaDirt.Probe 7.0 45
+DaDirt.Probe 7.6 45
+DaDirt.Probe 7.9 45
+DaDirt.Probe 8.1 45
+DaDirt.Probe 8.4 45
+DaDirt.Probe 9.0 45
+DaDirt.Probe 10.0 45
+camera 14 38 3.2 -18 147
+wait 0.4
+screenshot soil_10_block_asbuilt
+camera 13 42 2.4 -24 155
+wait 0.4
+screenshot soil_11_wall_asbuilt
+DaDirt.DebugView 4
+wait 0.4
+screenshot soil_12_wall_asbuilt_stability
+DaDirt.DebugView 0
+
+DaDirt.Pause 1
+DaDirt.Reset
+wait 0.5
+DaDirt.Wet 3 45 1500 0.45
+DaDirt.Pause 0
+wait 5 stage2_damp
+DaDirt.Probe 7.0 45
+DaDirt.Probe 7.6 45
+DaDirt.Probe 7.9 45
+DaDirt.Probe 8.1 45
+DaDirt.Probe 8.4 45
+DaDirt.Probe 9.0 45
+DaDirt.Probe 10.0 45
+camera 14 38 3.2 -18 147
+wait 0.4
+screenshot soil_20_block_damp
+camera 13 42 2.4 -24 155
+wait 0.4
+screenshot soil_21_wall_damp
+DaDirt.DebugView 4
+wait 0.4
+screenshot soil_22_wall_damp_stability
+DaDirt.DebugView 0
+
+DaDirt.Wet 3 45 1500 1
+wait 6 stage3_soaked
+DaDirt.Probe 7.0 45
+DaDirt.Probe 7.6 45
+DaDirt.Probe 7.9 45
+DaDirt.Probe 8.1 45
+DaDirt.Probe 8.4 45
+DaDirt.Probe 9.0 45
+DaDirt.Probe 10.0 45
+DaDirt.Probe 12.0 45
+camera 14 38 3.2 -18 147
+wait 0.4
+screenshot soil_30_block_soaked
+DaDirt.Audit
+
+# control: the bone-dry cone must still settle to 32 deg
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 3.707 -44.293
+DaDirt.Probe 4.414 -43.586
+camera -1 -50 3.2 -20 40
+wait 0.4
+screenshot soil_40_dry_cone
+quit

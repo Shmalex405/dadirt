@@ -676,8 +676,11 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	Frame.TexelSizeCm = Settings.TexelSizeCm();
 	Frame.LooseReposeDeg = Settings.LooseReposeDeg;
 	Frame.PackedReposeDeg = Settings.PackedReposeDeg;
-	Frame.MoistureCohesionDeg = Settings.MoistureCohesionDeg;
-	Frame.SaturatedPenaltyDeg = Settings.SaturatedPenaltyDeg;
+	Frame.SuctionCohesionKPa = Settings.SuctionCohesionKPa;
+	Frame.PackedCohesionKPa = Settings.PackedCohesionKPa;
+	Frame.UnitWeightKNm3 = Settings.UnitWeightKNm3;
+	Frame.SaturationFrictionLoss = Settings.SaturationFrictionLoss;
+	Frame.MaxCohesiveHeightCm = Settings.MaxCohesiveHeightCm;
 	Frame.SlumpRate = Settings.SlumpRate;
 	Frame.LooseningRate = Settings.LooseningRate;
 	Frame.LooseningScaleCm = Settings.LooseningScaleCm;
@@ -1383,7 +1386,8 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtSlumpCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtReposeCmd(
 	TEXT("DaDirt.Repose"),
-	TEXT("DaDirt.Repose <looseDeg> [packedDeg] [moistureDeg] [saturatedPenaltyDeg] - the angles dirt stands at."),
+	TEXT("DaDirt.Repose <looseDeg> [denseDeg] [suctionKPa] [packedKPa] - soil strength: friction angles loose/dense, ")
+	TEXT("cohesion from moisture and from packing. See docs/SoilPhysics.md."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
 		[](const TArray<FString>& Args, UWorld*)
 		{
@@ -1395,15 +1399,17 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtReposeCmd(
 
 			FDirtSimSettings& S = Box->Settings;
 			S.LooseReposeDeg = FMath::Clamp(ArgFloat(Args, 0, S.LooseReposeDeg), 1.0f, 89.0f);
-			S.PackedReposeDeg = FMath::Clamp(ArgFloat(Args, 1, S.PackedReposeDeg), 1.0f, 89.0f);
-			S.MoistureCohesionDeg = FMath::Clamp(ArgFloat(Args, 2, S.MoistureCohesionDeg), 0.0f, 40.0f);
-			S.SaturatedPenaltyDeg = FMath::Clamp(ArgFloat(Args, 3, S.SaturatedPenaltyDeg), 0.0f, 40.0f);
+			S.PackedReposeDeg = FMath::Clamp(ArgFloat(Args, 1, S.PackedReposeDeg), 1.0f, 60.0f);
+			S.SuctionCohesionKPa = FMath::Clamp(ArgFloat(Args, 2, S.SuctionCohesionKPa), 0.0f, 50.0f);
+			S.PackedCohesionKPa = FMath::Clamp(ArgFloat(Args, 3, S.PackedCohesionKPa), 0.0f, 100.0f);
 
-			UE_LOG(LogDirt, Log, TEXT("Repose: loose %.1f, packed %.1f, moisture +%.1f at best, ")
-				TEXT("-%.1f when saturated (so dry %.1f / damp %.1f / mud %.1f deg)."),
-				S.LooseReposeDeg, S.PackedReposeDeg, S.MoistureCohesionDeg, S.SaturatedPenaltyDeg,
-				S.LooseReposeDeg, S.LooseReposeDeg + S.MoistureCohesionDeg,
-				S.LooseReposeDeg - S.SaturatedPenaltyDeg);
+			const float MudDeg = FMath::RadiansToDegrees(FMath::Atan(
+				FMath::Tan(FMath::DegreesToRadians(S.LooseReposeDeg)) * (1.0f - S.SaturationFrictionLoss)));
+			const float DampWallCm = 400.0f * S.SuctionCohesionKPa / S.UnitWeightKNm3
+				* FMath::Tan(FMath::DegreesToRadians(45.0f + 0.5f * S.LooseReposeDeg));
+			UE_LOG(LogDirt, Log, TEXT("Soil: friction %.0f deg loose / %.0f dense, mud %.0f deg; cohesion %.1f kPa damp, ")
+				TEXT("%.1f kPa packed; a damp vertical wall stands to %.0f cm."),
+				S.LooseReposeDeg, S.PackedReposeDeg, MudDeg, S.SuctionCohesionKPa, S.PackedCohesionKPa, DampWallCm);
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtTestCmd(
@@ -1709,9 +1715,10 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtInfoCmd(
 			UE_LOG(LogDirt, Log, TEXT("  sim grid       %d x %d (%.2f cm per cell, a 12 cm rut is %.1f cells)"),
 				S.SimResolution, S.SimResolution, S.TexelSizeCm(), 12.0f / FMath::Max(S.TexelSizeCm(), 0.01f));
 			UE_LOG(LogDirt, Log, TEXT("  display mesh   %d x %d verts"), S.MeshVertsPerSide, S.MeshVertsPerSide);
-			UE_LOG(LogDirt, Log, TEXT("  repose         dry %.0f deg, packed %.0f deg, damp %.0f deg, mud %.0f deg"),
-				S.LooseReposeDeg, S.PackedReposeDeg,
-				S.LooseReposeDeg + S.MoistureCohesionDeg, S.LooseReposeDeg - S.SaturatedPenaltyDeg);
+			UE_LOG(LogDirt, Log, TEXT("  soil           friction %.0f deg loose / %.0f dense (x%.1f when saturated), ")
+				TEXT("cohesion %.1f kPa suction peak + %.1f kPa packed, %.0f kN/m3"),
+				S.LooseReposeDeg, S.PackedReposeDeg, 1.0f - S.SaturationFrictionLoss,
+				S.SuctionCohesionKPa, S.PackedCohesionKPa, S.UnitWeightKNm3);
 			UE_LOG(LogDirt, Log, TEXT("  slump          %d iterations at rate %.3f, %.0f Hz fixed step"),
 				S.SlumpIterations, S.SlumpRate, S.SimHz);
 

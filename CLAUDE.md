@@ -52,6 +52,13 @@ volume-conserving. It is not a decorative effect bolted on at the end.
   bedrock + layer. Digging stops at bedrock. Volume conservation applies only to
   the layer. Slumping reads *total* surface slope but moves dirt only within the
   layer, so loose dirt sheds off a steep face while packed dirt holds it.
+- **Dirt strength is soil mechanics, not tuned angles.** Mohr–Coulomb per cell:
+  friction angle from compaction (32° loose → 42° dense) collapsing with
+  saturation, cohesion in kPa from moisture suction (a hump, zero dry and zero
+  soaked) plus packing, and the Culmann standing height deciding whether a face
+  holds. Derive new behaviour from `docs/SoilPhysics.md`; do not add magic
+  angles. The shader and C++ strength functions are mirrored and must stay
+  identical.
 - **Terrain is built, not stamped.** The site exists first as natural ground. The
   track's grade is the natural ground smoothed along the centre line and clamped to
   a rideable gradient — so it follows the land. The corridor is then cut and filled

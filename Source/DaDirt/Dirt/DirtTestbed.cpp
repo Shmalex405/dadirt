@@ -65,10 +65,15 @@ void FDirtTestbed::RaiseTo(int32 X, int32 Y, float NewHeightM, const FDirtMateri
 
 	if (NewCm > Bedrock[I])
 	{
+		// Grade the feature's dirt cover into whatever was there. Where the
+		// bedrock barely rises (the toe of a dome, the foot of a ramp) the layer
+		// used to jump from the pad's 60 cm to the hill's 45 in one cell, leaving
+		// a 15 cm circular step that rendered as a ring of teeth around every dome.
+		const float T = FMath::Clamp((NewCm - Bedrock[I]) / 30.0f, 0.0f, 1.0f);
 		Bedrock[I] = NewCm;
-		Compaction[I] = Mat.Compaction;
-		Moisture[I] = Mat.Moisture;
-		Layer[I] = Mat.LayerCm;
+		Compaction[I] = FMath::Lerp(Compaction[I], Mat.Compaction, T);
+		Moisture[I] = FMath::Lerp(Moisture[I], Mat.Moisture, T);
+		Layer[I] = FMath::Lerp(Layer[I], Mat.LayerCm, T);
 	}
 }
 

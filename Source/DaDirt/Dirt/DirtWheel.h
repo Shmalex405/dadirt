@@ -79,16 +79,14 @@ public:
 
 	// --- the tyre-dirt contact ---------------------------------------------
 
-	/** Grip on loose dry dirt / on hardpack. */
+	/**
+	 * Grip comes from the soil itself (docs/SoilPhysics.md section 6):
+	 * grip = tan(phi_eff) + c_eff * A / N, with A the contact patch. Cohesion
+	 * gives grip even under a light wheel; friction scales with load; saturation
+	 * takes both away. Contact patch length along the tyre, m.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float FrictionLoose = 0.55f;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float FrictionPacked = 1.0f;
-
-	/** Multiplier once the dirt is saturated: mud. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float FrictionMud = 0.4f;
+	float ContactPatchLengthM = 0.15f;
 
 	/** Slip speed (m/s) at which traction is at ~76% of its peak. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")

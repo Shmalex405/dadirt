@@ -61,9 +61,12 @@ struct FDirtSimFrame
 
 	// --- tunables ----------------------------------------------------------
 	float LooseReposeDeg = 32.0f;
-	float PackedReposeDeg = 70.0f;
-	float MoistureCohesionDeg = 12.0f;
-	float SaturatedPenaltyDeg = 17.0f;
+	float PackedReposeDeg = 42.0f;         // friction angle of dense dirt
+	float SuctionCohesionKPa = 3.0f;       // apparent cohesion from moisture, peak
+	float PackedCohesionKPa = 8.0f;        // interlock/cementation when fully packed
+	float UnitWeightKNm3 = 17.0f;
+	float SaturationFrictionLoss = 0.6f;
+	float MaxCohesiveHeightCm = 400.0f;
 	float SlumpRate = 0.1f;
 	float LooseningRate = 0.25f;
 	float LooseningScaleCm = 2.0f;

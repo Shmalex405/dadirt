@@ -76,35 +76,47 @@ float DirtSurface(int2 C)
 // ---------------------------------------------------------------------------
 // Angle of repose
 // ---------------------------------------------------------------------------
-// The steepest slope this dirt can hold without avalanching.
+// Soil strength, Mohr-Coulomb: tau = c + sigma tan(phi). docs/SoilPhysics.md.
+// MIRRORED in C++ (DirtSoilStrength / DirtAllowedDropCm in DirtSimTypes.h) for
+// the audit and the wheel — keep them identical.
 //
-// Real numbers this is fitted to (see docs/MXTrackReference.md):
-//   dry sand              34 deg
-//   damp sand             45 deg   <- moisture helps, up to a point
-//   saturated sand        15-30 deg
-//   wet excavated clay    15 deg   <- and past that point it is worse than dry
-//
-// So moisture is not a one-way benefit. Cohesion rises to a peak around half
-// saturation, then a saturation penalty takes over and fully wet dirt ends up
-// holding a shallower angle than bone-dry dirt. That is mud.
-float DirtReposeDegrees(float4 S, float LooseDeg, float PackedDeg, float MoistureDeg, float SaturatedPenaltyDeg)
+//   friction  phi rises with compaction (loose 32 -> dense 42 deg) and collapses
+//             as the dirt saturates: pore water carries the load, not the grains
+//   cohesion  from moisture suction (a hump: none dry, none soaked, peak mid) plus
+//             interlock/cementation from packing, which saturation washes out
+void DirtSoilStrength(float4 S, float LooseDeg, float DenseDeg, float SuctionKPa, float PackedKPa,
+					  float FrictionLoss, out float TanPhi, out float CohesionKPa)
 {
+	const float C = saturate(S.g);
 	const float M = saturate(S.b);
-	const float Cohesion = 4.0f * M * (1.0f - M);          // 0 at m=0 and m=1, 1 at m=0.5
-	const float Saturation = smoothstep(0.55f, 1.0f, M);   // mud takes over past half-wet
+	const float Sat = smoothstep(0.55f, 1.0f, M);           // pore pressure takes over past half-wet
 
-	const float Deg = lerp(LooseDeg, PackedDeg, saturate(S.g))
-					+ MoistureDeg * Cohesion
-					- SaturatedPenaltyDeg * Saturation;
+	TanPhi = tan(radians(lerp(LooseDeg, DenseDeg, C))) * (1.0f - FrictionLoss * Sat);
 
-	return clamp(Deg, 1.0f, 89.0f);
+	const float Suction = 4.0f * M * (1.0f - M);
+	CohesionKPa = SuctionKPa * Suction + PackedKPa * C * (1.0f - Sat);
 }
 
-// Largest height difference two neighbouring texels can have and still be stable.
-float DirtStableStep(float4 S, float LooseDeg, float PackedDeg, float MoistureDeg,
-					 float SaturatedPenaltyDeg, float TexelSizeCm)
+// Largest drop (cm) a cell may stand above a neighbour RunCm away.
+//   friction: Run * tan(phi) — the angle of repose
+//   cohesion: a face up to the Culmann standing height stands whole,
+//             H_c(beta) = (4c/gamma) sin(beta) cos(phi) / (1 - cos(beta - phi)),
+//             and a taller face keeps H_c of it. This is the sandcastle rule:
+//             short damp walls stand vertical, tall ones slump to a lower angle.
+float DirtAllowedDrop(float DropCm, float RunCm, float TanPhi, float CohesionKPa, float UnitWeight, float MaxHcCm)
 {
-	return tan(radians(DirtReposeDegrees(S, LooseDeg, PackedDeg, MoistureDeg, SaturatedPenaltyDeg))) * TexelSizeCm;
+	const float FrictionDrop = RunCm * TanPhi;
+	if (DropCm <= FrictionDrop || CohesionKPa <= 0.0f)
+	{
+		return FrictionDrop;
+	}
+
+	const float Beta = atan2(DropCm, RunCm);
+	const float Phi = atan(TanPhi);
+	const float Denom = max(1.0f - cos(Beta - Phi), 1e-4f);
+	const float Hc = min(400.0f * CohesionKPa / max(UnitWeight, 1.0f) * sin(Beta) * cos(Phi) / Denom, MaxHcCm);
+
+	return max(FrictionDrop, (DropCm <= Hc) ? DropCm : Hc);
 }
 
 // ---------------------------------------------------------------------------

@@ -15,9 +15,13 @@ Measurable targets, so "does the dirt feel right" has an answer that isn't a shr
 The numbers come from `docs/MXTrackReference.md`.
 
 **G1 — Dirt behaves like dirt, measurably.**
-Loose dry dirt settles at 32°, damp at ~44°, saturated mud collapses to ~15°, packed
-hardpack stands past 65°. `DaDirt.Audit` reports the measured angle; it has to land
-within a couple of degrees of the setting, and volume drift has to stay at 0.000 m³.
+Derived from soil mechanics (`docs/SoilPhysics.md`), not tuned: loose dry dirt
+settles at its friction angle (32°), saturated mud at ~14°, and cohesion from
+moisture and packing lets faces stand vertical up to the Culmann height (a damp
+1 m sandcastle wall stands; a barely damp one keeps 60 cm; a soaked one runs).
+Probes have to land within a couple of degrees / centimetres of the prediction,
+and volume drift has to stay at 0.000 m³. *(Phase A measured 2026-09-21: all of
+the above.)*
 
 **G2 — A rut reads as a rut.** *(resolution: done. persistence: not yet.)*
 A rear tyre is 110–120 mm wide, so a rut is ~12 cm across at the bottom and 25–35 cm

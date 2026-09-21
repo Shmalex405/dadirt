@@ -139,24 +139,45 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "1", ClampMax = "89"))
 	float LooseReposeDeg = 32.0f;
 
-	/** Steepest slope fully packed dirt can hold. Hardpack holds a lot. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "1", ClampMax = "89"))
-	float PackedReposeDeg = 70.0f;
+	/**
+	 * Friction angle of fully packed (dense) dirt. Dense sand is 38-42 deg: grains
+	 * interlock. Hardpack standing at 70 deg is not friction, it is cohesion —
+	 * see PackedCohesionKPa. (docs/SoilPhysics.md section 2.)
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "1", ClampMax = "60"))
+	float PackedReposeDeg = 42.0f;
 
 	/**
-	 * Extra degrees that moisture buys you at its best, around half saturation.
-	 * Dry sand holds 34 deg, damp sand 45 - so about 11-12 degrees of help.
+	 * Peak apparent cohesion from moisture, kPa. Water menisci between grains pull
+	 * them together (matric suction); it is zero when dry, peaks around half
+	 * saturation and vanishes again when saturated. Damp sand: 2-4 kPa. This is
+	 * what lets a sandcastle wall stand vertical up to ~1 m.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "40"))
-	float MoistureCohesionDeg = 12.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "50"))
+	float SuctionCohesionKPa = 3.0f;
 
 	/**
-	 * Degrees lost once the dirt is saturated. Past half-wet this takes over from
-	 * cohesion, and fully wet dirt ends up holding a SHALLOWER angle than dry:
-	 * wet excavated clay slumps at about 15 deg against dry sand's 34. That is mud.
+	 * Cohesion of fully packed dirt, kPa: interlock and cementation of fines. Sand
+	 * ~2, loam ~8, hardpack clay ~25. Washed out as the dirt saturates.
 	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "40"))
-	float SaturatedPenaltyDeg = 17.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "100"))
+	float PackedCohesionKPa = 8.0f;
+
+	/** Moist unit weight, kN/m3. Sets how tall a cohesive face can stand: H ~ 4c/gamma. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "10", ClampMax = "24"))
+	float UnitWeightKNm3 = 17.0f;
+
+	/**
+	 * Fraction of friction lost when saturated: pore pressure carries the load
+	 * instead of the grains (effective stress). 0.6 takes 32 deg dry sand to about
+	 * 14 deg mud.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "0", ClampMax = "0.95"))
+	float SaturationFrictionLoss = 0.6f;
+
+	/** Cap on the cohesive standing height, cm, so near-repose faces do not read as infinitely strong. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Repose", meta = (ClampMin = "10"))
+	float MaxCohesiveHeightCm = 400.0f;
 
 	// --- slumping ---------------------------------------------------------
 
@@ -258,4 +279,48 @@ inline float DirtBrushRimWeight(float R, float CoreRadius, float RimRadius)
 	const float T = (R - CoreRadius) / (RimRadius - CoreRadius);
 	const float S = FMath::Sin(PI * T);
 	return S * S;
+}
+
+// ---------------------------------------------------------------------------
+// Soil strength (Mohr-Coulomb). Mirrors DirtSoilStrength / DirtAllowedDrop in
+// Shaders/Private/DirtCommon.ush — keep them identical. docs/SoilPhysics.md.
+// ---------------------------------------------------------------------------
+
+/** Friction (as tan phi) and cohesion (kPa) of dirt in a given state. */
+inline void DirtSoilStrength(float Compaction, float Moisture, const FDirtSimSettings& S,
+							 float& OutTanPhi, float& OutCohesionKPa)
+{
+	const float C = FMath::Clamp(Compaction, 0.0f, 1.0f);
+	const float M = FMath::Clamp(Moisture, 0.0f, 1.0f);
+	const float Sat = FMath::SmoothStep(0.55f, 1.0f, M);                 // pore pressure takes over
+
+	const float PhiDeg = FMath::Lerp(S.LooseReposeDeg, S.PackedReposeDeg, C);
+	OutTanPhi = FMath::Tan(FMath::DegreesToRadians(PhiDeg)) * (1.0f - S.SaturationFrictionLoss * Sat);
+
+	const float Suction = 4.0f * M * (1.0f - M);                         // menisci: none dry, none soaked
+	OutCohesionKPa = S.SuctionCohesionKPa * Suction + S.PackedCohesionKPa * C * (1.0f - Sat);
+}
+
+/**
+ * Largest drop (cm) a cell may stand above a neighbour RunCm away. Friction
+ * allows Run * tan(phi); cohesion lets a face up to the Culmann height H_c(beta)
+ * stand whole, and a taller face keep H_c of it.
+ */
+inline float DirtAllowedDropCm(float DropCm, float RunCm, float TanPhi, float CohesionKPa,
+							   float UnitWeightKNm3, float MaxHcCm)
+{
+	const float FrictionDrop = RunCm * TanPhi;
+	if (DropCm <= FrictionDrop || CohesionKPa <= 0.0f)
+	{
+		return FrictionDrop;
+	}
+
+	const float Beta = FMath::Atan2(DropCm, RunCm);
+	const float Phi = FMath::Atan(TanPhi);
+	const float Denom = FMath::Max(1.0f - FMath::Cos(Beta - Phi), 1e-4f);
+	// 4c/gamma is metres; the grid is centimetres.
+	const float Hc = FMath::Min(400.0f * CohesionKPa / FMath::Max(UnitWeightKNm3, 1.0f)
+								* FMath::Sin(Beta) * FMath::Cos(Phi) / Denom, MaxHcCm);
+
+	return FMath::Max(FrictionDrop, (DropCm <= Hc) ? DropCm : Hc);
 }

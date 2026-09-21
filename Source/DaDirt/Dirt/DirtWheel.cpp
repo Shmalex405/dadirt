@@ -12,12 +12,6 @@ DEFINE_LOG_CATEGORY_STATIC(LogDirtWheel, Log, All);
 namespace
 {
 	constexpr float CmPerM = 100.0f;
-
-	/** Grip and drag are the dirt's answer to the tyre; this is that answer. */
-	float SaturationOf(float Moisture)
-	{
-		return FMath::SmoothStep(0.55f, 1.0f, FMath::Clamp(Moisture, 0.0f, 1.0f));
-	}
 }
 
 ADirtWheel::ADirtWheel()
@@ -179,8 +173,13 @@ void ADirtWheel::Step(float Dt)
 	// --- what the dirt under the tyre is like --------------------------------------
 	const float Compaction = FMath::Clamp(State.G, 0.0f, 1.0f);
 	const float Moisture = FMath::Clamp(State.B, 0.0f, 1.0f);
-	const float Friction = FMath::Lerp(FrictionLoose, FrictionPacked, Compaction)
-						 * FMath::Lerp(1.0f, FrictionMud, SaturationOf(Moisture));
+
+	// Mohr-Coulomb grip: friction from the soil's phi, plus cohesion times the
+	// contact patch. Same strength model the slump uses.
+	float TanPhi = 0.6f, CohesionKPa = 0.0f;
+	DirtSoilStrength(Compaction, Moisture, B->Settings, TanPhi, CohesionKPa);
+	const float PatchAreaM2 = WidthM * ContactPatchLengthM;
+	const float Friction = TanPhi + (CohesionKPa * 1000.0f * PatchAreaM2) / (MassKg * Gravity);
 	const float RollingResistance = FMath::Lerp(RollingResistanceLoose, RollingResistancePacked, Compaction);
 	LastCompaction = Compaction;
 	LastMoisture = Moisture;

@@ -190,8 +190,11 @@ void MainBrushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 float DirtTexelSizeCm;
 float DirtLooseReposeDeg;
 float DirtPackedReposeDeg;
-float DirtMoistureCohesionDeg;
-float DirtSaturatedPenaltyDeg;
+float DirtSuctionCohesionKPa;
+float DirtPackedCohesionKPa;
+float DirtUnitWeightKNm3;
+float DirtSaturationFrictionLoss;
+float DirtMaxCohesiveHeightCm;
 float DirtSlumpRate;
 float DirtLooseningRate;
 float DirtLooseningScaleCm;
@@ -204,9 +207,10 @@ void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 {
 	const float4 S = DirtState(P);
 	const float Surface = S.a;              // bedrock + layer, maintained by every pass
-	const float StableStep = DirtStableStep(S, DirtLooseReposeDeg, DirtPackedReposeDeg,
-											DirtMoistureCohesionDeg, DirtSaturatedPenaltyDeg,
-											DirtTexelSizeCm);
+
+	float TanPhi, CohesionKPa;
+	DirtSoilStrength(S, DirtLooseReposeDeg, DirtPackedReposeDeg, DirtSuctionCohesionKPa,
+					 DirtPackedCohesionKPa, DirtSaturationFrictionLoss, TanPhi, CohesionKPa);
 
 	float Sum = 0.0f;
 
@@ -224,12 +228,19 @@ void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 		// A diagonal neighbour is further away, so it tolerates a bigger drop and
 		// receives proportionally less flow.
 		const float Dist = DirtNeighbourDist[i];
-		const float Excess = max(0.0f, (Surface - DirtState(Q).a) - StableStep * Dist);
+		const float Drop = Surface - DirtState(Q).a;
+		const float Excess = max(0.0f, Drop - DirtAllowedDrop(Drop, DirtTexelSizeCm * Dist, TanPhi, CohesionKPa,
+															 DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm));
 		Out[i] = Excess * DirtSlumpRate / Dist;
 		Sum += Out[i];
 	}
 
-	Scale = (Sum > S.r) ? (S.r / max(Sum, 1e-6f)) : 1.0f;
+	// A cell may shed at most half its dirt per iteration. Letting it empty
+	// completely made thin sheets of mud on steep bedrock flip-flop: a cell
+	// drains, refills from uphill next iteration, drains again, and neighbours
+	// lock into an odd-even checkerboard of thick and thin that renders as teeth.
+	const float MaxOut = 0.5f * S.r;
+	Scale = (Sum > MaxOut) ? (MaxOut / max(Sum, 1e-6f)) : 1.0f;
 }
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
@@ -256,6 +267,8 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	float TotalIn = 0.0f;
+	float InMoisture = 0.0f;      // inflow weighted by the source cell's moisture
+	float InCompaction = 0.0f;    // inflow weighted by the source cell's compaction
 	UNROLL
 	for (int j = 0; j < 8; ++j)
 	{
@@ -270,19 +283,37 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		ComputeOutflow(Q, OutQ, ScaleQ);
 
 		// j^1 flips the direction: neighbour Q's flow back toward us.
-		TotalIn += OutQ[j ^ 1] * ScaleQ;
+		const float In = OutQ[j ^ 1] * ScaleQ;
+		const float4 SQ = DirtState(Q);
+		TotalIn += In;
+		InMoisture += In * SQ.b;
+		InCompaction += In * SQ.g;
 	}
 
-	const float NewLayer = max(S.r - TotalOut + TotalIn, 0.0f);
+	const float Retained = max(S.r - TotalOut, 0.0f);
+	const float NewLayer = Retained + TotalIn;
 
-	// Avalanching dirt is tumbling dirt, so it arrives loose. Nothing re-packs it
-	// on its own — only a wheel, a tool, or a Pack brush does that. Keeping it
-	// that way means the tests stay repeatable.
-	const float Moved = TotalOut + TotalIn;
-	const float Loosen = saturate(Moved / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
+	// Dirt carries its water and its packing with it, and the state channels
+	// describe the SURFACE: a sheet of mud arriving on a damp column lands on
+	// top, so it takes the surface over quickly rather than averaging into 60 cm
+	// of what was underneath. Averaged over the whole column, the receiving cell
+	// stayed cohesive, became a dam for the next inflow, and a wet/dry boundary
+	// turned into a saw-tooth of held and drained cells. The skin depth is how
+	// much arriving dirt it takes to own the surface.
+	if (TotalIn > 1e-4f)
+	{
+		const float SkinCm = 2.0f;
+		const float W = TotalIn / (TotalIn + SkinCm);
+		S.b = saturate(lerp(S.b, InMoisture / TotalIn, W));
+		S.g = saturate(lerp(S.g, InCompaction / TotalIn, W));
+	}
+
+	// Avalanching dirt is tumbling dirt, so whatever moved arrives loose; nothing
+	// re-packs it on its own — only a wheel, a tool, or a Pack brush.
+	const float Loosen = saturate((TotalOut + TotalIn) / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
+	S.g = saturate(S.g - Loosen);
 
 	S.r = NewLayer;
-	S.g = saturate(S.g - Loosen);
 	S.a = Bed + NewLayer;
 
 	DirtStateOut[P] = S;
@@ -299,8 +330,11 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 float DirtTexelSizeCm;
 float DirtLooseReposeDeg;
 float DirtPackedReposeDeg;
-float DirtMoistureCohesionDeg;
-float DirtSaturatedPenaltyDeg;
+float DirtSuctionCohesionKPa;
+float DirtPackedCohesionKPa;
+float DirtUnitWeightKNm3;
+float DirtSaturationFrictionLoss;
+float DirtMaxCohesiveHeightCm;
 int DirtDebugMode;
 float DirtDebugLayerRangeCm;
 
@@ -369,18 +403,21 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else if (DirtDebugMode == 4)         // stability vs angle of repose
 	{
-		const float StableStep = DirtStableStep(S, DirtLooseReposeDeg, DirtPackedReposeDeg,
-												DirtMoistureCohesionDeg, DirtSaturatedPenaltyDeg,
-												DirtTexelSizeCm);
-		// Same eight directions and distances the slump pass uses, so this view
-		// shows exactly what the sim considers unstable.
+		// Same eight directions, distances and strength rule the slump pass uses,
+		// so this view shows exactly what the sim considers unstable. A face held
+		// only by cohesion reads exactly 1.0: yellow, "standing on cohesion".
+		float TanPhi, CohesionKPa;
+		DirtSoilStrength(S, DirtLooseReposeDeg, DirtPackedReposeDeg, DirtSuctionCohesionKPa,
+						 DirtPackedCohesionKPa, DirtSaturationFrictionLoss, TanPhi, CohesionKPa);
 		float Ratio = 0.0f;
 		UNROLL
 		for (int i = 0; i < 8; ++i)
 		{
 			const int2 Q = clamp(P + DirtOffsets8[i], int2(0, 0), DirtResolution - 1);
 			const float Drop = S.a - DirtStateIn.Load(int3(Q, 0)).a;
-			Ratio = max(Ratio, Drop / max(StableStep * DirtNeighbourDist[i], 1e-4f));
+			const float Allowed = DirtAllowedDrop(Drop, DirtTexelSizeCm * DirtNeighbourDist[i], TanPhi, CohesionKPa,
+												  DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm);
+			Ratio = max(Ratio, Drop / max(Allowed, 1e-4f));
 		}
 		C = (Ratio <= 1.0f)
 			? lerp(float3(0.1f, 0.6f, 0.15f), float3(0.95f, 0.9f, 0.1f), Ratio)

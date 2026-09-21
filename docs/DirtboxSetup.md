@@ -256,7 +256,7 @@ DaDirt.Test   repose | anglefan | conserve | trench
 DaDirt.DebugView <0-6>
 DaDirt.Pause  [0|1]
 DaDirt.Slump  <iterations>
-DaDirt.Repose <looseDeg> [packedDeg] [moistureDeg] [saturatedPenaltyDeg]
+DaDirt.Repose <looseDeg> [denseDeg] [suctionKPa] [packedKPa]   soil strength (docs/SoilPhysics.md)
 ```
 
 ---
