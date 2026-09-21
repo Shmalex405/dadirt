@@ -14,7 +14,8 @@ public class DaDirt : ModuleRules
 			"InputCore",
 			"EnhancedInput",
 			"Niagara",
-			"ProceduralMeshComponent"
+			"ProceduralMeshComponent",
+			"DaDirtShaders"
 		});
 
 		// Render-graph / compute-shader plumbing for the dirt simulation.

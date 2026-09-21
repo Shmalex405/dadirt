@@ -1,0 +1,122 @@
+# DaDirt scripted run of the docs/DirtboxSetup.md checklist.
+#
+# Launch with:
+#   UnrealEditor.exe DaDirt.uproject /Game/Maps/L_Dirtbox -game -windowed -ResX=1920 -ResY=1080
+#       -DirtScript=Tools/DirtboxChecklist.txt
+#
+# Lines are console commands. "wait <s> [label]" pauses and logs frame timings,
+# "screenshot <name>" saves to Saved/Screenshots. Results land in Saved/Logs.
+
+# --- track mode: is it a real track? --------------------------------------
+wait 2 startup
+DaDirt.Info
+screenshot 01_track_overview
+wait 8 track_idle_10s
+DaDirt.Audit
+screenshot 02_track_after_10s
+DaDirt.DebugView 4
+wait 1
+screenshot 03_track_stability
+DaDirt.DebugView 6
+wait 1
+screenshot 04_track_slope
+DaDirt.DebugView 0
+
+# --- focus: ruts at track scale -------------------------------------------
+DaDirt.Focus 93 -39 31
+DaDirt.View
+wait 2 focus_corner
+DaDirt.Info
+screenshot 05_focus_corner
+DaDirt.Probe 93 -39
+DaDirt.Dig 93 -39 15 12
+wait 2 focus_rut
+DaDirt.Probe 93 -39
+screenshot 06_focus_rut
+DaDirt.Audit
+DaDirt.Focus -51 -39 31
+DaDirt.View
+wait 2
+screenshot 07_focus_triple
+DaDirt.Focus 115 24 31
+DaDirt.View
+wait 2
+screenshot 08_focus_berm
+DaDirt.Focus off
+DaDirt.View
+wait 2 track_unfocused
+
+# --- testbed: does the dirt behave? ---------------------------------------
+DaDirt.Mode testbed
+DaDirt.View
+wait 3 testbed_idle
+DaDirt.Info
+screenshot 10_testbed_overview
+DaDirt.Audit
+
+DaDirt.Test repose
+wait 5 repose
+screenshot 11_testbed_repose
+
+DaDirt.Test anglefan
+DaDirt.DebugView 4
+wait 6 anglefan
+screenshot 12_testbed_anglefan_stability
+DaDirt.DebugView 0
+wait 1
+screenshot 13_testbed_anglefan
+
+DaDirt.Test conserve
+wait 4 conserve
+screenshot 14_testbed_conserve
+
+DaDirt.Reset
+wait 1
+DaDirt.Dig 0 0 200 30
+wait 3 dig
+screenshot 15_testbed_dig
+DaDirt.Probe 0 0
+DaDirt.Probe 0 3
+DaDirt.Audit
+
+DaDirt.Test trench
+wait 4 trench
+screenshot 16_testbed_trench
+DaDirt.Audit
+
+# mud: two identical piles, one soaked. The wet one should end up flatter.
+DaDirt.Reset
+wait 1
+DaDirt.Raise 0 -15 200 60
+DaDirt.Raise 0 15 200 60
+DaDirt.Wet 0 15 400 1
+wait 5 mud
+DaDirt.Probe 0 -15
+DaDirt.Probe 0 15
+screenshot 17_testbed_mud
+DaDirt.DebugView 3
+wait 1
+screenshot 18_testbed_moisture
+DaDirt.DebugView 2
+wait 1
+screenshot 19_testbed_compaction
+DaDirt.DebugView 0
+DaDirt.Audit
+
+# --- performance ----------------------------------------------------------
+r.ProfileGPU.ShowUI 0
+wait 3 perf_testbed_default
+ProfileGPU
+wait 2
+DaDirt.Slump 1
+wait 3 perf_testbed_slump1
+DaDirt.Slump 3
+DaDirt.Mode track
+DaDirt.View
+wait 3 perf_track_default
+ProfileGPU
+wait 2
+DaDirt.Slump 1
+wait 3 perf_track_slump1
+DaDirt.Slump 3
+quit

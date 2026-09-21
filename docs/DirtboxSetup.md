@@ -1,5 +1,11 @@
 # Windows handoff — build it, look at it, tell me what broke
 
+> **Status (2026-09-21): done — see `docs/DirtboxFirstRun.md` for what broke and
+> what was measured.** Sections 2 and 3 below no longer need doing by hand:
+> `Tools/BuildDirtAssets.py` builds the material and the level from the editor's
+> command line, and `Tools/DirtboxChecklist.txt` runs section 4 unattended via the
+> game mode's `-DirtScript=` runner. The manual steps are kept for reference.
+
 Everything in this project is code except one thing: the **ground material**. A
 material is a binary asset that has to be built in the editor's node graph, so it
 cannot be written as a text file. It is about ten nodes and takes five minutes.

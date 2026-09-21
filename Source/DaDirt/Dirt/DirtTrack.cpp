@@ -723,11 +723,17 @@ void FDirtTrack::DigBorrowPits()
 	constexpr float PitDepthM = 2.4f;
 	const double PerPit = Deficit / NumPits;
 
-	// A cosine bowl of radius R and depth D holds pi*R^2*D/2.
+	// A cosine bowl of radius R and depth D — profile D/2 * (1 + cos(pi*d/R)) — holds
+	//   V = integral 0..R of D/2 (1 + cos(pi d/R)) 2 pi d dd = pi R^2 D (1/2 - 2/pi^2)
+	// which is about 0.297 * pi R^2 D, not the pi R^2 D / 2 of a straight-sided
+	// bowl. Sizing with the wrong constant left the pits 40% short and the ledger
+	// reporting imported dirt on a site that could have balanced.
 	// Clamped so a pit can never run off the site or into the track; whatever the
 	// pits cannot supply is reported honestly as imported rather than conjured.
 	constexpr float MaxPitRadiusM = 30.0f;
-	const float R = FMath::Min(FMath::Sqrt(static_cast<float>(2.0 * PerPit / (PI * PitDepthM))), MaxPitRadiusM);
+	constexpr double CosineBowlFactor = 0.5 - 2.0 / (PI * PI);   // ~0.2974
+	const float R = FMath::Min(
+		FMath::Sqrt(static_cast<float>(PerPit / (CosineBowlFactor * PI * PitDepthM))), MaxPitRadiusM);
 
 	for (const FVector2f& Centre : PitCentres)
 	{

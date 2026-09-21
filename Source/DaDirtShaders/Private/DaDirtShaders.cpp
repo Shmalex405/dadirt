@@ -9,7 +9,7 @@ IMPLEMENT_MODULE(FDaDirtShadersModule, DaDirtShaders);
 void FDaDirtShadersModule::StartupModule()
 {
 	// Everything under <Project>/Shaders/ becomes reachable as "/DaDirt/...".
-	// So Shaders/Private/DirtSim.usf is included from C++ as "/DaDirt/DirtSim.usf".
+	// So Shaders/Private/DirtSim.usf is referenced from C++ as "/DaDirt/Private/DirtSim.usf".
 	const FString ShaderDir = FPaths::Combine(FPaths::ProjectDir(), TEXT("Shaders"));
 	AddShaderSourceDirectoryMapping(TEXT("/DaDirt"), ShaderDir);
 }

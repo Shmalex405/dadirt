@@ -6,7 +6,6 @@
 #include "RenderGraphUtils.h"
 #include "ShaderCompilerCore.h"
 #include "ShaderParameterStruct.h"
-#include "TextureResource.h"
 
 namespace
 {
@@ -62,7 +61,7 @@ public:
 	}
 };
 
-IMPLEMENT_GLOBAL_SHADER(FDirtInitCS, "/DaDirt/DirtSim.usf", "MainInitCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FDirtInitCS, "/DaDirt/Private/DirtSim.usf", "MainInitCS", SF_Compute);
 
 // ---------------------------------------------------------------------------
 // Brush
@@ -97,7 +96,7 @@ public:
 	}
 };
 
-IMPLEMENT_GLOBAL_SHADER(FDirtBrushCS, "/DaDirt/DirtSim.usf", "MainBrushCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FDirtBrushCS, "/DaDirt/Private/DirtSim.usf", "MainBrushCS", SF_Compute);
 
 // ---------------------------------------------------------------------------
 // Slump
@@ -132,7 +131,7 @@ public:
 	}
 };
 
-IMPLEMENT_GLOBAL_SHADER(FDirtSlumpCS, "/DaDirt/DirtSim.usf", "MainSlumpCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FDirtSlumpCS, "/DaDirt/Private/DirtSim.usf", "MainSlumpCS", SF_Compute);
 
 // ---------------------------------------------------------------------------
 // Resolve
@@ -168,7 +167,7 @@ public:
 	}
 };
 
-IMPLEMENT_GLOBAL_SHADER(FDirtResolveCS, "/DaDirt/DirtSim.usf", "MainResolveCS", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FDirtResolveCS, "/DaDirt/Private/DirtSim.usf", "MainResolveCS", SF_Compute);
 
 // ---------------------------------------------------------------------------
 // Dispatch
@@ -183,20 +182,14 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		return;
 	}
 
-	// Pull the RHI textures out now that we are on the render thread.
-	FRHITexture* BaseHeightRHI = Frame.BaseHeight->TextureRHI;
-	FRHITexture* InitialStateRHI = Frame.InitialState->TextureRHI;
-	FRHITexture* StateARHI = Frame.StateA->GetRenderTargetTexture();
-	FRHITexture* StateBRHI = Frame.StateB->GetRenderTargetTexture();
-	FRHITexture* DisplayRHI = Frame.Display->GetRenderTargetTexture();
-	FRHITexture* NormalRHI = Frame.NormalOut->GetRenderTargetTexture();
-	FRHITexture* DebugRHI = Frame.DebugOut->GetRenderTargetTexture();
-
-	if (!BaseHeightRHI || !InitialStateRHI || !StateARHI || !StateBRHI
-		|| !DisplayRHI || !NormalRHI || !DebugRHI)
-	{
-		return;
-	}
+	// The Dirtbox already resolved these to RHI textures on the render thread.
+	FRHITexture* BaseHeightRHI = Frame.BaseHeight;
+	FRHITexture* InitialStateRHI = Frame.InitialState;
+	FRHITexture* StateARHI = Frame.StateA;
+	FRHITexture* StateBRHI = Frame.StateB;
+	FRHITexture* DisplayRHI = Frame.Display;
+	FRHITexture* NormalRHI = Frame.NormalOut;
+	FRHITexture* DebugRHI = Frame.DebugOut;
 
 	FRDGBuilder GraphBuilder(RHICmdList);
 
@@ -252,7 +245,7 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Params->DirtBrushRimNorm = Stroke.RimNorm;
 		Params->DirtBrushAmount = Stroke.Amount;
 		Params->DirtBrushDisturb = Stroke.Disturb;
-		Params->DirtBrushMode = static_cast<int32>(Stroke.Mode);
+		Params->DirtBrushMode = Stroke.Mode;
 		Params->DirtBaseHeight = BaseHeightRHI;
 		Params->DirtStateIn = Current;
 		Params->DirtStateOut = GraphBuilder.CreateUAV(Other);

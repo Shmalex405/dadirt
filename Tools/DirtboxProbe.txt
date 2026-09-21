@@ -1,0 +1,115 @@
+# DaDirt targeted physics probes. Answers two questions the checklist could not:
+#   1. does loose dirt actually settle to the 32 deg angle of repose?
+#   2. does saturated dirt (mud) slump flatter than dry dirt?
+# Everything is measured with DaDirt.Probe height samples, so the answer is a
+# number in the log rather than a picture.
+#
+# Launch like DirtboxChecklist.txt, with -DirtScript=Tools/DirtboxProbe.txt
+
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.View
+wait 1
+
+# --- A: the testbed's own loose cone at (3, -45), before and after settling ------
+DaDirt.Pause 1
+DaDirt.Reset
+wait 0.5
+# profile along +X from the apex, paused (t = 0)
+DaDirt.Probe 3 -45
+DaDirt.Probe 3.5 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 4.5 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 5.5 -45
+DaDirt.Probe 6 -45
+DaDirt.Probe 7 -45
+DaDirt.Probe 8 -45
+DaDirt.Probe 10 -45
+DaDirt.Pause 0
+wait 5 cone_settle
+# same profile after 5 s of slumping
+DaDirt.Probe 3 -45
+DaDirt.Probe 3.5 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 4.5 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 5.5 -45
+DaDirt.Probe 6 -45
+DaDirt.Probe 7 -45
+DaDirt.Probe 8 -45
+DaDirt.Probe 10 -45
+DaDirt.Audit
+
+# --- B: a fresh loose pile on the flat pad: 100 cm high over a 150 cm core ---------
+# peak slope of that kernel is about 45 deg, so it must slump down to ~32 deg
+DaDirt.Pause 1
+DaDirt.Reset
+wait 0.5
+DaDirt.Loosen 3 0 600 1
+DaDirt.Raise 3 0 150 100
+wait 0.5
+DaDirt.Probe 3 0
+DaDirt.Probe 3.25 0
+DaDirt.Probe 3.5 0
+DaDirt.Probe 3.75 0
+DaDirt.Probe 4 0
+DaDirt.Probe 4.25 0
+DaDirt.Probe 4.5 0
+DaDirt.Probe 4.75 0
+DaDirt.Probe 5 0
+DaDirt.Probe 5.5 0
+DaDirt.Probe 6 0
+DaDirt.Probe 7 0
+DaDirt.Pause 0
+wait 5 pile_settle
+DaDirt.Probe 3 0
+DaDirt.Probe 3.25 0
+DaDirt.Probe 3.5 0
+DaDirt.Probe 3.75 0
+DaDirt.Probe 4 0
+DaDirt.Probe 4.25 0
+DaDirt.Probe 4.5 0
+DaDirt.Probe 4.75 0
+DaDirt.Probe 5 0
+DaDirt.Probe 5.5 0
+DaDirt.Probe 6 0
+DaDirt.Probe 7 0
+DaDirt.Audit
+
+# --- C: mud vs dry: two identical steep piles, one soaked to saturation -----------
+DaDirt.Pause 1
+DaDirt.Reset
+wait 0.5
+DaDirt.Raise 3 -15 150 100
+DaDirt.Raise 3 15 150 100
+DaDirt.Wet 3 15 800 1
+DaDirt.Pause 0
+wait 6 mud_settle
+# dry pile
+DaDirt.Probe 3 -15
+DaDirt.Probe 3.5 -15
+DaDirt.Probe 4 -15
+DaDirt.Probe 4.5 -15
+DaDirt.Probe 5 -15
+DaDirt.Probe 6 -15
+DaDirt.Probe 7 -15
+# wet pile
+DaDirt.Probe 3 15
+DaDirt.Probe 3.5 15
+DaDirt.Probe 4 15
+DaDirt.Probe 4.5 15
+DaDirt.Probe 5 15
+DaDirt.Probe 6 15
+DaDirt.Probe 7 15
+DaDirt.DebugView 3
+wait 1
+screenshot probe_moisture
+DaDirt.DebugView 0
+DaDirt.Audit
+
+# --- D: track ledger with the corrected borrow pit sizing ---------------------------
+DaDirt.Mode track
+wait 2
+DaDirt.Info
+quit

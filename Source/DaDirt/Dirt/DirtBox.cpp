@@ -421,20 +421,23 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 		return;
 	}
 
-	FDirtSimFrame Frame;
-	Frame.BaseHeight = BaseHeightTex->GetResource();
-	Frame.InitialState = InitialStateTex->GetResource();
-	Frame.StateA = StateA->GameThread_GetRenderTargetResource();
-	Frame.StateB = StateB->GameThread_GetRenderTargetResource();
-	Frame.Display = DisplayRT->GameThread_GetRenderTargetResource();
-	Frame.NormalOut = NormalRT->GameThread_GetRenderTargetResource();
-	Frame.DebugOut = DebugRT->GameThread_GetRenderTargetResource();
+	// Resource pointers are safe to hand across from the game thread because the
+	// Dirtbox creates them once and never resizes them. The actual RHI textures
+	// are pulled out on the render thread, where they belong.
+	FTextureResource* BaseHeightRes = BaseHeightTex->GetResource();
+	FTextureResource* InitialStateRes = InitialStateTex->GetResource();
+	FTextureRenderTargetResource* StateARes = StateA->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* StateBRes = StateB->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* DisplayRes = DisplayRT->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* NormalRes = NormalRT->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* DebugRes = DebugRT->GameThread_GetRenderTargetResource();
 
-	if (!Frame.IsValid())
+	if (!BaseHeightRes || !InitialStateRes || !StateARes || !StateBRes || !DisplayRes || !NormalRes || !DebugRes)
 	{
 		return;
 	}
 
+	FDirtSimFrame Frame;
 	Frame.Resolution = FIntPoint(Settings.SimResolution, Settings.SimResolution);
 	Frame.TexelSizeCm = Settings.TexelSizeCm();
 	Frame.LooseReposeDeg = Settings.LooseReposeDeg;
@@ -452,9 +455,21 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	PendingStrokes.Reset();
 
 	ENQUEUE_RENDER_COMMAND(DirtSimStep)(
-		[Frame](FRHICommandListImmediate& RHICmdList)
+		[Frame, BaseHeightRes, InitialStateRes, StateARes, StateBRes, DisplayRes, NormalRes, DebugRes]
+		(FRHICommandListImmediate& RHICmdList) mutable
 		{
-			DirtSim::Execute_RenderThread(RHICmdList, Frame);
+			Frame.BaseHeight = BaseHeightRes->TextureRHI;
+			Frame.InitialState = InitialStateRes->TextureRHI;
+			Frame.StateA = StateARes->GetRenderTargetTexture();
+			Frame.StateB = StateBRes->GetRenderTargetTexture();
+			Frame.Display = DisplayRes->GetRenderTargetTexture();
+			Frame.NormalOut = NormalRes->GetRenderTargetTexture();
+			Frame.DebugOut = DebugRes->GetRenderTargetTexture();
+
+			if (Frame.IsValid())
+			{
+				DirtSim::Execute_RenderThread(RHICmdList, Frame);
+			}
 		});
 }
 
@@ -482,7 +497,7 @@ FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float
 	const float TexelSize = Settings.TexelSizeCm();
 
 	FDirtBrushStroke S;
-	S.Mode = Mode;
+	S.Mode = static_cast<int32>(Mode);
 	S.CenterTexel = WorldToTexel(WorldXYCm);
 	S.CoreRadiusTexels = FMath::Max(RadiusCm / TexelSize, 1.0f);
 	S.RimRadiusTexels = S.CoreRadiusTexels * FMath::Max(Settings.BrushRimScale, 1.05f);

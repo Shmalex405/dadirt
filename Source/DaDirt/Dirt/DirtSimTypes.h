@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "DirtSimulation.h"
 #include "DirtSimTypes.generated.h"
 
 /** What a deformation stroke does to the dirt. Values must match DirtSim.usf. */
@@ -219,30 +220,6 @@ struct FDirtSimSettings
 	}
 };
 
-/** One deformation stroke, already converted from world space into grid space. */
-struct FDirtBrushStroke
-{
-	/** Centre in texel coordinates. */
-	FVector2f CenterTexel = FVector2f::ZeroVector;
-
-	float CoreRadiusTexels = 8.0f;
-	float RimRadiusTexels = 16.0f;
-
-	/**
-	 * Kernel amplitude. Already scaled so that the peak of the core equals the
-	 * requested depth in cm — see ADirtBox::MakeStroke.
-	 */
-	float Amount = 0.0f;
-
-	/** Discrete sums of the two kernels over the footprint. These are what make
-	 *  dig and raise conserve volume exactly on the grid. */
-	float CoreNorm = 1.0f;
-	float RimNorm = 1.0f;
-
-	float Disturb = 0.0f;
-
-	EDirtBrushMode Mode = EDirtBrushMode::Dig;
-};
 
 // ---------------------------------------------------------------------------
 // Brush kernel shapes.

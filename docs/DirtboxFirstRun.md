@@ -1,0 +1,185 @@
+# Dirtbox first run on Windows — what broke, what was measured
+
+Date: 2026-09-21. Machine: the dev laptop (Intel Arc 140T iGPU, UE 5.8, VS 2022).
+This is the answer to `docs/DirtboxSetup.md`. Everything below was run unattended
+from scripts, so it can be re-run the same way any time.
+
+## Short version
+
+- The code compiled first time with zero warnings. Two runtime problems stopped
+  the editor from launching; both are fixed.
+- The material and level are now built by a script, not by hand.
+- The track builds to the numbers the design predicted, and after one fix the
+  earthmoving ledger balances with **0 m³ imported**.
+- Volume conservation is exact (drift under 0.0001 m³ on 8,000 m³).
+- Digging, focusing, mud and slumping all work. Slumping converges to the angle
+  of repose but slowly near the end — see "Open items".
+- Performance: 60 fps in track mode and ~80 fps in the testbed at 1080p once the
+  template's volumetric clouds were removed. The dirt sim itself costs ~3 ms.
+
+## What broke
+
+### 1. Global shaders registered from the wrong module (editor crashed on launch)
+
+`DirtSimulation.cpp` declared the four compute shaders inside the `DaDirt` game
+module, which loads at the `Default` phase. The engine had already built its
+global shader map by then and asserted:
+
+```
+Assertion failed: !AreShaderTypesInitialized()
+Shader type was loaded too late, use ELoadingPhase::PostConfigInit on your module
+```
+
+**Fix:** moved `DirtSimulation.h/.cpp` into the `DaDirtShaders` module (which
+already loads at `PostConfigInit` for the path mapping). That module cannot
+depend on `Engine`, so `FDirtSimFrame` now carries raw `FRHITexture*` pointers and
+the Dirtbox resolves them from its texture resources inside the render-thread
+lambda. `FDirtBrushStroke` moved with it (its `Mode` is now an `int32` so the
+header needs no reflected types). `DaDirt` now depends on `DaDirtShaders`.
+
+### 2. Shader virtual path did not include the folder (fatal on launch)
+
+The mapping `/DaDirt -> <Project>/Shaders` was correct, but the C++ asked for
+`/DaDirt/DirtSim.usf` while the file lives in `Shaders/Private/`. Fatal error:
+`Couldn't find source file of virtual shader path '/DaDirt/DirtSim.usf'`.
+
+**Fix:** the four `IMPLEMENT_GLOBAL_SHADER` lines now use
+`/DaDirt/Private/DirtSim.usf`.
+
+### 3. Borrow pits sized with the wrong bowl volume (ledger imported dirt)
+
+First run: `borrowed 474, imported 323 m³`. Three pits at r=8 m recovered only
+60% of the deficit. `DigBorrowPits` sized the pits assuming a cosine bowl holds
+πR²D/2; it holds πR²D·(½ − 2/π²) ≈ 0.297·πR²D.
+
+**Fix:** corrected the constant. Now `borrowed 797, imported 0`, pits r=11 m.
+Note the setup doc's target of "~1,500 recovered" cannot be right given its own
+cut/fill/built figures: the deficit is 796 m³ and that is what the pits must
+supply.
+
+### 4. The five "most likely to break" lines all compiled unchanged
+
+`bCanCreateUAV`, `GetPlatformData()->Mips[0]`, `CreateRenderTarget`,
+`ReadLinearColorPixels` and the RHI accessors are all still spelled that way in
+5.8.
+
+## What was added to make this repeatable
+
+- **`Tools/BuildDirtAssets.py`** — editor Python that builds `/Game/Dirt/M_DirtGround`
+  node-for-node from the setup doc, a 4×4 linear placeholder render target for
+  the parameter defaults (a Linear Color sampler refuses the engine's sRGB default
+  texture), and `/Game/Maps/L_Dirtbox` from the Basic template with the Floor and
+  the VolumetricCloud removed. Re-runnable. Needs `PythonScriptPlugin`, now
+  enabled in the uproject.
+- **`-DirtScript=<file>`** on the game mode — runs a text file of console commands
+  with `wait <s> [label]` (logs avg frame / game / render / GPU ms) and
+  `screenshot <name>`. `Tools/DirtboxChecklist.txt` is section 4 of the setup doc;
+  `Tools/DirtboxProbe.txt` measures slump and mud with height probes.
+
+Launch (from Git Bash, `MSYS_NO_PATHCONV=1`; PowerShell 5.1 splits `x.txt` args):
+
+```
+UnrealEditor.exe DaDirt.uproject /Game/Maps/L_Dirtbox -game -windowed -ResX=1920 -ResY=1080 ^
+    "-DirtScript=C:\...\Tools\DirtboxChecklist.txt" -unattended -nosplash -abslog=<log>
+```
+
+## Track mode
+
+| Check | Result |
+|---|---|
+| Circuit closes, 1,520 m lap, 8 m wide | yes, 15 obstacles, 20 m grade change, steepest 21% |
+| Ledger | cut 27,812 / fill 22,158 / built 6,451 / borrowed 797 / **imported 0** m³ |
+| Stable after 10 s | drift +0.00000 m³, steepest loose slope 9.3°, 0 cells scraped to rock |
+| Focus 93 −39 31 | 31 m region, 3.03 cm cells, "a 12 cm rut is 4.0 cells" |
+| Dig 15 cm radius, 12 cm deep at focus centre | probe 395.2 → 383.6 cm (11.6 cm deep, on target) |
+| Focus ledger | reports "not meaningful while focused" as designed |
+
+Cut/fill/built match the Python replica (27k / 22k / 6.4k).
+
+## Testbed mode — does the dirt behave?
+
+Volume is conserved to the cell in every test: baseline 8025.7729 m³, drift
+between −0.00006 and −0.00010 m³ after repose, anglefan, conserve, trench, dig and
+mud.
+
+**Dig 0 0 200 30:** surface at the centre 60 → 30.1 cm (30 cm hole), rim at 3 m
+raised to 66.6 cm. Correct.
+
+**Loose cone at (3, −45)** (2 m radius, 3 m tall, 56° faces), profile along +X:
+
+| distance from apex | 0 | 0.5 | 1.0 | 1.5 | 2.0 | 2.5 | 3.0 m |
+|---|---|---|---|---|---|---|---|
+| t = 0 (cm) | 347 | 284 | 210 | 135 | 65 | 60 | 60 |
+| t = 5 s (cm) | 250 | 222 | 188 | 154 | 119 | 77 | 60 |
+| slope at 5 s | | 29° | 34° | 35° | 35° | 40° | 19° |
+
+It collapsed from 56° to ~35° flanks in 5 s and is still creeping toward 32°.
+A 32° cone of the same volume would be 227 cm tall; it is at 250 cm.
+
+**Fresh loose pile on the pad** (Raise 100 cm over 150 cm core, ~45° peak slope):
+after 5 s the mid-flank went from 45° to 38°, the lower flank sits on the 32° line,
+the apex has not moved (the kernel is flat on top so it is below repose there).
+
+**Mud vs dry** — two identical piles, one soaked (`Wet 3 15 800 1`), after 6 s:
+
+| | apex | slope |
+|---|---|---|
+| dry pile | 159 cm | 38° mid-flank, still relaxing |
+| wet pile | 115 cm | **15.6°** all the way down |
+
+The saturated pile slumped to within a degree of the 15° mud repose. Mud works.
+
+**Audit's "steepest loose" reads 61–65° in every testbed run.** This is not the
+cone. The testbed has a 1 m block of loose dirt with vertical walls, and 60 cm of
+loose layer on top of every wedge and jump block. Those edges retreat as scarps,
+and a scarp cell mid-collapse is exactly "loose, >2 cm, steep". The number is
+honest but it measures the wrong thing for the repose test — see open items.
+
+## Performance (1080p, GPU profile from `ProfileGPU`)
+
+| Pass | ms |
+|---|---|
+| DirtSlump × 3 | 0.55–0.69 each, ~1.8 total |
+| DirtResolve | 0.5–0.9 |
+| CopyTexture (state B → A) | 0.53 |
+| **Dirt sim total** | **~3 ms** |
+| VolumetricCloud (Basic template) | **3.2** |
+| PostProcessing | 2.6 |
+| BasePass (1.18 M tris in track mode) | 1.5 |
+| ShadowDepths (4 cascades) | 1.3 |
+| Velocities | 1.3 |
+| Whole frame, track mode, with clouds | 16.4–17.4 |
+
+With the cloud actor removed from `L_Dirtbox` (final checklist run):
+
+| Mode | fps (avg over 3 s) | GPU ms |
+|---|---|---|
+| track (768² mesh), 3 slump passes | 64–73 | 11–12 |
+| track, 1 slump pass | 77 | 10.8 |
+| testbed (512² mesh), 3 slump passes | 71–81 | 10–11.5 |
+| testbed, 1 slump pass | 82 | 10.0 |
+
+Hitches of 300–400 ms happen on every `Audit`/`Probe` (blocking readback) and on
+mode/focus rebuilds. Expected.
+
+**Verdict on the slump optimisation:** not worth doing yet. The three slump passes
+are 1.8 ms of a ~13 ms frame; the scene costs four times as much as the sim.
+
+## Open items (design calls, not bugs)
+
+1. **Slump convergence is slow near repose.** Moving 10% of the excess per
+   iteration means the last few degrees take tens of seconds. Options: more
+   `SlumpIterations` (each costs ~0.6 ms GPU), or a scheme that moves a fixed
+   fraction of the *full* drop above repose rather than a fraction of the excess.
+   The direction and the end state are right; only the tail is slow.
+2. **The repose test's metric needs a cleaner subject.** Measure the cone's own
+   profile (as `Tools/DirtboxProbe.txt` does) instead of the box-wide max, or
+   exclude cells adjacent to bare bedrock from "steepest loose".
+3. **The scene is washed out.** Auto-exposure with the template sky turns the dirt
+   nearly white, which hides shape. Worth pinning exposure in the sandbox map.
+4. **Screenshots in unattended runs are captured one request late** by the
+   engine (`HighResShot` and `FScreenshotRequest` alike), and a direct viewport
+   read from the tick returns a black back buffer. The runner works around it by
+   requesting each shot on two consecutive frames and then a throwaway `_flush`
+   request. Files land in `Saved/Screenshots/WindowsEditor/` and now show the
+   frame they were asked for.

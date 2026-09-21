@@ -1,9 +1,14 @@
 using UnrealBuildTool;
 
-// Tiny module whose only job is to map our Shaders/ folder to a virtual shader
-// path ("/DaDirt") before the engine starts compiling shaders. It has to load at
-// PostConfigInit — earlier than the game module — or the engine will not know
-// where our .usf files live.
+// Early-loading module for everything the dirt simulation needs on the GPU side:
+//
+//   * maps our Shaders/ folder to the virtual shader path "/DaDirt"
+//   * declares the dirt compute shaders (DirtSimulation.cpp) and dispatches them
+//
+// It has to load at PostConfigInit — earlier than the game module — because the
+// engine builds its global shader map before Default-phase modules load, and any
+// global shader registered after that point asserts. That is also why this module
+// must not depend on Engine: at PostConfigInit, Engine has not started yet.
 public class DaDirtShaders : ModuleRules
 {
 	public DaDirtShaders(ReadOnlyTargetRules Target) : base(Target)
@@ -13,8 +18,13 @@ public class DaDirtShaders : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
-			"Projects",
+			"RHI",
 			"RenderCore"
+		});
+
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			"Projects"
 		});
 	}
 }
