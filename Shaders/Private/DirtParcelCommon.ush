@@ -1,0 +1,88 @@
+// DaDirt — parcel bindings and helpers shared by every pass that spawns or
+// moves parcels: the parcel passes themselves (DirtParcels.usf) and the slump
+// pass (grains shedding down a face). Bound by NAME through
+// DIRT_PARCEL_PARAMETERS() in DirtSimulation.cpp.
+//
+// A parcel pool is three RGBA32F textures, a free-list stack and a counter
+// buffer. The same layout serves dirt parcels and dust; dust just never deposits.
+//   Pos   xyz cm relative to the Dirtbox origin,  w volume cm^3 (0 = dead)
+//   Vel   xyz cm/s,                               w seconds at rest (dust: age)
+//   Prop  moisture, compaction, rendered diameter cm, random seed (dust: age, for the fade)
+// Slot i lives at texel (i % Res, i / Res).
+
+#pragma once
+
+int DirtParcelRes;
+RWTexture2D<float4> DirtParcelPos;
+RWTexture2D<float4> DirtParcelVel;
+RWTexture2D<float4> DirtParcelProp;
+RWStructuredBuffer<uint> DirtParcelFree;       // stack of dead slot indices
+RWStructuredBuffer<uint> DirtParcelCounters;   // see DIRT_PARCEL_COUNTER_* in DirtCommon.ush
+
+float2 DirtRegionOriginCm;     // box-relative xy of texel (0,0)'s corner
+float DirtTexelAreaCm2;
+RWTexture2D<uint> DirtDepositVol;
+RWTexture2D<uint> DirtDepositMoist;
+
+int2 ParcelTexel(uint I)
+{
+	return int2(I % (uint)DirtParcelRes, I / (uint)DirtParcelRes);
+}
+
+uint ParcelCount()
+{
+	return (uint)(DirtParcelRes * DirtParcelRes);
+}
+
+// --- randomness --------------------------------------------------------------
+
+uint DirtHash(uint X)
+{
+	X ^= X >> 16; X *= 0x7feb352du;
+	X ^= X >> 15; X *= 0x846ca68bu;
+	X ^= X >> 16;
+	return X;
+}
+
+float DirtRand01(uint Seed, uint Salt)
+{
+	return (float)(DirtHash(Seed * 0x9E3779B1u + Salt * 0x85EBCA77u + 0x27D4EB2Fu) & 0xFFFFFFu) / 16777216.0f;
+}
+
+// --- deposits -----------------------------------------------------------------
+// Landing dirt is added into two fixed-point textures with atomics; the deposit
+// pass folds them into the layer next step.
+
+void DepositAt(int2 Cell, float VolumeCm3, float Moisture)
+{
+	InterlockedAdd(DirtDepositVol[Cell], (uint)(VolumeCm3 * DIRT_DEPOSIT_SCALE + 0.5f));
+	InterlockedAdd(DirtDepositMoist[Cell], (uint)(VolumeCm3 * saturate(Moisture) * DIRT_DEPOSIT_SCALE + 0.5f));
+}
+
+// Take a free slot. Adding 0xFFFFFFFF is a decrement; if the counter was
+// already zero it wraps, so give it back. Returns false when the pool is full.
+bool ParcelPop(out uint Slot)
+{
+	uint Old;
+	InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 0xFFFFFFFFu, Old);
+	if (Old == 0u || Old > ParcelCount())
+	{
+		InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 1u);
+		InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FALLBACK], 1u);
+		Slot = 0u;
+		return false;
+	}
+	Slot = DirtParcelFree[Old - 1u];
+	InterlockedMax(DirtParcelCounters[DIRT_PARCEL_COUNTER_MAXLIVE], Slot + 1u);
+	InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_SPAWNED], 1u);
+	return true;
+}
+
+// Give a slot back and count the death.
+void ParcelPush(uint Slot)
+{
+	uint Old;
+	InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 1u, Old);
+	DirtParcelFree[Old] = Slot;
+	InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_LANDED], 1u);
+}

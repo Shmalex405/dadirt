@@ -116,7 +116,19 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   sit in the lowest slots and only the mesh sections up to the highest live slot
   are drawn. Never break that: an idle pool of a quarter million would cost 7 ms.
   A parcel's volume was scooped from the heightfield and is deposited back by
-  atomics into fixed-point textures; the audit counts ground + air.
+  atomics into fixed-point textures; the audit counts ground + air. Dust is a
+  second pool with the same shaders and NO audited volume: the one deliberate effect.
+- **Every mass-moving stroke is two halves.** A taking half (dig core, raise rim,
+  scoop) runs first and reports per stroke what the cell did not have (bedrock)
+  into `DirtScoopShortfall`; the giving half (dig rim, raise core, dump, or the
+  parcels of a scoop) is dispatched afterwards and gives only what was taken.
+  `ApplyBrush` emits both; `PendingGiving` holds the second. This is what keeps
+  a dig zero-sum over a hole. Do not add a stroke mode that adds dirt without a
+  link to what removed it.
+- The slump runs on a 16 x 16 group-shared tile with a two-cell halo
+  (`SLUMP_TILE`); the shed-grain spawn lives inside it. Any change to the slump
+  must be checked against `Tools/DirtboxSoil.txt` (60 cm face, damp wall stands,
+  cone at 32°) before it replaces the old numbers.
 - Alex works on a Mac; the project only builds on the Windows machine. Code
   written on the Mac has never seen a compiler, so hand it over with that said
   plainly and expect a first-compile fixing pass.

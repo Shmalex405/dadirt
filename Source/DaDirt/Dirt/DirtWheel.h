@@ -159,8 +159,31 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	float RoostSpreadDeg = 14.0f;
 
+	/** Sideways slither above this speed shears dirt off the tyre's flank: spray off a berm, m/s. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float SpraySlipThresholdMps = 0.4f;
+
+	/** Bulk cm of soil the flank shears per metre of sideways slide, on loose dirt. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float SprayFailureDepthCm = 0.25f;
+
+	/** Impact speed above which a landing splashes dirt out from under the tyre, m/s. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float SplashImpactMps = 1.5f;
+
+	/** Litres of solid dirt splashed per m/s of impact above the threshold, on loose dirt. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float SplashLitresPerMps = 0.25f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	bool bDeformsDirt = true;
+
+	/** Per-part switches for the leak hunt: DaDirt.WheelParts. */
+	bool bPartRut = true;
+	bool bPartPack = true;
+	bool bPartRoost = true;
+	bool bPartSpray = true;
+	bool bPartSplash = true;
 
 	/** Test-rig mode: the wheel cannot translate, only spin. Burnouts on a stand. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
@@ -195,6 +218,7 @@ private:
 	/** Bekker static sinkage (m) and the soil constants for this state and load. */
 	void SoilResponse(float Compaction, float Moisture, float LoadN,
 					  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const;
+	float ContactPatchLength(float Compaction, float Moisture, float LoadN) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<USceneComponent> Root;
@@ -221,6 +245,10 @@ private:
 	float StrokeTimeS = 0.0f;
 	float StrokeSinkageM = 0.0f;      // sinkage-weighted by distance, for the rut
 	float StrokeSlipRatio = 0.0f;
+	float StrokeSideSlipM = 0.0f;     // sideways slide, for spray
+	float StrokeSideSign = 0.0f;
+	bool bWasOnGround = false;
+	float FallSpeedMps = 0.0f;        // downward speed on the last airborne substep, for the splash
 
 	static constexpr float SubstepSeconds = 1.0f / 240.0f;
 	static constexpr float Gravity = 9.81f;

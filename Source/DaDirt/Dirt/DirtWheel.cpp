@@ -116,6 +116,13 @@ void ADirtWheel::Tick(float DeltaSeconds)
 	}
 }
 
+float ADirtWheel::ContactPatchLength(float Compaction, float Moisture, float LoadN) const
+{
+	float SinkageM, ContactLengthM, ResistanceN;
+	SoilResponse(Compaction, Moisture, LoadN, SinkageM, ContactLengthM, ResistanceN);
+	return ContactLengthM;
+}
+
 void ADirtWheel::SoilResponse(float Compaction, float Moisture, float LoadN,
 							  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const
 {
@@ -209,6 +216,12 @@ void ADirtWheel::Step(float Dt)
 	const float GroundM = GroundCm / CmPerM;
 	const float Bottom = PosM.Z - RadiusM;
 	bOnGround = Bottom <= GroundM + ContactToleranceM;
+	if (!bOnGround)
+	{
+		FallSpeedMps = FMath::Max(-VelocityMps.Z, 0.0f);
+	}
+	const bool bTouchdown = bOnGround && !bWasOnGround;
+	bWasOnGround = bOnGround;
 
 	// --- what the dirt under the tyre is like --------------------------------------
 	const float Compaction = FMath::Clamp(State.G, 0.0f, 1.0f);
@@ -275,6 +288,34 @@ void ADirtWheel::Step(float Dt)
 		const float VForward = FVector::DotProduct(VelocityMps, FwdGround);
 		const float VLateral = FVector::DotProduct(VelocityMps, Lateral);
 
+		// --- a landing: the tyre punches into the dirt and splashes it out sideways ---
+		if (bTouchdown && bDeformsDirt && bPartSplash && FallSpeedMps > SplashImpactMps)
+		{
+			const FVector2D ContactCm(PosM.X * CmPerM, PosM.Y * CmPerM);
+			const float HalfWidthCm = WidthM * 0.5f * CmPerM;
+			const float ScoopRadiusCm = HalfWidthCm * 1.6f;
+			const float AvailableCm3 = B->MaxScoopCm3(State.R, ScoopRadiusCm);
+			const float WantedCm3 = SplashLitresPerMps * (FallSpeedMps - SplashImpactMps) * (1.0f - 0.7f * Compaction) * 1000.0f;
+			const float VolumeCm3 = FMath::Min(WantedCm3, AvailableCm3);
+			if (VolumeCm3 > 0.5f)
+			{
+				// Two fans, one off each side of the tyre, low and wide.
+				const float SplashSpeed = FMath::Min(FallSpeedMps * 0.8f, 8.0f) * CmPerM;
+				const FVector Launch(ContactCm.X, ContactCm.Y, GroundCm + 3.0f);
+				// One scoop, two throws: the shortfall is shared by linking both
+				// to the same stroke and halving the request each side.
+				const int32 Link = B->ScoopDirt(ContactCm, ScoopRadiusCm, VolumeCm3, 0.15f);
+				for (int32 Side = -1; Side <= 1; Side += 2)
+				{
+					const FVector Dir = (Lateral * static_cast<float>(Side) * 0.85f + Normal * 0.5f).GetSafeNormal();
+					B->SpawnParcels(Launch, Dir * SplashSpeed + VelocityMps * CmPerM * 0.5f, 30.0f, VolumeCm3 * 0.5f, Moisture, Compaction, Link);
+					B->SpawnDust(Launch, Dir * SplashSpeed * 0.5f, 45.0f,
+								 FMath::RoundToInt(B->Settings.DustPerLitre * VolumeCm3 * 0.5f / 1000.0f * (1.0f - Moisture)), Moisture);
+				}
+				RoostLitresTotal += VolumeCm3 / 1000.0f;
+			}
+		}
+
 		// --- the soil's answer to this load ----------------------------------------------
 		float SinkageM, ContactLengthM, ResistanceN;
 		SoilResponse(Compaction, Moisture, Load, SinkageM, ContactLengthM, ResistanceN);
@@ -328,11 +369,15 @@ void ADirtWheel::Step(float Dt)
 		StrokeSlipM += FMath::Min(ShearSpeed, RoostSlipCapMps) * Dt;
 		StrokeSlipSign = SlipMps;
 		StrokeSlipRatio = SlipRatio;
+		// Sideways slither: the flank of the tyre ploughing dirt outward in a corner.
+		const float SideShear = FMath::Max(FMath::Abs(VLateral) - SpraySlipThresholdMps, 0.0f);
+		StrokeSideSlipM += FMath::Min(SideShear, RoostSlipCapMps) * Dt;
+		StrokeSideSign = VLateral;
 		StrokeTimeS += Dt;
 
 		// One batch of strokes every sixth of a radius travelled, or every 1/20 s
 		// when spinning on the spot.
-		if (bDeformsDirt && (StrokeDistanceM >= RadiusM / 6.0f || (StrokeSlipM > 0.0f && StrokeTimeS >= 0.05f)))
+		if (bDeformsDirt && (StrokeDistanceM >= RadiusM / 6.0f || ((StrokeSlipM > 0.0f || StrokeSideSlipM > 0.0f) && StrokeTimeS >= 0.05f)))
 		{
 			const FVector2D ContactCm(PosM.X * CmPerM, PosM.Y * CmPerM);
 			const float HalfWidthCm = WidthM * 0.5f * CmPerM;
@@ -350,25 +395,29 @@ void ADirtWheel::Step(float Dt)
 				const float PassFraction = StrokeDistanceM * CmPerM / B->GetTexelSizeCm();
 				const float MeanSinkageCm = StrokeSinkageM / StrokeDistanceM * CmPerM;
 				const float RutCm = PlasticSinkage * MeanSinkageCm * PassFraction * LoadFactor;
-				if (RutCm > 0.005f)
+				if (RutCm > 0.005f && bPartRut)
 				{
 					// No disturb: a tyre pressing a rut is packing, not breaking up.
 					B->ApplyBrush(ContactCm, HalfWidthCm * 1.2f, RutCm, EDirtBrushMode::Dig, 0.0f);
 				}
-				B->ApplyBrush(ContactCm, HalfWidthCm * 1.3f, PackPerPass * PassFraction * LoadFactor,
-							  EDirtBrushMode::Pack, -1.0f, /*bProctor*/ true);
+				if (bPartPack)
+				{
+					B->ApplyBrush(ContactCm, HalfWidthCm * 1.3f, PackPerPass * PassFraction * LoadFactor,
+								  EDirtBrushMode::Pack, -1.0f, /*bProctor*/ true);
+				}
 			}
 
 			// Past the traction limit the lugs shear the soil off and fling it at
 			// about the slip speed: roost. Volume rate = width x failure depth x
 			// slip speed. It leaves the ground as parcels and comes back down as
 			// parcels; nothing is dumped by fiat.
-			if (StrokeSlipM > 0.001f)
+			if (StrokeSlipM > 0.001f && bPartRoost)
 			{
 				// Never scoop more than the layer under the tyre can give: past
-				// bedrock there is nothing to throw.
+				// bedrock there is nothing to throw, and parcels spawned for dirt
+				// the shader could not remove would be dirt from nowhere.
 				const float ScoopRadiusCm = HalfWidthCm * 1.1f;
-				const float AvailableCm3 = FMath::Max(State.R, 0.0f) * PI * ScoopRadiusCm * ScoopRadiusCm * 0.4f;
+				const float AvailableCm3 = B->MaxScoopCm3(State.R, ScoopRadiusCm);
 				const float FailureDepthCm = LugFailureDepthCm * (1.0f - 0.6f * Compaction);
 				const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
 				const float WantedCm3 = WidthM * CmPerM * FailureDepthCm * SolidFraction * StrokeSlipM * CmPerM * LoadFactor;
@@ -386,8 +435,35 @@ void ADirtWheel::Step(float Dt)
 					// A gentle disturb: the lugs shear the top off, the floor under
 					// the patch is still being pressed. Full disturb wiped the line's
 					// packing every stroke and the rut never firmed up.
-					B->ScoopDirt(ContactCm, ScoopRadiusCm, VolumeCm3, 0.08f);
-					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM, RoostSpreadDeg, VolumeCm3, Moisture, Compaction);
+					const int32 Link = B->ScoopDirt(ContactCm, ScoopRadiusCm, VolumeCm3, 0.08f);
+					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM, RoostSpreadDeg, VolumeCm3, Moisture, Compaction, Link);
+					// Dry dirt roosts with a plume of dust; wet dirt does not.
+					B->SpawnDust(LaunchCm, Dir * EjectMps * CmPerM * 0.5f + VelocityMps * CmPerM, RoostSpreadDeg + 20.0f,
+								 FMath::RoundToInt(B->Settings.DustPerLitre * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
+					RoostLitresTotal += VolumeCm3 / 1000.0f;
+				}
+			}
+
+			// Spray off a berm: sliding sideways, the flank shears dirt off and
+			// throws it outward, low and fast. Same excavation rule as roost.
+			if (StrokeSideSlipM > 0.001f && bPartSpray)
+			{
+				const float ScoopRadiusCm = HalfWidthCm * 1.3f;
+				const float AvailableCm3 = B->MaxScoopCm3(State.R, ScoopRadiusCm);
+				const float FailureDepthCm = SprayFailureDepthCm * (1.0f - 0.6f * Compaction);
+				const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
+				const float WantedCm3 = ContactPatchLength(Compaction, Moisture, Load) * CmPerM * FailureDepthCm * SolidFraction * StrokeSideSlipM * CmPerM * LoadFactor;
+				const float VolumeCm3 = FMath::Min(WantedCm3, AvailableCm3);
+				if (VolumeCm3 > 0.5f)
+				{
+					const float OutSign = (StrokeSideSign >= 0.0f) ? 1.0f : -1.0f;     // thrown the way the tyre is sliding
+					const float EjectMps = FMath::Min(FMath::Abs(StrokeSideSign), 12.0f) * 0.9f;
+					const FVector Dir = (Lateral * OutSign * 0.9f + Normal * 0.35f).GetSafeNormal();
+					const FVector LaunchCm = FVector(ContactCm.X, ContactCm.Y, GroundCm) + Lateral * OutSign * HalfWidthCm + FVector(0, 0, 3.0f);
+					const int32 Link = B->ScoopDirt(ContactCm, ScoopRadiusCm, VolumeCm3, 0.1f);
+					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM * 0.7f, 18.0f, VolumeCm3, Moisture, Compaction, Link);
+					B->SpawnDust(LaunchCm, Dir * EjectMps * CmPerM * 0.5f + VelocityMps * CmPerM * 0.7f, 35.0f,
+								 FMath::RoundToInt(B->Settings.DustPerLitre * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
 					RoostLitresTotal += VolumeCm3 / 1000.0f;
 				}
 			}
@@ -395,6 +471,7 @@ void ADirtWheel::Step(float Dt)
 			StrokeDistanceM = 0.0f;
 			StrokeSinkageM = 0.0f;
 			StrokeSlipM = 0.0f;
+			StrokeSideSlipM = 0.0f;
 			StrokeTimeS = 0.0f;
 		}
 	}

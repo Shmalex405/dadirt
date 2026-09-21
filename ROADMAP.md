@@ -207,10 +207,16 @@ cannot read structured buffers and Niagara cannot be authored from text):
       (4 mm clods, a full roost at 40–46 fps); the frame is the heightfield's.
       Size is one knob: `DaDirt.Parcel <cm>` or `soil` (clods sized by cohesion).
       `docs/SoilPhysics.md` 9f
-- [ ] Spray off a berm and grains shedding down an over-steep face (only roost
-      and throws spawn parcels today)
-- [ ] Dust: the sub-millimetre tail as sprites with drag, no audited volume
+- [x] Grains shedding down an over-steep face (the slump pass sheds parcels that
+      roll off the fall line), spray off the tyre's flank in a slide, and a
+      splash on landing. All audited: 27,000 spray parcels at 0.00000 m³
+- [x] Dust: a second pool of soft camera-facing motes puffed with dry roost,
+      spray, splash and throws; drifts, fades, carries no audited volume
+- [x] The slump on a shared tile: sim halved, testbed idles at 75–86 fps, a
+      74,000-parcel roost at 54 fps. `docs/SoilPhysics.md` 9g
 - [ ] Parcels hitting the wheel and the (future) rider
+- [ ] Dust that rides the air behind a moving wheel (today it hangs where it
+      was puffed; there is no air)
 
 ### 1d — Sandbox tools & feel
 - [x] Debug views: dirt, layer depth, compaction, moisture, stability vs repose,

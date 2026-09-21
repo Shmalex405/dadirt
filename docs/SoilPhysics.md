@@ -453,25 +453,54 @@ what changes as they get smaller is the density of the spray, which is exactly
 what reads as fine dirt. Dust proper (the sub-millimetre tail that never
 carries auditable volume) is still to come.
 
-## 9g. Open items from Phases B–E
+## 9g. The second pass (later on 2026-09-21)
 
-- **A small leak at rut resolution.** Whole-box runs audit to ±0.00001 m³ (float
-  rounding of a million cells exchanging tiny flows). Runs with the sim focused
-  on a 40 m region (3.9 cm cells) and the wheel roosting show **+0.0002 m³ over
-  four passes**, 4·10⁻⁷ of the region, positive, so dirt appearing rather than
-  vanishing. Clearing queued throws on a rebuild did not remove it. Suspects:
-  something in scoop/spawn/deposit that does not commute at sub-2-texel kernels.
-  Reproduce with `Tools/DirtboxTerra.txt` step 3.
-- **The sim double-steps below 60 fps.** With `MaxStepsPerFrame` 2, any frame over
-  16.7 ms runs two sim steps (~7 ms each) and stays there. The slump's
-  groupshared-tile rewrite is the known lever; the ProfileGPU rows say the three
-  slump passes are two thirds of the sim.
-- **Parcels render dark.** They are lit tetrahedra with vertex normals and no
-  shadow, and read as dark grit against the sunlit pad. Colour and a touch of
-  ambient are a material tweak, not a sim change.
-- The `DaDirt.Throw` heap test spreads 32 L over ~2 m² (a 1.8 cm bump), because
-  parcels roll on landing; a pile needs a cone of stopped parcels, which is the
-  angle-of-repose behaviour of the heightfield taking over once they deposit.
+**The slump on a shared tile.** The slump pass now runs on 16 × 16 tiles held in
+group shared memory with a two-cell halo (`SLUMP_TILE` in DirtSim.usf): 1.6
+texture loads per cell instead of 81. Each slump pass fell from 1.4–3.3 ms to
+0.75–0.87 ms, and the sim no longer double-steps at 1080p:
+
+| scene | before | after |
+|---|---|---|
+| testbed idle, everything on | 52 fps (16 ms GPU) | **75–86 fps** (10 ms) |
+| soil test, block as built | 56–58 fps | **88–99 fps** |
+| burnout, 1 cm parcels, ~5,000 live | 43 fps | **67 fps** |
+| burnout, 4 mm parcels, ~74,000 live | 33–42 fps | **54 fps** |
+| slump off (the rest of the frame) | 81–89 fps | 101 fps |
+
+The tiled pass reproduces the Phase A numbers to the centimetre: the barely
+damp wall shears to 140.1 → 80.0 cm over one cell, the damp wall stands, the
+soaked block runs out, the dry cone settles at 32° on axis and diagonal.
+
+**Parcels from more than roost.**
+- *Grains shedding down a face* (`DaDirt.Shed`): a cell avalanching more than
+  `ShedMinOutCm` per step has a `ShedChance` of turning part of that outflow
+  into a parcel that rolls off along the fall line, capped at a few grains'
+  worth so a 6 mm grain never carries a cell's worth of mud. The loose cone
+  sheds **8,600 grains** as it collapses, still settles at 32°, drift 0.00000.
+- *Spray off a berm*: sideways slither above `SpraySlipThresholdMps` shears
+  `SprayFailureDepthCm` of soil per metre off the tyre's flank and throws it
+  outward, low and fast. A hard turn on the pad: 27,000 parcels, drift 0.00000.
+- *A landing*: touching down faster than `SplashImpactMps` scoops
+  `SplashLitresPerMps` per m/s of impact and throws it out both sides. Off the
+  block's edge: 22,000 parcels, drift −0.00001.
+- *Dust* (`DaDirt.Dust`): a second pool of camera-facing soft quads, puffed with
+  roost, spray, splash and throws at `DustPerLitre` motes per litre of dry
+  dirt (wet dirt makes none), on a 1 mm speck's drag, neutrally buoyant with a
+  touch of lift, fading over `DustLifetime`. It carries no audited volume and
+  never deposits: it is the one deliberate effect. A dry burnout keeps ~800 motes in the air at 400 per litre (`Tools/DirtboxSpray.txt`); a soaked one makes 20.
+
+**The deposit fold moved after the parcel sim.** The audit reads the display
+texture and the live parcels; volume landed in the fixed-point accumulators but
+not yet folded into the layer was in neither, and heavy shedding made that
+visible as −0.0006 m³ for a frame. Folding at the end of the step put it back to
+0.00000 with 4,000 parcels in the air.
+
+**The rut-resolution leak, hunted.** `Tools/DirtboxLeak.txt` drives the same
+two passes in a 40 m region with one part of the wheel's mark at a time: no
+strokes, rut only, pack only, roost only (dumped in place), all parts with
+parcels off, and the hand-tool conserve test. Every one audits to 0.00000 m³.
+The culprit was the wheel's rut stroke passing over cells its launch spin had already emptied to bedrock: the Dig's core could not give the full amount, but its rim still received it, and every such stroke created dirt. The same clamp bit the roost scoop, whose parcels then landed dirt that never left. Both are fixed the same way: every mass-moving stroke is now two halves, a taking half that runs first and reports per stroke what it could not find (`DirtScoopShortfall`, fixed point), and a giving half (the rim of a dig, the core of a raise, a dump, or the parcels of a scoop) dispatched afterwards that gives only what was taken. With that, the four-pass rut at 3.9 cm cells reads **0.00000 m³** with parcels flying and grains shedding, as does every other case in the script. Parcels switched off now means the throw lands where it started through the same books, rather than a dump the shortfall could not reach.
 
 ## 10. Implementation plan
 

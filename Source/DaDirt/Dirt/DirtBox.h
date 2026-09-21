@@ -115,6 +115,14 @@ public:
 			  meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
 	FSoftObjectPath ParcelMaterialPath = FSoftObjectPath(TEXT("/Game/Dirt/M_DirtParcel.M_DirtParcel"));
 
+	/** Material for dust: one camera-facing quad per mote, soft and translucent, fading with age. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt")
+	TObjectPtr<UMaterialInterface> DustMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt",
+			  meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath DustMaterialPath = FSoftObjectPath(TEXT("/Game/Dirt/M_DirtDust.M_DirtDust"));
+
 	/** Which channel the ground is coloured by. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt|Debug")
 	EDirtDebugView DebugView = EDirtDebugView::Dirt;
@@ -153,7 +161,7 @@ public:
 	 * caller owes it back: pair with SpawnParcels so it lands again somewhere.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
-	void ScoopDirt(FVector2D FromWorldXYCm, float RadiusCm, float VolumeCm3, float DisturbOverride = -1.0f);
+	int32 ScoopDirt(FVector2D FromWorldXYCm, float RadiusCm, float VolumeCm3, float DisturbOverride = -1.0f);
 
 	/**
 	 * Throw a volume of solid dirt (cm^3) into the air from a world position with
@@ -163,7 +171,16 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
 	void SpawnParcels(FVector WorldPosCm, FVector VelocityCmS, float SpreadDeg, float VolumeCm3,
-					  float Moisture, float Compaction);
+					  float Moisture, float Compaction, int32 ScoopStrokeIndex = -1);
+
+	/**
+	 * Puff dust: Count motes from a world position with a velocity over a cone.
+	 * Dust is the one effect here; it carries no audited volume, hangs in the
+	 * air under heavy drag and fades out. Roost and throws call this alongside
+	 * SpawnParcels, scaled by DustPerLitre.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "DaDirt")
+	void SpawnDust(FVector WorldPosCm, FVector VelocityCmS, float SpreadDeg, int32 Count, float Moisture);
 
 	/**
 	 * Pour water on a spot, like a water truck. It lands as surface water and
@@ -213,11 +230,25 @@ public:
 	/** True if the world XY lies inside the box. */
 	bool IsInsideBox(FVector2D WorldXYCm) const;
 
+	/**
+	 * The most solid volume (cm^3) a Scoop of this radius may take from a spot
+	 * whose layer holds SolidCm, without its peak cell running out. The core
+	 * kernel puts 1/CoreNorm of the volume into the centre cell, so at fine
+	 * cells a small scoop is nearly all one cell: guard on that cell, not on the
+	 * whole patch. What a scoop cannot take, the shader clamps, and the parcels
+	 * spawned for it would land dirt that never left: the rut-resolution leak.
+	 */
+	float MaxScoopCm3(float SolidCm, float RadiusCm) const;
+
 	/** Parcel counters from the GPU, a frame or two old. Indices are DirtSim::ParcelCounter*. */
 	void GetParcelCounters(uint32 OutCounters[8]) const;
 
 	/** Parcels alive right now (pool minus free), a frame or two old. */
 	int32 GetLiveParcels() const;
+
+	/** Dust motes alive right now, a frame or two old. */
+	int32 GetLiveDust() const;
+	void GetDustCounters(uint32 OutCounters[8]) const;
 
 	/** Show or hide the parcel mesh (it is also hidden when parcels are switched off). */
 	void SetParcelsVisible(bool bVisible);
@@ -265,6 +296,7 @@ private:
 	void RebuildTerrainAndMesh();
 	void BuildDisplayMesh();
 	void BuildParcelMesh();
+	void BuildDustMesh();
 	void UpdateMaterialParameters();
 	void StepSimulation(bool bForceReinit);
 
@@ -343,8 +375,38 @@ private:
 	/** Free list, counters and deposit accumulators. Render thread owns the contents. */
 	TSharedPtr<FDirtParcelResources, ESPMode::ThreadSafe> ParcelGPU;
 
-	/** Strokes waiting for the next sim step. */
+	/** Dust: camera-facing quads, one per mote. */
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> DustMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> DustMID;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> DustPosRT;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> DustVelRT;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> DustPropRT;
+
+	TSharedPtr<FDirtParcelResources, ESPMode::ThreadSafe> DustGPU;
+
+	/** Dust puffs waiting for the next sim step. */
+	TArray<FDirtParcelSpawn> PendingDust;
+	uint32 DustCounters[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	int32 DustPoolCount = 0;
+	int32 DustSectionsVisible = 0;
+	int32 DustSlotsRequested = 0;
+	float DustSectionHoldSeconds = 0.0f;
+	uint32 FrameCounter = 0;
+
+	/** Strokes waiting for the next sim step: the taking halves. */
 	TArray<FDirtBrushStroke> PendingStrokes;
+
+	/** The giving halves, applied after every taking stroke has reported its shortfall. */
+	TArray<FDirtBrushStroke> PendingGiving;
 
 	/** Throws waiting for the next sim step. */
 	TArray<FDirtParcelSpawn> PendingSpawns;

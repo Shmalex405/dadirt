@@ -1,0 +1,100 @@
+# DaDirt: parcels from more than roost, plus dust and the slump tile check.
+#   1. grains shedding: the loose cone at (3,-45) collapses on reset; with
+#      shedding on, grains roll off it as parcels. The cone must still settle
+#      at 32 deg (the tiled slump against the old numbers) and the audit stay 0
+#   2. spray off a berm: a hard turn on the pad slides the tyre sideways and the
+#      flank throws dirt outward
+#   3. a landing: the wheel driven off the calibration block's edge splashes
+#   4. dust: a dry burnout puffs a plume; a wet one does not
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Info
+
+# --- 1. shedding grains on the collapsing cone ----------------------------------------------
+DaDirt.Shed 1
+DaDirt.Reset
+camera -1 -50 3.2 -20 40
+wait 0.5
+screenshot spray_10_cone_shedding_05s
+DaDirt.Parcels
+wait 0.7
+screenshot spray_11_cone_shedding_12s
+DaDirt.Parcels
+wait 4 cone_settled
+DaDirt.Probe 3 -45
+DaDirt.Probe 4 -45
+DaDirt.Probe 5 -45
+DaDirt.Probe 3.707 -44.293
+DaDirt.Probe 4.414 -43.586
+DaDirt.Audit
+
+# the sandcastle block: barely damp wall should still shear to a 60 cm face
+DaDirt.Probe 7.6 45
+DaDirt.Probe 7.9 45
+DaDirt.Probe 8.1 45
+DaDirt.Probe 8.4 45
+
+# --- 2. spray in a hard turn ------------------------------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Wheel 3 -26 90
+DaDirt.Follow 1
+DaDirt.Drive 0.9 0 0
+wait 3
+DaDirt.Drive 0.6 1 0
+wait 1.2 turning
+screenshot spray_20_turn_chase
+wait 1.5
+screenshot spray_21_turn_chase2
+DaDirt.Parcels
+DaDirt.Drive 0 0 1
+wait 3
+DaDirt.Follow 0
+DaDirt.Audit
+
+# --- 3. a landing off the block ---------------------------------------------------------------
+# the 100 m3 block at (3,45) is 1 m tall; drive along its top and off the far edge
+DaDirt.Reset
+wait 0.5
+DaDirt.Wheel -1 45 0
+DaDirt.Follow 1
+DaDirt.Drive 0.9 0 0
+wait 2.2 launch
+screenshot spray_30_landing_chase
+wait 0.4
+screenshot spray_31_landing_chase2
+wait 2
+DaDirt.Parcels
+DaDirt.Follow 0
+DaDirt.Audit
+
+# --- 4. dust: dry vs wet burnout -------------------------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 2.5 dust_dry
+screenshot spray_40_burnout_dust_dry
+DaDirt.Parcels
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Reset
+wait 0.5
+DaDirt.Wet 8 -20 400 0.9
+wait 0.5
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 2.5 dust_wet
+screenshot spray_41_burnout_dust_wet
+DaDirt.Parcels
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+quit

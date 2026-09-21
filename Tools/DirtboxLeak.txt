@@ -1,0 +1,151 @@
+# DaDirt leak hunt: whole-box runs audit to zero, but the wheel in a focused
+# 40 m region (3.9 cm cells) gained +0.0003 m3 over two passes, with parcels on
+# or off. So it is in the brush or slump path. Same two passes with one part of
+# the wheel's mark at a time. Parcels off throughout (roost dumps in place).
+
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 0 40
+DaDirt.Parcels 0
+wait 2 idle_focused
+DaDirt.Audit
+
+# --- A. nothing: does the wheel just rolling (no strokes at all) leak? ---------
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 0 0 0 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 A_none_1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 0 0 0 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 A_none_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- B. rut (Dig with rim) only ---------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 1 0 0 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 B_rut_1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 1 0 0 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 B_rut_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- C. pack only ---------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 0 1 0 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 C_pack_1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 0 1 0 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 C_pack_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- D. roost only (scoop + dump in place) ----------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 0 0 1 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 D_roost_1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 0 0 1 0 0
+DaDirt.Drive 0.5 0 0
+wait 5 D_roost_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- E. hand tools at the same resolution: 40 digs ---------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Test conserve
+wait 4 E_conserve
+DaDirt.Audit
+
+# --- F. all parts together, parcels off (the case that leaked before) ------------------
+DaDirt.Reset
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 1 1 1 1 1
+DaDirt.Drive 0.5 0 0
+wait 5 F_all_1
+DaDirt.Wheel 3 -17 90
+DaDirt.WheelParts 1 1 1 1 1
+DaDirt.Drive 0.5 0 0
+wait 5 F_all_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Audit
+
+# --- G. all parts, parcels on, four passes (the original Terra step) -----------------------
+DaDirt.Reset
+wait 1
+DaDirt.Parcels 1
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 G_1
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 G_2
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 G_3
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 G_4
+DaDirt.Drive 0 0 1
+wait 3
+DaDirt.Audit
+
+# --- H. parcels on, shedding OFF, two passes: is it the shed or the roost parcels? ------
+DaDirt.Reset
+wait 1
+DaDirt.Shed 0
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 H_1
+DaDirt.Audit
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 H_2
+DaDirt.Drive 0 0 1
+wait 3
+DaDirt.Audit
+
+# --- I. same, but a 64 m region: roost never reaches a wall ----------------------------
+DaDirt.Focus 3 0 64
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 I_1
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 I_2
+DaDirt.Drive 0 0 1
+wait 3
+DaDirt.Audit
+
+# --- J. shedding ON, no wheel: the block soaked in the 40 m region (Y = 45 is outside; use a dig) -
+DaDirt.Focus 3 0 40
+wait 1
+DaDirt.Shed 1
+DaDirt.Dig 3 5 300 60
+DaDirt.Loosen 3 5 500 1
+wait 6 J_shed
+DaDirt.Audit
+quit

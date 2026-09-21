@@ -4,7 +4,8 @@
 // which builds one render-graph pass list per simulation step:
 //
 //     [init] -> [deposit] -> [brush] x batches -> [slump] x iterations
-//            -> [water] -> [parcel spawn] -> [parcel sim] -> [resolve]
+//            -> [water] -> [parcel spawn] -> [parcel sim]
+//            -> [dust spawn] -> [dust sim] -> [resolve]
 //
 // The brush, slump and water passes ping-pong between two state textures (the
 // water pass also between two pond textures). Resolve reads whichever one ended
@@ -56,6 +57,12 @@ struct FDirtBrushStroke
 
 	/** Pack strokes only: scale by the Proctor moisture curve (a tyre) or not (a tool). */
 	bool bProctor = false;
+
+	/**
+	 * Giving halves only: index within the step's taking strokes of the stroke
+	 * whose shortfall scales this one, or -1. See DirtSim.usf, ApplyStroke.
+	 */
+	int32 Link = -1;
 };
 
 /** Water poured on the surface this step, in grid space. */
@@ -82,13 +89,16 @@ struct FDirtParcelSpawn
 	float DiameterCm = 1.0f;
 	float DiameterJitter = 0.4f;
 	uint32 Seed = 0;
+	/** Index within this step's strokes of the Scoop this throw came from, or -1. */
+	int32 ScoopStrokeIndex = -1;
 };
 
 /**
- * GPU-side parcel bookkeeping that has no UTexture equivalent: the free-list
- * stack, its counters, and the fixed-point deposit accumulators. Created lazily
- * on the render thread and kept for the life of the Dirtbox. The counters are
- * read back to the game thread a frame or two late through CounterReadback.
+ * GPU-side bookkeeping for one parcel pool that has no UTexture equivalent: the
+ * free-list stack and its counters. Created lazily on the render thread and kept
+ * for the life of the Dirtbox. The counters are read back to the game thread a
+ * frame or two late through Readback. The dirt pool also owns the fixed-point
+ * deposit accumulators; the dust pool never deposits and shares them.
  */
 struct DADIRTSHADERS_API FDirtParcelResources
 {
@@ -121,6 +131,7 @@ struct FDirtSimFrame
 	/** Box-relative xy of the corner of texel (0,0), cm. Parcels live in box space. */
 	FVector2f RegionOriginCm = FVector2f::ZeroVector;
 	float Dt = 1.0f / 60.0f;
+	uint32 FrameSeed = 0;
 
 	// --- tunables ----------------------------------------------------------
 	float LooseReposeDeg = 32.0f;
@@ -148,7 +159,7 @@ struct FDirtSimFrame
 	float RainCmPerSec = 0.0f;
 	float InfiltrationCmPerSec = 0.5f;
 	float DrainPerSec = 0.025f;
-	float EvapPerSec = 0.003f;
+	float EvapPerSec = 0.0007f;
 	float FieldCapacity = 0.3f;
 	float WetDepthCm = 20.0f;
 	float AmbientMoisture = 0.05f;
@@ -163,16 +174,37 @@ struct FDirtSimFrame
 	float ParcelRestSpeedCmS = 15.0f;
 	float ParcelRestSeconds = 0.12f;
 
+	// grains shedding down a face (spawned by the slump pass)
+	bool bShed = true;
+	float ShedMinOutCm = 0.05f;
+	float ShedChance = 0.15f;
+	float ShedFraction = 0.5f;
+	float ShedDiameterCm = 0.6f;
+	float ShedSpeedCmS = 60.0f;
+
+	// dust
+	bool bDust = true;
+	int32 DustRes = 256;
+	float DustLifetime = 2.5f;
+	float DustDragK = 0.0008f;
+	float DustBuoyancy = 1.03f;
+
 	// --- debug -------------------------------------------------------------
 	int32 DebugMode = 0;
 	float DebugLayerRangeCm = 120.0f;
 
 	// --- work --------------------------------------------------------------
-	/** Deformation strokes to apply before slumping, in order. */
+	/** Deformation strokes to apply before slumping, in order: the taking halves. */
 	TArray<FDirtBrushStroke> Strokes;
+
+	/** The giving halves, dispatched after every taking stroke has reported its shortfall. */
+	TArray<FDirtBrushStroke> GivingStrokes;
 
 	/** Dirt thrown into the air this step. */
 	TArray<FDirtParcelSpawn> Spawns;
+
+	/** Dust puffed into the air this step (volume is a placeholder, never audited). */
+	TArray<FDirtParcelSpawn> DustSpawns;
 
 	/** Water poured this step. */
 	TArray<FDirtWaterSource> WaterSources;
@@ -197,17 +229,33 @@ struct FDirtSimFrame
 	FRHITexture* ParcelVel = nullptr;
 	FRHITexture* ParcelProp = nullptr;
 
-	/** Owned by the Dirtbox, used only on the render thread. May be null if parcels are off. */
+	FRHITexture* DustPos = nullptr;        // RGBA32F, DustRes^2
+	FRHITexture* DustVel = nullptr;
+	FRHITexture* DustProp = nullptr;
+
+	/** Owned by the Dirtbox, used only on the render thread. */
 	FDirtParcelResources* Parcels = nullptr;
+	FDirtParcelResources* Dust = nullptr;
 
 	bool IsValid() const
 	{
 		return BaseHeight && InitialState && StateA && StateB && PondA && PondB && Display && NormalOut && DebugOut;
 	}
 
+	/** The dirt pool exists (its resources are bound even when parcels are switched off: the slump pass needs them). */
+	bool HasParcelPool() const
+	{
+		return Parcels && ParcelPos && ParcelVel && ParcelProp && ParcelRes > 0;
+	}
+
 	bool HasParcels() const
 	{
-		return bParcels && Parcels && ParcelPos && ParcelVel && ParcelProp && ParcelRes > 0;
+		return bParcels && HasParcelPool();
+	}
+
+	bool HasDust() const
+	{
+		return bDust && HasParcelPool() && Dust && DustPos && DustVel && DustProp && DustRes > 0;
 	}
 };
 
@@ -221,6 +269,9 @@ namespace DirtSim
 
 	/** Water sources per water pass. Must match DIRT_MAX_WATER_SOURCES in DirtSim.usf. */
 	constexpr int32 MaxWaterSourcesPerPass = 16;
+
+	/** Strokes per step that can report a scoop shortfall. Must match DIRT_MAX_STROKES_PER_STEP. */
+	constexpr int32 MaxStrokesPerStep = 256;
 
 	/** Fixed-point steps per cm^3 in the deposit textures. Must match DIRT_DEPOSIT_SCALE. */
 	constexpr float DepositScale = 65536.0f;

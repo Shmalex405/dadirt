@@ -14,6 +14,8 @@
 #                                    docs/DirtboxSetup.md, node for node
 #   /Game/Dirt/M_DirtParcel        - the parcel material: moves each tiny mesh to
 #                                    its parcel's position in the vertex shader
+#   /Game/Dirt/M_DirtDust          - the dust material: a soft camera-facing quad
+#                                    per mote, fading with age
 #   /Game/Maps/L_Dirtbox           - the Basic template level with its Floor removed
 #
 # Re-running is safe: existing assets are deleted and rebuilt.
@@ -29,6 +31,7 @@ MAPS_DIR = "/Game/Maps"
 RT_PATH = DIRT_DIR + "/RT_DirtPlaceholder"
 MAT_PATH = DIRT_DIR + "/M_DirtGround"
 PARCEL_MAT_PATH = DIRT_DIR + "/M_DirtParcel"
+DUST_MAT_PATH = DIRT_DIR + "/M_DirtDust"
 MAP_PATH = MAPS_DIR + "/L_Dirtbox"
 TEMPLATE = "/Engine/Maps/Templates/Template_Default"
 
@@ -48,6 +51,7 @@ def fresh(path):
 fresh(MAP_PATH)
 fresh(MAT_PATH)
 fresh(PARCEL_MAT_PATH)
+fresh(DUST_MAT_PATH)
 fresh(RT_PATH)
 
 
@@ -273,7 +277,27 @@ connect(one, "", darken, "A")
 connect(dark, "", darken, "B")
 connect(moisture, "", darken, "Alpha")
 colour = p_binary(unreal.MaterialExpressionMultiply, by_pack, "", darken, "", -900, 650)
-connect_prop(colour, "", unreal.MaterialProperty.MP_BASE_COLOR)
+# Thrown dirt reads a shade darker than the surface it left (shadowed undersides,
+# damp cores); at the ground's exact colour the roost vanished against the pad.
+darker = p_node(unreal.MaterialExpressionMultiply, -700, 650)
+darker.set_editor_property("const_b", 0.7)
+connect(colour, "", darker, "A")
+connect_prop(darker, "", unreal.MaterialProperty.MP_BASE_COLOR)
+
+# Each tetrahedron's vertex normals point every which way, so half the clods
+# were lit from behind and read as black grit. Lean the normal toward up so a
+# clod is lit much like the ground it came from, keeping a little of its own
+# shape. World space, like the ground material.
+pm.set_editor_property("tangent_space_normal", False)
+vn = p_node(unreal.MaterialExpressionVertexNormalWS, -1200, 1000)
+up = p_const3(0.0, 0.0, 1.0, -1200, 1100)
+lean = p_node(unreal.MaterialExpressionLinearInterpolate, -950, 1050)
+lean.set_editor_property("const_alpha", 0.4)
+connect(vn, "", lean, "A")
+connect(up, "", lean, "B")
+nrm = p_node(unreal.MaterialExpressionNormalize, -750, 1050)
+connect(lean, "", nrm, "")
+connect_prop(nrm, "", unreal.MaterialProperty.MP_NORMAL)
 
 connect_prop(p_const(0.95, -400, 800), "", unreal.MaterialProperty.MP_ROUGHNESS)
 connect_prop(p_const(0.05, -400, 900), "", unreal.MaterialProperty.MP_SPECULAR)
@@ -281,6 +305,157 @@ connect_prop(p_const(0.05, -400, 900), "", unreal.MaterialProperty.MP_SPECULAR)
 MEL.recompile_material(pm)
 EAL.save_asset(PARCEL_MAT_PATH)
 log("material saved: %s (%d expressions)" % (PARCEL_MAT_PATH, MEL.get_num_material_expressions(pm)))
+
+
+# ---------------------------------------------------------------------------
+# Dust material
+# ---------------------------------------------------------------------------
+# The dust mesh is one quad per mote with all four vertices at the origin; UV0
+# names the slot and UV1 holds the corner (-1..1). The material reads the mote's
+# position and pushes each corner out along the camera's right and up, so the
+# quad always faces the camera. Unlit, translucent, a soft disc that fades with
+# the mote's age (ParcelProp.a, seconds).
+
+fresh(DUST_MAT_PATH)
+dm = TOOLS.create_asset("M_DirtDust", DIRT_DIR, unreal.Material, unreal.MaterialFactoryNew())
+dm.set_editor_property("blend_mode", unreal.BlendMode.BLEND_TRANSLUCENT)
+dm.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
+dm.set_editor_property("two_sided", True)
+
+
+def d_node(cls, x, y):
+    return MEL.create_material_expression(dm, cls, x, y)
+
+
+def d_tex_param(name, x, y):
+    node = d_node(unreal.MaterialExpressionTextureSampleParameter2D, x, y)
+    node.set_editor_property("parameter_name", name)
+    node.set_editor_property("texture", rt)
+    node.set_editor_property("sampler_type", unreal.MaterialSamplerType.SAMPLERTYPE_LINEAR_COLOR)
+    node.set_editor_property("mip_value_mode", unreal.TextureMipValueMode.TMVM_MIP_LEVEL)
+    mip = d_node(unreal.MaterialExpressionConstant, x - 250, y + 120)
+    mip.set_editor_property("r", 0.0)
+    for in_name in ("MipLevel", "Level", "MipValue"):
+        if MEL.connect_material_expressions(mip, "", node, in_name):
+            break
+    else:
+        raise RuntimeError("could not find the mip level input on " + name)
+    return node
+
+
+def d_const(value, x, y):
+    node = d_node(unreal.MaterialExpressionConstant, x, y)
+    node.set_editor_property("r", value)
+    return node
+
+
+def d_const3(r, g, b, x, y):
+    node = d_node(unreal.MaterialExpressionConstant3Vector, x, y)
+    node.set_editor_property("constant", unreal.LinearColor(r, g, b, 1.0))
+    return node
+
+
+def d_mask(src, src_out, r, g, b, a, x, y):
+    node = d_node(unreal.MaterialExpressionComponentMask, x, y)
+    node.set_editor_property("r", r)
+    node.set_editor_property("g", g)
+    node.set_editor_property("b", b)
+    node.set_editor_property("a", a)
+    connect(src, src_out, node, "")
+    return node
+
+
+def d_binary(cls, a, a_out, b, b_out, x, y, a_in="A", b_in="B"):
+    node = d_node(cls, x, y)
+    connect(a, a_out, node, a_in)
+    connect(b, b_out, node, b_in)
+    return node
+
+
+dpos = d_tex_param("ParcelPos", -2200, -600)
+dprop = d_tex_param("ParcelProp", -2200, 200)
+dpos_rgb = d_mask(dpos, "", True, True, True, False, -1900, -650)
+
+# corner code from UV1
+corner = d_node(unreal.MaterialExpressionTextureCoordinate, -2200, -150)
+corner.set_editor_property("coordinate_index", 1)
+cx = d_mask(corner, "", True, False, False, False, -1950, -200)
+cy = d_mask(corner, "", False, True, False, False, -1950, -100)
+
+# camera right and up in world space
+cam_x = d_const3(1.0, 0.0, 0.0, -2200, 0)
+cam_y = d_const3(0.0, 1.0, 0.0, -2200, 100)
+right = d_node(unreal.MaterialExpressionTransform, -1950, 0)
+right.set_editor_property("transform_source_type", unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_CAMERA)
+right.set_editor_property("transform_type", unreal.MaterialVectorCoordTransform.TRANSFORM_WORLD)
+connect(cam_x, "", right, "")
+upv = d_node(unreal.MaterialExpressionTransform, -1950, 100)
+upv.set_editor_property("transform_source_type", unreal.MaterialVectorCoordTransformSource.TRANSFORMSOURCE_CAMERA)
+upv.set_editor_property("transform_type", unreal.MaterialVectorCoordTransform.TRANSFORM_WORLD)
+connect(cam_y, "", upv, "")
+
+# size = max(diameter, distance * MinScreenSize) * alive
+actor = d_node(unreal.MaterialExpressionActorPositionWS, -1900, -500)
+world_mote = d_binary(unreal.MaterialExpressionAdd, dpos_rgb, "", actor, "", -1650, -650)
+dcam = d_node(unreal.MaterialExpressionCameraPositionWS, -1900, -400)
+ddist = d_binary(unreal.MaterialExpressionDistance, world_mote, "", dcam, "", -1400, -600)
+dmin = d_node(unreal.MaterialExpressionScalarParameter, -1400, -450)
+dmin.set_editor_property("parameter_name", "MinScreenSize")
+dmin.set_editor_property("default_value", 0.006)
+dmin_d = d_binary(unreal.MaterialExpressionMultiply, ddist, "", dmin, "", -1150, -550)
+ddiam = d_mask(dprop, "", False, False, True, False, -1900, 250)
+dsize = d_binary(unreal.MaterialExpressionMax, ddiam, "", dmin_d, "", -900, -400)
+dalive_raw = d_node(unreal.MaterialExpressionMultiply, -1650, -850)
+dalive_raw.set_editor_property("const_b", 100000.0)
+connect(dpos, "A", dalive_raw, "A")
+dalive = d_node(unreal.MaterialExpressionSaturate, -1400, -850)
+connect(dalive_raw, "", dalive, "")
+dsize_alive = d_binary(unreal.MaterialExpressionMultiply, dsize, "", dalive, "", -650, -500)
+half = d_node(unreal.MaterialExpressionMultiply, -450, -500)
+half.set_editor_property("const_b", 0.5)
+connect(dsize_alive, "", half, "A")
+
+# WPO = pos + (right * cx + up * cy) * half size
+rx = d_binary(unreal.MaterialExpressionMultiply, right, "", cx, "", -1650, 0)
+uy = d_binary(unreal.MaterialExpressionMultiply, upv, "", cy, "", -1650, 100)
+off = d_binary(unreal.MaterialExpressionAdd, rx, "", uy, "", -1400, 50)
+off_s = d_binary(unreal.MaterialExpressionMultiply, off, "", half, "", -250, -200)
+dwpo = d_binary(unreal.MaterialExpressionAdd, dpos_rgb, "", off_s, "", 0, -400)
+connect_prop(dwpo, "", unreal.MaterialProperty.MP_WORLD_POSITION_OFFSET)
+
+# colour: dry dust is pale, wet is not dust but still keep it dark
+dloose = d_const3(0.62, 0.52, 0.38, -1400, 500)
+connect_prop(dloose, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+
+# opacity = soft disc * age fade * 0.35 * alive
+zero2 = d_node(unreal.MaterialExpressionConstant2Vector, -1950, 400)
+zero2.set_editor_property("r", 0.0)
+zero2.set_editor_property("g", 0.0)
+rad = d_binary(unreal.MaterialExpressionDistance, corner, "", zero2, "", -1700, 400)
+soft = d_node(unreal.MaterialExpressionOneMinus, -1450, 400)
+connect(rad, "", soft, "")
+soft_s = d_node(unreal.MaterialExpressionSaturate, -1250, 400)
+connect(soft, "", soft_s, "")
+soft2 = d_binary(unreal.MaterialExpressionMultiply, soft_s, "", soft_s, "", -1050, 400)
+life = d_node(unreal.MaterialExpressionScalarParameter, -1900, 700)
+life.set_editor_property("parameter_name", "DustLifetime")
+life.set_editor_property("default_value", 2.5)
+# age comes off the sampler's own A pin (its default output is RGB only)
+age_n = d_binary(unreal.MaterialExpressionDivide, dprop, "A", life, "", -1650, 650)
+fade = d_node(unreal.MaterialExpressionOneMinus, -1450, 650)
+connect(age_n, "", fade, "")
+fade_s = d_node(unreal.MaterialExpressionSaturate, -1250, 650)
+connect(fade, "", fade_s, "")
+op1 = d_binary(unreal.MaterialExpressionMultiply, soft2, "", fade_s, "", -850, 520)
+op2 = d_binary(unreal.MaterialExpressionMultiply, op1, "", dalive, "", -650, 520)
+op3 = d_node(unreal.MaterialExpressionMultiply, -450, 520)
+op3.set_editor_property("const_b", 0.35)
+connect(op2, "", op3, "A")
+connect_prop(op3, "", unreal.MaterialProperty.MP_OPACITY)
+
+MEL.recompile_material(dm)
+EAL.save_asset(DUST_MAT_PATH)
+log("material saved: %s (%d expressions)" % (DUST_MAT_PATH, MEL.get_num_material_expressions(dm)))
 
 
 # ---------------------------------------------------------------------------

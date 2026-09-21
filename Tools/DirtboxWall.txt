@@ -1,0 +1,37 @@
+# DaDirt: do parcels that hit the edge of a focused region keep their books?
+# A 40 m region centred on (3, 0) has its -Y wall at Y = -20. Throw the same
+# 10 L at the wall, and away from it, and audit after everything has landed.
+
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 0 40
+DaDirt.Shed 0
+wait 2
+DaDirt.Audit
+
+# --- K. into the wall: from Y = -15 toward -Y at 8 m/s, lands at the wall --------------
+DaDirt.Throw 3 -15 10 8 -90 30 8
+wait 0.5
+DaDirt.Parcels
+wait 5 K_wall
+DaDirt.Parcels
+DaDirt.Audit
+
+# --- L. same throw into open ground -------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Throw 3 -5 10 8 90 30 8
+wait 5.5 L_open
+DaDirt.Parcels
+DaDirt.Audit
+
+# --- M. the wall again, twice as hard -------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Throw 3 -15 20 12 -90 20 8
+wait 5.5 M_wall_hard
+DaDirt.Parcels
+DaDirt.Audit
+quit

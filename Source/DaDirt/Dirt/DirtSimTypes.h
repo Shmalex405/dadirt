@@ -29,6 +29,9 @@ enum class EDirtBrushMode : uint8
 	Scoop   = 6,
 	/** Add dirt to the core with no rim; the other half of a Scoop. */
 	Dump    = 7
+	// The shader also knows 8 (the rim half of a Dig) and 10 (the core half of a
+	// Raise): giving halves the Dirtbox emits itself, scaled by what the taking
+	// half found. Not requestable from outside.
 };
 
 /** What terrain the Dirtbox builds. */
@@ -346,6 +349,66 @@ struct FDirtSimSettings
 	/** Smallest parcel on screen, as a fraction of its distance (0.003 = ~1.5 px at 1080p). Stops grains flickering. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "0.05"))
 	float ParcelMinScreenSize = 0.003f;
+
+	// --- grains shedding down a face (spawned by the slump pass) ------------------
+
+	/** Cells avalanching hard enough turn part of what they shed into parcels that roll off. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels")
+	bool bShed = true;
+
+	/** A cell must be shedding at least this many solid cm in one step to qualify. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0"))
+	float ShedMinOutCm = 0.05f;
+
+	/** Chance per qualifying cell per step. Density of the trickle. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "1"))
+	float ShedChance = 0.15f;
+
+	/** Share of the cell's outflow that leaves as a parcel instead of flowing to the neighbours. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "1"))
+	float ShedFraction = 0.5f;
+
+	/** Rendered size of a shed grain, cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0.05", ClampMax = "10"))
+	float ShedDiameterCm = 0.6f;
+
+	/** How fast a shed grain leaves its cell, cm/s, along the fall line. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0"))
+	float ShedSpeedCmS = 60.0f;
+
+	// --- dust: the sub-millimetre tail, an effect on purpose ---------------------
+
+	/** Puff dust with roost and throws. Dust carries no audited volume and fades out. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dust")
+	bool bDust = true;
+
+	/** Dust motes per side of the pool: 256 = 65,536. Set at startup only. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Dust", meta = (ClampMin = "32", ClampMax = "1024"))
+	int32 DustPoolSide = 256;
+
+	/** Motes puffed per litre of dirt thrown. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dust", meta = (ClampMin = "0"))
+	float DustPerLitre = 400.0f;
+
+	/** Seconds a mote lasts before it has faded. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dust", meta = (ClampMin = "0.1"))
+	float DustLifetime = 2.5f;
+
+	/** Air drag for dust, on a 1 mm speck: a = K v^2 / 0.1 cm. 0.0008 carries a plume a metre or two. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dust", meta = (ClampMin = "0"))
+	float DustDragK = 0.0008f;
+
+	/**
+	 * Share of a mote's weight the air carries. 1 = it hangs where it stops; a
+	 * little over 1 = it rises, the way a plume does on the warm turbulent air
+	 * behind a tyre. Lifetime, not gravity, ends it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dust", meta = (ClampMin = "0", ClampMax = "1.5"))
+	float DustBuoyancy = 1.03f;
+
+	/** Rendered size of a mote, cm. A soft puff rather than a grain. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Dust", meta = (ClampMin = "0.5"))
+	float DustDiameterCm = 6.0f;
 
 	// --- stepping ---------------------------------------------------------
 

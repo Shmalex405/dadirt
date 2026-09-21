@@ -11,6 +11,7 @@
 // between two R32F pond textures). See DirtCommon.ush for the channel layout.
 
 #include "DirtCommon.ush"
+#include "DirtParcelCommon.ush"
 
 // ---------------------------------------------------------------------------
 // Init — seed the simulation state from the CPU-built terrain
@@ -52,12 +53,8 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 #if DIRT_DEPOSIT_PASS
 
-float DirtTexelAreaCm2;
 float DirtDepositCompaction;       // landed dirt is loose
 int DirtResetLiveMax;              // 1 when a parcel sim pass follows this step and will recount
-RWTexture2D<uint> DirtDepositVol;
-RWTexture2D<uint> DirtDepositMoist;
-RWStructuredBuffer<uint> DirtParcelCounters;
 RWTexture2D<float4> DirtStateOut;
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
@@ -115,13 +112,15 @@ void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 #define DIRT_MAX_STROKES 16
 
 int DirtStrokeCount;
+int DirtStrokeBase;                     // index of this batch's first stroke within the step
 float4 DirtStrokeA[DIRT_MAX_STROKES];   // centre.xy (cells), core radius, rim radius
 float4 DirtStrokeB[DIRT_MAX_STROKES];   // core norm, rim norm, amount, disturb
-float4 DirtStrokeC[DIRT_MAX_STROKES];   // mode (as float), proctor flag, unused x2
+float4 DirtStrokeC[DIRT_MAX_STROKES];   // mode (as float), proctor flag, linked taking stroke (-1 none), unused
 
 RWTexture2D<float4> DirtStateOut;
+RWStructuredBuffer<uint> DirtScoopShortfall;
 
-void ApplyStroke(int2 P, int K, inout float4 S)
+void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
 {
 	const float2 Centre     = DirtStrokeA[K].xy;
 	const float  CoreRadius = DirtStrokeA[K].z;
@@ -132,6 +131,7 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 	const float  Disturb    = DirtStrokeB[K].w;
 	const int    Mode       = (int)DirtStrokeC[K].x;
 	const bool   bProctor   = DirtStrokeC[K].y > 0.5f;
+	const int    Link       = (int)DirtStrokeC[K].z;
 
 	const float R = length((float2(P) + 0.5f) - Centre);
 	if (R >= RimRadius + 1.0f)
@@ -149,13 +149,35 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 	const float RimW  = (RimNorm  > 0.0f) ? Rim  / RimNorm  : 0.0f;
 	const float Mask  = saturate(Core + Rim);
 
-	if (Mode == 0)         // DIG — scoop the core out, heap it on the rim
+	// Every stroke that moves dirt is two halves: a TAKING half that runs first
+	// and records, per stroke, whatever it could not find (a cell down to
+	// bedrock), and a GIVING half that runs in a later batch and gives only what
+	// was actually taken. That is what keeps a dig zero-sum over a hole: the
+	// core cannot give what it does not have, so the rim must not receive it.
+	//   DIG   = 0 core take   ->  8 rim give
+	//   RAISE = 1 rim take    -> 10 core give
+	//   SCOOP = 6 core take   ->  7 DUMP give (a transfer) or parcels
+	const float Give = (Link >= 0 && Link < DIRT_MAX_STROKES_PER_STEP && Amount > 0.0f)
+		? saturate(1.0f - ((float)DirtScoopShortfall[Link] / DIRT_DEPOSIT_SCALE / DirtTexelAreaCm2) / Amount)
+		: 1.0f;
+
+	if (Mode == 0)         // DIG, taking half: scoop the core out
 	{
-		S.r += Amount * (RimW - CoreW);
+		ScoopWant = Amount * CoreW;
+		S.r -= ScoopWant;
 	}
-	else if (Mode == 1)    // RAISE — pile the core up, borrow from the rim
+	else if (Mode == 1)    // RAISE, taking half: borrow from the rim
 	{
-		S.r += Amount * (CoreW - RimW);
+		ScoopWant = Amount * RimW;
+		S.r -= ScoopWant;
+	}
+	else if (Mode == 8)    // DIG, giving half: heap what was taken on the rim
+	{
+		S.r += Amount * RimW * Give;
+	}
+	else if (Mode == 10)   // RAISE, giving half: pile what was borrowed on the core
+	{
+		S.r += Amount * CoreW * Give;
 	}
 	else if (Mode == 2)    // SMOOTH — pull toward the local average (of the pre-pass state)
 	{
@@ -188,15 +210,19 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 	}
 	else if (Mode == 6)    // SCOOP — take dirt out of the core; the volume goes elsewhere
 	{
-		S.r -= Amount * CoreW;
+		// Remembered, so that whatever the whole batch fails to find at this cell
+		// can be charged back to the scoops that asked for it (see ApplyBrush).
+		ScoopWant = Amount * CoreW;
+		S.r -= ScoopWant;
 	}
-	else if (Mode == 7)    // DUMP — the other half of a SCOOP. Arrives loose.
+	else if (Mode == 7)    // DUMP — the giving half of a SCOOP. Arrives loose.
 	{
-		S.r += Amount * CoreW;
+		S.r += Amount * CoreW * Give;
 	}
 
-	// Dirt you have just moved is broken-up dirt — it loses its pack.
-	if (Mode <= 2 || Mode >= 6)
+	// Dirt you have just moved is broken-up dirt — it loses its pack. The
+	// taking halves carry the disturb; the giving halves have none.
+	if (Mode <= 2 || Mode == 6 || Mode == 7)
 	{
 		S.g = saturate(S.g - Disturb * Mask);
 	}
@@ -207,14 +233,37 @@ void ApplyBrush(int2 P)
 	float4 S = DirtState(P);
 	const float Bed = DirtBedrock(P);
 
+	float ScoopWant[DIRT_MAX_STROKES];
+	float WantSum = 0.0f;
+
 	[loop]
 	for (int K = 0; K < DirtStrokeCount; ++K)
 	{
-		ApplyStroke(P, K, S);
+		ScoopWant[K] = 0.0f;
+		ApplyStroke(P, K, S, ScoopWant[K]);
+		WantSum += ScoopWant[K];
 	}
 
-	// Bedrock is the floor. You cannot dig below it, and this clamp is the one
-	// place a dig can quietly lose volume — DaDirt.Audit reports exactly how much.
+	// Bedrock is the floor. You cannot dig below it. Judged once, after every
+	// stroke of the batch has had its say (a rut's spoil rim may land on the
+	// cell a scoop just emptied). Whatever the scoops asked for beyond that is
+	// reported, split by how much each asked, so the parcels spawned for them
+	// carry only dirt that actually left the ground. A Dig that hits bedrock
+	// still loses quietly, and DaDirt.Audit reports exactly how much.
+	if (S.r < 0.0f && WantSum > 0.0f)
+	{
+		const float ShortCm = min(-S.r, WantSum);
+		[loop]
+		for (int K = 0; K < DirtStrokeCount; ++K)
+		{
+			const int Index = DirtStrokeBase + K;
+			if (ScoopWant[K] > 0.0f && Index < DIRT_MAX_STROKES_PER_STEP)
+			{
+				InterlockedAdd(DirtScoopShortfall[Index],
+							   (uint)(ShortCm * ScoopWant[K] / WantSum * DirtTexelAreaCm2 * DIRT_DEPOSIT_SCALE + 0.5f));
+			}
+		}
+	}
 	S.r = max(S.r, 0.0f);
 	S.a = Bed + DirtBulkCm(S.r, S.g);
 
@@ -251,9 +300,9 @@ void MainBrushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 // which also keeps the total a cell can shed per iteration under ~0.7 of its
 // excess, so the scheme cannot overshoot and oscillate.
 //
-// PERF NOTE: that costs ~81 texture loads per texel (9 cells x 9 loads). If this
-// shows up hot on the Arc iGPU, the fix is a groupshared tile with a 2-texel
-// halo, which cuts it to roughly 2 loads per texel. Measure before optimising.
+// It runs on a 16 x 16 tile held in group shared memory with a two-cell halo:
+// about 1.6 texture loads per cell instead of 81. The tile version was measured
+// against the straight one on the soil tests before it replaced it.
 
 #if DIRT_SLUMP_PASS
 
@@ -269,13 +318,55 @@ float DirtSlumpRate;
 float DirtLooseningRate;
 float DirtLooseningScaleCm;
 
+// Grains shedding down an over-steep face: a cell that avalanches hard enough
+// may turn part of what it sheds into a parcel that rolls off instead. Volume is
+// conserved: the parcel's dirt is taken out of the cell before it is written.
+int DirtShedEnabled;
+float DirtShedMinOutCm;            // a cell must be shedding at least this much this iteration
+float DirtShedChance;              // per qualifying cell per iteration
+float DirtShedFraction;            // share of the cell's outflow that leaves as a parcel
+float DirtShedDiameterCm;
+float DirtShedSpeedCmS;
+uint DirtFrameSeed;
+
 RWTexture2D<float4> DirtStateOut;
 
-// Unscaled solid outflow from P toward each of its eight neighbours, plus the
-// factor needed to keep it from moving more dirt than P actually has.
-void ComputeOutflow(int2 P, out float Out[8], out float Scale)
+// One 16 x 16 tile of cells per group, plus a 2-cell halo, held in group shared
+// memory: every cell needs its neighbours' outflows, and every neighbour's
+// outflow needs ITS neighbours, so two rings. 400 loads per 256 threads instead
+// of 81 per thread. TILE_OUT is the tile plus one ring: the cells whose outflow
+// is computed and then gathered from.
+#define SLUMP_TILE 16
+#define SLUMP_HALO 2
+#define SLUMP_W (SLUMP_TILE + 2 * SLUMP_HALO)     // 20
+#define SLUMP_OUT (SLUMP_TILE + 2)                // 18
+
+groupshared float4 TileState[SLUMP_W * SLUMP_W];
+groupshared float TileOut[SLUMP_OUT * SLUMP_OUT * 9];    // 8 outflows + scale per cell
+
+float4 TileAt(int2 T)
 {
-	const float4 S = DirtState(P);
+	return TileState[T.y * SLUMP_W + T.x];
+}
+
+// Unscaled solid outflow from tile cell T toward each of its eight neighbours,
+// plus the factor needed to keep it from moving more dirt than the cell has.
+// A cell outside the box is stored with a negative layer; it neither gives nor
+// takes: the walls of the box are sealed.
+void ComputeOutflowTile(int2 T, out float Out[8], out float Scale)
+{
+	const float4 S = TileAt(T);
+	if (S.r < 0.0f)
+	{
+		UNROLL
+		for (int k = 0; k < 8; ++k)
+		{
+			Out[k] = 0.0f;
+		}
+		Scale = 0.0f;
+		return;
+	}
+
 	const float Surface = S.a;              // bedrock + bulk layer, maintained by every pass
 	const float Solid = DirtSolidFraction(S.g);
 
@@ -288,8 +379,8 @@ void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 	UNROLL
 	for (int i = 0; i < 8; ++i)
 	{
-		const int2 Q = P + DirtOffsets8[i];
-		if (!DirtInBounds(Q))
+		const float4 SQ = TileAt(T + DirtOffsets8[i]);
+		if (SQ.r < 0.0f)
 		{
 			Out[i] = 0.0f;              // the walls of the box are sealed
 			continue;
@@ -299,7 +390,7 @@ void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 		// A diagonal neighbour is further away, so it tolerates a bigger drop and
 		// receives proportionally less flow.
 		const float Dist = DirtNeighbourDist[i];
-		const float Drop = Surface - DirtState(Q).a;
+		const float Drop = Surface - SQ.a;
 		const float Excess = max(0.0f, Drop - DirtAllowedDrop(Drop, DirtTexelSizeCm * Dist, TanPhi, CohesionKPa,
 															 DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm));
 		Out[i] = Excess * Solid * DirtSlumpRate / Dist;
@@ -314,27 +405,56 @@ void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 	Scale = (Sum > MaxOut) ? (MaxOut / max(Sum, 1e-6f)) : 1.0f;
 }
 
-[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
-void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+[numthreads(SLUMP_TILE, SLUMP_TILE, 1)]
+void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : SV_GroupID,
+				 uint3 GroupThreadId : SV_GroupThreadID, uint GroupIndex : SV_GroupIndex)
 {
 	const int2 P = int2(DispatchThreadId.xy);
+	const int2 TileOrigin = int2(GroupId.xy) * SLUMP_TILE - SLUMP_HALO;
+
+	// 1. Everyone loads the tile. Out-of-box cells get a negative layer.
+	for (uint Idx = GroupIndex; Idx < SLUMP_W * SLUMP_W; Idx += SLUMP_TILE * SLUMP_TILE)
+	{
+		const int2 C = TileOrigin + int2(Idx % SLUMP_W, Idx / SLUMP_W);
+		TileState[Idx] = DirtInBounds(C) ? DirtState(C) : float4(-1.0f, 0.0f, 0.0f, 0.0f);
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	// 2. Outflows for the tile and one ring around it, so the gather below can
+	//    read every neighbour's outflow without recomputing it.
+	for (uint Idx = GroupIndex; Idx < SLUMP_OUT * SLUMP_OUT; Idx += SLUMP_TILE * SLUMP_TILE)
+	{
+		const int2 T = int2(Idx % SLUMP_OUT, Idx / SLUMP_OUT) + 1;    // tile coords: ring starts at 1
+		float Out[8];
+		float Scale;
+		ComputeOutflowTile(T, Out, Scale);
+		UNROLL
+		for (int i = 0; i < 8; ++i)
+		{
+			TileOut[Idx * 9 + i] = Out[i];
+		}
+		TileOut[Idx * 9 + 8] = Scale;
+	}
+	GroupMemoryBarrierWithGroupSync();
+
 	if (!DirtInBounds(P))
 	{
 		return;
 	}
 
-	float4 S = DirtState(P);
+	// 3. Gather. This thread's cell in tile coords and in outflow-ring coords.
+	const int2 L = int2(GroupThreadId.xy) + 1;                       // ring coords (0..17), ours at 1..16
+	const int2 T = L + 1;                                            // tile coords
+	float4 S = TileAt(T);
 	const float Bed = DirtBedrock(P);
 
-	float OutP[8];
-	float ScaleP;
-	ComputeOutflow(P, OutP, ScaleP);
-
+	const int OwnIdx = L.y * SLUMP_OUT + L.x;
+	const float ScaleP = TileOut[OwnIdx * 9 + 8];
 	float TotalOut = 0.0f;
 	UNROLL
 	for (int i = 0; i < 8; ++i)
 	{
-		TotalOut += OutP[i] * ScaleP;
+		TotalOut += TileOut[OwnIdx * 9 + i] * ScaleP;
 	}
 
 	float TotalIn = 0.0f;
@@ -343,26 +463,18 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	UNROLL
 	for (int j = 0; j < 8; ++j)
 	{
-		const int2 Q = P + DirtOffsets8[j];
-		if (!DirtInBounds(Q))
-		{
-			continue;
-		}
-
-		float OutQ[8];
-		float ScaleQ;
-		ComputeOutflow(Q, OutQ, ScaleQ);
-
+		const int2 LQ = L + DirtOffsets8[j];
+		const int QIdx = LQ.y * SLUMP_OUT + LQ.x;
 		// j^1 flips the direction: neighbour Q's flow back toward us.
-		const float In = OutQ[j ^ 1] * ScaleQ;
-		const float4 SQ = DirtState(Q);
+		const float In = TileOut[QIdx * 9 + (j ^ 1)] * TileOut[QIdx * 9 + 8];
+		const float4 SQ = TileAt(T + DirtOffsets8[j]);
 		TotalIn += In;
 		InMoisture += In * saturate(SQ.b);
 		InCompaction += In * SQ.g;
 	}
 
 	const float Retained = max(S.r - TotalOut, 0.0f);
-	const float NewLayer = Retained + TotalIn;
+	float NewLayer = Retained + TotalIn;
 
 	// Dirt carries its water and its packing with it, and the state channels
 	// describe the SURFACE: a sheet of mud arriving on a damp column lands on
@@ -383,6 +495,62 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// re-packs it on its own — only a wheel, a tool, or a Pack brush.
 	const float Loosen = saturate((TotalOut + TotalIn) / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
 	S.g = saturate(S.g - Loosen);
+
+	// --- grains shedding down the face ------------------------------------------------
+	// A cell avalanching hard enough may send part of what it sheds off as a
+	// parcel instead: it rolls down the face as a visible grain and deposits
+	// wherever it stops, which the heightfield alone could not show. The parcel's
+	// dirt is taken out of this cell here, so the books still balance.
+	if (DirtShedEnabled != 0 && TotalOut >= DirtShedMinOutCm)
+	{
+		const uint Seed = DirtHash((uint)P.x * 73856093u ^ (uint)P.y * 19349663u ^ DirtFrameSeed);
+		if (DirtRand01(Seed, 1u) < DirtShedChance)
+		{
+			// A grain carries what a grain of its drawn size can (a few of them,
+			// as it stands in for its neighbours), never a cell's worth: mud that
+			// runs out fast was shedding 20 cm3 "grains" drawn 6 mm across.
+			const float Diameter = DirtShedDiameterCm * (0.7f + 0.6f * DirtRand01(Seed, 4u));
+			const float GrainCm3 = 4.0f * DIRT_PI / 6.0f * Diameter * Diameter * Diameter;
+			const float ParcelSolidCm = min(min(DirtShedFraction * TotalOut, 0.5f * NewLayer),
+											GrainCm3 / (DirtTexelSizeCm * DirtTexelSizeCm));
+			const float VolumeCm3 = ParcelSolidCm * DirtTexelSizeCm * DirtTexelSizeCm;
+			if (VolumeCm3 > 0.01f)
+			{
+				uint Old;
+				InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 0xFFFFFFFFu, Old);
+				if (Old == 0u || Old > ParcelCount())
+				{
+					InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 1u);   // pool full: stay in the ground
+				}
+				else
+				{
+					const uint Slot = DirtParcelFree[Old - 1u];
+					InterlockedMax(DirtParcelCounters[DIRT_PARCEL_COUNTER_MAXLIVE], Slot + 1u);
+					InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_SPAWNED], 1u);
+					NewLayer -= ParcelSolidCm;
+
+					// Downhill: toward the neighbours this cell is shedding to.
+					float2 Down = float2(0, 0);
+					UNROLL
+					for (int k = 0; k < 8; ++k)
+					{
+						Down += float2(DirtOffsets8[k]) * TileOut[OwnIdx * 9 + k];
+					}
+					Down = (length(Down) > 1e-6f) ? normalize(Down) : float2(1, 0);
+					const float2 Side = float2(-Down.y, Down.x) * (DirtRand01(Seed, 2u) - 0.5f) * 0.6f;
+					const float3 Vel = float3((Down + Side) * DirtShedSpeedCmS * (0.6f + 0.8f * DirtRand01(Seed, 3u)), DirtShedSpeedCmS * 0.3f);
+
+					const float2 XY = DirtRegionOriginCm + (float2(P) + float2(DirtRand01(Seed, 5u), DirtRand01(Seed, 6u))) * DirtTexelSizeCm;
+					const float Z = Bed + DirtBulkCm(NewLayer, S.g) + Diameter;
+
+					const int2 PT = ParcelTexel(Slot);
+					DirtParcelPos[PT] = float4(XY, Z, VolumeCm3);
+					DirtParcelVel[PT] = float4(Vel, 0.0f);
+					DirtParcelProp[PT] = float4(saturate(S.b), saturate(S.g), Diameter, (float)(Seed & 0xFFFFu));
+				}
+			}
+		}
+	}
 
 	S.r = NewLayer;
 	S.a = Bed + DirtBulkCm(NewLayer, S.g);

@@ -230,3 +230,9 @@ float DirtBrushRimWeight(float R, float CoreRadius, float RimRadius)
 #define DIRT_PARCEL_COUNTER_FALLBACK 3   // spawns that found the pool full
 #define DIRT_PARCEL_COUNTER_MAXLIVE  4   // highest live slot + 1, this step
 #define DIRT_PARCEL_COUNTER_COUNT    8
+
+// Scoop shortfall: when a Scoop stroke finds less dirt than it asked for (the
+// cell is down to bedrock), the brush pass records the missing cm^3 here,
+// fixed point, by the stroke's index within the step. The parcels spawned for
+// that scoop are shrunk by it, so they never land dirt that never left.
+#define DIRT_MAX_STROKES_PER_STEP 256
