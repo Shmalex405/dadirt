@@ -2485,8 +2485,6 @@ float ADirtBox::GetSurfaceHeightAtWorld(FVector2D WorldXYCm) const
 	float PondHere = 0.0f;
 	if (PondReadback.Num() >= Res * Res)
 	{
-		const float FX = T.X - FMath::FloorToInt(T.X);
-		const float FY = T.Y - FMath::FloorToInt(T.Y);
 		PondHere = FMath::Lerp(FMath::Lerp(PondReadback[Y0 * Res + X0], PondReadback[Y0 * Res + X1], FX),
 							   FMath::Lerp(PondReadback[Y1 * Res + X0], PondReadback[Y1 * Res + X1], FX), FY);
 	}
