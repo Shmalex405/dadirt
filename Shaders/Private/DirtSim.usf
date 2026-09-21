@@ -1,22 +1,26 @@
 // DaDirt — dirt simulation compute passes.
 //
-//   MainBrushCS    apply one deformation stroke (dig / raise / smooth / wet / pack)
+//   MainInitCS     seed the state from the CPU-built terrain
+//   MainDepositCS  fold landed parcels (airborne dirt) back into the layer
+//   MainBrushCS    apply a batch of deformation strokes (dig / raise / smooth / wet / pack ...)
 //   MainSlumpCS    angle-of-repose relaxation: dirt too steep to stand avalanches
+//   MainWaterCS    ponded water runs off and soaks in; moisture drains and dries
 //   MainResolveCS  derive the surface normal and the debug colour for display
 //
-// The brush and slump passes ping-pong between two RGBA16F state textures.
-// See DirtCommon.ush for the channel layout.
+// The passes ping-pong between two RGBA32F state textures (and the water pass
+// between two R32F pond textures). See DirtCommon.ush for the channel layout.
 
 #include "DirtCommon.ush"
 
 // ---------------------------------------------------------------------------
-// Init — seed the simulation state from the CPU-built testbed
+// Init — seed the simulation state from the CPU-built terrain
 // ---------------------------------------------------------------------------
 
 #if DIRT_INIT_PASS
 
-Texture2D<float4> DirtInitialState;   // CPU-built starting state
+Texture2D<float4> DirtInitialState;   // CPU-built starting state (.r already solid cm)
 RWTexture2D<float4> DirtStateOut;
+RWTexture2D<float> DirtPondOut;
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -31,12 +35,72 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	S.r = max(S.r, 0.0f);
 	S.g = saturate(S.g);
 	S.b = saturate(S.b);
-	S.a = DirtBedrock(P) + S.r;      // derive the surface rather than trusting the upload
+	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g);      // derive the surface rather than trusting the upload
+
+	DirtStateOut[P] = S;
+	DirtPondOut[P] = 0.0f;
+}
+
+#endif // DIRT_INIT_PASS
+
+// ---------------------------------------------------------------------------
+// Deposit — airborne dirt that has landed joins the layer
+// ---------------------------------------------------------------------------
+// The parcel sim adds (volume, volume x moisture) into two fixed-point textures
+// with atomics. This pass converts them to solid centimetres, blends them onto
+// the surface, and zeroes the accumulators for the next step.
+
+#if DIRT_DEPOSIT_PASS
+
+float DirtTexelAreaCm2;
+float DirtDepositCompaction;       // landed dirt is loose
+int DirtResetLiveMax;              // 1 when a parcel sim pass follows this step and will recount
+RWTexture2D<uint> DirtDepositVol;
+RWTexture2D<uint> DirtDepositMoist;
+RWStructuredBuffer<uint> DirtParcelCounters;
+RWTexture2D<float4> DirtStateOut;
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+
+	// The highest-live-slot counter is a per-step maximum; start it over before
+	// this step's spawn and sim passes raise it again.
+	if (all(P == int2(0, 0)) && DirtResetLiveMax != 0)
+	{
+		DirtParcelCounters[DIRT_PARCEL_COUNTER_MAXLIVE] = 0u;
+	}
+
+	float4 S = DirtState(P);
+	const uint VolFixed = DirtDepositVol[P];
+	if (VolFixed > 0u)
+	{
+		const float VolumeCm3 = (float)VolFixed / DIRT_DEPOSIT_SCALE;
+		const float Moisture = (float)DirtDepositMoist[P] / max((float)VolFixed, 1.0f);
+		const float AddCm = VolumeCm3 / DirtTexelAreaCm2;
+
+		// Same skin rule as the slump: what lands sits on top and owns the
+		// surface once there is a couple of centimetres of it.
+		const float SkinCm = 2.0f;
+		const float W = AddCm / (AddCm + SkinCm);
+		S.b = saturate(lerp(S.b, Moisture, W));
+		S.g = saturate(lerp(S.g, DirtDepositCompaction, W));
+		S.r += AddCm;
+		S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g);
+
+		DirtDepositVol[P] = 0u;
+		DirtDepositMoist[P] = 0u;
+	}
 
 	DirtStateOut[P] = S;
 }
 
-#endif // DIRT_INIT_PASS
+#endif // DIRT_DEPOSIT_PASS
 
 // ---------------------------------------------------------------------------
 // Brush
@@ -53,7 +117,7 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 int DirtStrokeCount;
 float4 DirtStrokeA[DIRT_MAX_STROKES];   // centre.xy (cells), core radius, rim radius
 float4 DirtStrokeB[DIRT_MAX_STROKES];   // core norm, rim norm, amount, disturb
-float4 DirtStrokeC[DIRT_MAX_STROKES];   // mode (as float), unused x3
+float4 DirtStrokeC[DIRT_MAX_STROKES];   // mode (as float), proctor flag, unused x2
 
 RWTexture2D<float4> DirtStateOut;
 
@@ -67,6 +131,7 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 	const float  Amount     = DirtStrokeB[K].z;
 	const float  Disturb    = DirtStrokeB[K].w;
 	const int    Mode       = (int)DirtStrokeC[K].x;
+	const bool   bProctor   = DirtStrokeC[K].y > 0.5f;
 
 	const float R = length((float2(P) + 0.5f) - Centre);
 	if (R >= RimRadius + 1.0f)
@@ -79,7 +144,7 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 
 	// Normalised so that summing each kernel over the whole footprint gives
 	// exactly 1.0. That is what makes dig and raise zero-sum: whatever the
-	// core loses, the rim gains.
+	// core loses, the rim gains. Amounts for the mass modes are SOLID cm.
 	const float CoreW = (CoreNorm > 0.0f) ? Core / CoreNorm : 0.0f;
 	const float RimW  = (RimNorm  > 0.0f) ? Rim  / RimNorm  : 0.0f;
 	const float Mask  = saturate(Core + Rim);
@@ -108,19 +173,20 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 		}
 		S.r = lerp(S.r, Sum / Count, saturate(Amount) * Mask);
 	}
-	else if (Mode == 3)    // WET
+	else if (Mode == 3)    // WET — may exceed 1: the water pass ponds the excess
 	{
-		S.b = saturate(S.b + Amount * Mask);
+		S.b = clamp(S.b + Amount * Mask, 0.0f, 50.0f);
 	}
 	else if (Mode == 4)    // PACK
 	{
-		S.g = saturate(S.g + Amount * Mask);
+		const float Efficiency = bProctor ? DirtPackingEfficiency(S.b) : 1.0f;
+		S.g = saturate(S.g + Amount * Efficiency * Mask);
 	}
 	else if (Mode == 5)    // LOOSEN
 	{
 		S.g = saturate(S.g - Amount * Mask);
 	}
-	else if (Mode == 6)    // SCOOP — take dirt out of the core; a paired DUMP puts it down elsewhere
+	else if (Mode == 6)    // SCOOP — take dirt out of the core; the volume goes elsewhere
 	{
 		S.r -= Amount * CoreW;
 	}
@@ -150,7 +216,7 @@ void ApplyBrush(int2 P)
 	// Bedrock is the floor. You cannot dig below it, and this clamp is the one
 	// place a dig can quietly lose volume — DaDirt.Audit reports exactly how much.
 	S.r = max(S.r, 0.0f);
-	S.a = Bed + S.r;
+	S.a = Bed + DirtBulkCm(S.r, S.g);
 
 	DirtStateOut[P] = S;
 }
@@ -175,6 +241,10 @@ void MainBrushCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 // to stay exactly zero-sum it computes both what flows OUT of this texel and what
 // flows IN from each neighbour — recomputing the neighbour's outflow with the
 // identical function. Every centimetre that leaves one texel arrives at another.
+//
+// Slopes are judged on the bulk surface; what moves is solid dirt, converted at
+// the source cell's solid fraction. Because .r is solid, the sum is exact no
+// matter how differently packed the two ends are.
 //
 // Eight neighbours, not four: see DirtOffsets8 in DirtCommon.ush for why. Flow
 // across a diagonal is divided by its sqrt(2) distance (flux follows gradient),
@@ -201,12 +271,13 @@ float DirtLooseningScaleCm;
 
 RWTexture2D<float4> DirtStateOut;
 
-// Unscaled outflow from P toward each of its eight neighbours, plus the factor
-// needed to keep it from moving more dirt than P actually has.
+// Unscaled solid outflow from P toward each of its eight neighbours, plus the
+// factor needed to keep it from moving more dirt than P actually has.
 void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 {
 	const float4 S = DirtState(P);
-	const float Surface = S.a;              // bedrock + layer, maintained by every pass
+	const float Surface = S.a;              // bedrock + bulk layer, maintained by every pass
+	const float Solid = DirtSolidFraction(S.g);
 
 	float TanPhi, CohesionKPa;
 	DirtSoilStrength(S, DirtLooseReposeDeg, DirtPackedReposeDeg, DirtSuctionCohesionKPa,
@@ -231,7 +302,7 @@ void ComputeOutflow(int2 P, out float Out[8], out float Scale)
 		const float Drop = Surface - DirtState(Q).a;
 		const float Excess = max(0.0f, Drop - DirtAllowedDrop(Drop, DirtTexelSizeCm * Dist, TanPhi, CohesionKPa,
 															 DirtUnitWeightKNm3, DirtMaxCohesiveHeightCm));
-		Out[i] = Excess * DirtSlumpRate / Dist;
+		Out[i] = Excess * Solid * DirtSlumpRate / Dist;
 		Sum += Out[i];
 	}
 
@@ -286,7 +357,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float In = OutQ[j ^ 1] * ScaleQ;
 		const float4 SQ = DirtState(Q);
 		TotalIn += In;
-		InMoisture += In * SQ.b;
+		InMoisture += In * saturate(SQ.b);
 		InCompaction += In * SQ.g;
 	}
 
@@ -304,7 +375,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	{
 		const float SkinCm = 2.0f;
 		const float W = TotalIn / (TotalIn + SkinCm);
-		S.b = saturate(lerp(S.b, InMoisture / TotalIn, W));
+		S.b = lerp(S.b, InMoisture / TotalIn, W);
 		S.g = saturate(lerp(S.g, InCompaction / TotalIn, W));
 	}
 
@@ -314,12 +385,145 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	S.g = saturate(S.g - Loosen);
 
 	S.r = NewLayer;
-	S.a = Bed + NewLayer;
+	S.a = Bed + DirtBulkCm(NewLayer, S.g);
 
 	DirtStateOut[P] = S;
 }
 
 #endif // DIRT_SLUMP_PASS
+
+// ---------------------------------------------------------------------------
+// Water — run-off, infiltration, drainage, drying
+// ---------------------------------------------------------------------------
+// docs/SoilPhysics.md section 5. Once per sim step:
+//   1. ponded water runs downhill over the surface (four neighbours, gather form)
+//   2. rain lands on the pond
+//   3. the pond soaks in at the soil's conductivity, which packing throttles
+//   4. moisture past saturation overflows back out as pond
+//   5. moisture above field capacity drains away downward, slower when packed
+//   6. the surface dries
+// Pore space per cell is porosity x the wet skin the moisture channel describes.
+
+#if DIRT_WATER_PASS
+
+float DirtDt;
+float DirtRunoffRate;
+float DirtRainCmPerSec;
+float DirtInfiltrationCmPerSec;   // K_s of loose dirt, game-paced
+float DirtDrainPerSec;            // of the water above field capacity, loose dirt
+float DirtEvapPerSec;
+float DirtFieldCapacity;
+float DirtWetDepthCm;
+float DirtAmbientMoisture;        // air-dry dirt keeps this much (hygroscopic water)
+
+// Water poured on a spot this step (a water truck): lands as pond, then soaks in
+// at the soil's own rate, so it puddles on hardpack and vanishes into sand.
+// Must match DirtSim::MaxWaterSourcesPerPass.
+#define DIRT_MAX_WATER_SOURCES 16
+int DirtWaterSourceCount;
+float4 DirtWaterSource[DIRT_MAX_WATER_SOURCES];   // centre.xy (cells), core radius, cm per unit kernel weight
+
+Texture2D<float> DirtPondIn;
+RWTexture2D<float> DirtPondOut;
+RWTexture2D<float4> DirtStateOut;
+
+float PondHead(int2 Q)
+{
+	return DirtState(Q).a + DirtPondIn.Load(int3(Q, 0)).x;
+}
+
+void ComputePondOutflow(int2 P, out float Out[4], out float Scale)
+{
+	const float Pond = DirtPondIn.Load(int3(P, 0)).x;
+	const float Head = PondHead(P);
+	float Sum = 0.0f;
+
+	UNROLL
+	for (int i = 0; i < 4; ++i)
+	{
+		const int2 Q = P + DirtOffsets4[i];
+		Out[i] = 0.0f;
+		if (DirtInBounds(Q) && Pond > 1e-4f)
+		{
+			// Water can only fall as far as levelling the two heads.
+			Out[i] = DirtRunoffRate * max(0.0f, Head - PondHead(Q)) * 0.5f;
+			Sum += Out[i];
+		}
+	}
+
+	Scale = (Sum > Pond) ? (Pond / max(Sum, 1e-6f)) : 1.0f;
+}
+
+[numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
+void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const int2 P = int2(DispatchThreadId.xy);
+	if (!DirtInBounds(P))
+	{
+		return;
+	}
+
+	float4 S = DirtState(P);
+	float Pond = DirtPondIn.Load(int3(P, 0)).x;
+
+	// 1. run-off
+	float OutP[4];
+	float ScaleP;
+	ComputePondOutflow(P, OutP, ScaleP);
+	float Moved = 0.0f;
+	UNROLL
+	for (int i = 0; i < 4; ++i)
+	{
+		Moved += OutP[i] * ScaleP;
+		const int2 Q = P + DirtOffsets4[i];
+		if (DirtInBounds(Q))
+		{
+			float OutQ[4];
+			float ScaleQ;
+			ComputePondOutflow(Q, OutQ, ScaleQ);
+			Pond += OutQ[i ^ 1] * ScaleQ;
+		}
+	}
+	Pond = max(Pond - Moved, 0.0f);
+
+	// 2. rain, and anything poured from a truck
+	Pond += DirtRainCmPerSec * DirtDt;
+	[loop]
+	for (int k = 0; k < DirtWaterSourceCount; ++k)
+	{
+		const float R = length((float2(P) + 0.5f) - DirtWaterSource[k].xy);
+		Pond += DirtWaterSource[k].w * DirtBrushCoreWeight(R, DirtWaterSource[k].z);
+	}
+
+	// 3. infiltration. Compaction lowers conductivity by ~two orders of magnitude.
+	const float C = saturate(S.g);
+	const float PoreCm = max(lerp(DirtLoosePorosity, DirtDensePorosity, C) * min(S.a - DirtBedrock(P), DirtWetDepthCm), 0.05f);
+	const float K = DirtInfiltrationCmPerSec * exp(-4.6f * C);
+	const float Room = max(0.0f, 1.0f - S.b) * PoreCm;
+	const float Infil = min(Pond, min(K * DirtDt, Room));
+	S.b += Infil / PoreCm;
+	Pond -= Infil;
+
+	// 4. overflow: a Wet brush or a flood can push moisture past saturation
+	if (S.b > 1.0f)
+	{
+		Pond += (S.b - 1.0f) * PoreCm;
+		S.b = 1.0f;
+	}
+
+	// 5. drainage down through the layer
+	const float Drain = DirtDrainPerSec * exp(-3.45f * C);
+	S.b -= Drain * max(0.0f, S.b - DirtFieldCapacity) * DirtDt;
+
+	// 6. drying at the surface, down to what air-dry dirt holds on to
+	S.b -= DirtEvapPerSec * DirtDt * saturate((S.b - DirtAmbientMoisture) / 0.05f);
+	S.b = max(S.b, 0.0f);
+
+	DirtStateOut[P] = S;
+	DirtPondOut[P] = Pond;
+}
+
+#endif // DIRT_WATER_PASS
 
 // ---------------------------------------------------------------------------
 // Resolve — surface normal + debug colour
@@ -337,6 +541,8 @@ float DirtSaturationFrictionLoss;
 float DirtMaxCohesiveHeightCm;
 int DirtDebugMode;
 float DirtDebugLayerRangeCm;
+
+Texture2D<float> DirtPondIn;
 
 // The brush and slump passes ping-pong between two state textures, so which one
 // holds the answer changes from frame to frame. Resolve copies the finished state
@@ -371,6 +577,7 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	const float4 S = DirtState(P);
+	const float Pond = DirtPondIn.Load(int3(P, 0)).x;
 
 	DirtDisplayOut[P] = S;
 
@@ -389,17 +596,18 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	// --- debug / base colour -------------------------------------------------
 	float3 C;
 
-	if (DirtDebugMode == 1)              // dirt layer thickness
+	if (DirtDebugMode == 1)              // dirt layer thickness (bulk, what you would measure with a ruler)
 	{
-		C = DirtHeatRamp(S.r / max(DirtDebugLayerRangeCm, 1e-3f));
+		C = DirtHeatRamp(DirtBulkCm(S.r, S.g) / max(DirtDebugLayerRangeCm, 1e-3f));
 	}
 	else if (DirtDebugMode == 2)         // compaction
 	{
 		C = lerp(float3(0.9f, 0.85f, 0.6f), float3(0.35f, 0.15f, 0.1f), saturate(S.g));
 	}
-	else if (DirtDebugMode == 3)         // moisture
+	else if (DirtDebugMode == 3)         // moisture, with ponded water in strong blue
 	{
 		C = lerp(float3(0.85f, 0.75f, 0.55f), float3(0.06f, 0.12f, 0.28f), saturate(S.b));
+		C = lerp(C, float3(0.1f, 0.35f, 0.95f), saturate(Pond / 0.5f));
 	}
 	else if (DirtDebugMode == 4)         // stability vs angle of repose
 	{
@@ -425,7 +633,7 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	else if (DirtDebugMode == 5)         // bedrock exposure
 	{
-		C = (S.r < 1.0f) ? float3(0.9f, 0.1f, 0.1f) : float3(0.25f, 0.3f, 0.25f);
+		C = (S.r < 0.5f) ? float3(0.9f, 0.1f, 0.1f) : float3(0.25f, 0.3f, 0.25f);
 	}
 	else if (DirtDebugMode == 6)         // absolute slope angle
 	{
@@ -439,7 +647,9 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		C = lerp(float3(0.40f, 0.29f, 0.19f), float3(0.24f, 0.16f, 0.10f), saturate(S.g));
 		C = lerp(C, C * 0.40f, saturate(S.b));
 		// where the dirt has been scraped away, cold grey bedrock shows through
-		C = lerp(float3(0.35f, 0.33f, 0.31f), C, saturate(S.r / 5.0f));
+		C = lerp(float3(0.35f, 0.33f, 0.31f), C, saturate(S.r / 3.0f));
+		// standing water: a dark, slightly blue sheen
+		C = lerp(C, float3(0.08f, 0.10f, 0.13f), saturate(Pond / 0.3f) * 0.85f);
 	}
 
 	DirtDebugOut[P] = float4(C, 1.0f);

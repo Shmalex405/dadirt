@@ -1,0 +1,41 @@
+# DaDirt performance attribution: what each system costs on the Arc.
+# Testbed, idle, then with parcels and the water pass switched off in turn, and a
+# ProfileGPU dump of the pass list. Compare the "gpu" ms in the stats lines.
+
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.View
+wait 3 all_on
+r.ProfileGPU.ShowUI 0
+ProfileGPU
+wait 1
+DaDirt.Parcels 0
+wait 3 parcels_off
+DaDirt.WaterSim 0
+wait 3 parcels_off_water_off
+DaDirt.Parcels 1
+wait 3 water_off
+DaDirt.WaterSim 1
+DaDirt.Slump 0
+wait 3 slump_off
+DaDirt.Slump 3
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 4 burnout_1cm
+DaDirt.Parcels
+DaDirt.Drive 0 0 1
+wait 3
+DaDirt.Reset
+DaDirt.Parcel 0.4
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 4 burnout_4mm
+DaDirt.Parcels
+ProfileGPU
+wait 1
+DaDirt.Drive 0 0 1
+wait 3
+quit

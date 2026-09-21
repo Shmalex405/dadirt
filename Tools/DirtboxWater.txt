@@ -1,0 +1,91 @@
+# DaDirt Phase C: water (docs/SoilPhysics.md section 5).
+#   1. a water truck pass on the loose pad: it soaks in, the moisture view goes blue,
+#      then drains back toward field capacity over a minute
+#   2. the same on a packed patch: it cannot soak in, so it ponds and runs downhill
+#   3. rain on the whole box: ruts and holes fill first, hills shed it
+#   4. Proctor: a tyre packs damp dirt faster than dry or soaked dirt
+# The pad runs Y = -30..30 at X = 3, surface 60 cm.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+
+# --- 1. water truck on loose dirt ---------------------------------------------------------
+DaDirt.Water 3 -15 400 250
+wait 1 soak_1s
+DaDirt.Probe 3 -15
+DaDirt.Probe 3 -13
+DaDirt.Audit
+camera -3 -15 2.5 -25 0
+DaDirt.DebugView 3
+wait 0.4
+screenshot water_10_truck_loose_moisture
+DaDirt.DebugView 0
+wait 0.4
+screenshot water_11_truck_loose
+wait 20 drain_20s
+DaDirt.Probe 3 -15
+DaDirt.Audit
+
+# --- 2. water truck on packed dirt: ponds --------------------------------------------------
+DaDirt.Pack 3 15 400 1
+wait 0.5
+DaDirt.Dig 3 15 150 8
+wait 1
+DaDirt.Water 3 15 400 250
+wait 1 pond_1s
+DaDirt.Probe 3 15
+DaDirt.Probe 3 17
+camera -3 15 2.5 -25 0
+DaDirt.DebugView 3
+wait 0.4
+screenshot water_20_truck_packed_moisture
+DaDirt.DebugView 0
+wait 0.4
+screenshot water_21_truck_packed_pond
+wait 10 pond_10s
+DaDirt.Probe 3 15
+DaDirt.Audit
+
+# --- 3. rain -----------------------------------------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Test trench
+wait 2
+DaDirt.Rain 60 8
+wait 10 rain
+DaDirt.Probe 3 0
+DaDirt.Probe 5 0
+DaDirt.Probe 3 -45
+camera -10 0 6 -30 0
+DaDirt.DebugView 3
+wait 0.4
+screenshot water_30_rain_moisture
+DaDirt.DebugView 0
+wait 0.4
+screenshot water_31_rain
+DaDirt.Audit
+wait 20 after_rain
+DaDirt.Probe 3 0
+DaDirt.Audit
+
+# --- 4. Proctor: pack three patches with a tyre-style (Proctor) pack -------------------------
+# The console Pack ignores the curve, so use the wheel: three short runs on dry,
+# damp and soaked ground. Compaction after one pass should be highest on damp.
+DaDirt.Reset
+wait 0.5
+DaDirt.Wet 3 -20 300 0.6
+DaDirt.Wet 3 20 300 1.5
+wait 1
+DaDirt.Wheel 3 -28 90
+DaDirt.Drive 0.35 0 0
+wait 9 proctor_run
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -20
+DaDirt.Probe 3 0
+DaDirt.Probe 3 20
+DaDirt.Audit
+quit

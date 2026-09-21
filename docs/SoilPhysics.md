@@ -4,7 +4,8 @@ Written 2026-09-21 at Alex's request: stop tuning angles by feel and derive the
 simulator from how soil actually behaves. Everything below is standard soil
 mechanics and terramechanics (Terzaghi, Mohr–Coulomb, Proctor, Culmann, Bekker,
 Janosi–Hanamoto). Each section ends with **→ Simulator**: what it means for our
-grid. Section 10 is the implementation plan; Phase A of it is implemented.
+grid. Section 10 is the implementation plan; Phases A to E of it are implemented
+and measured (sections 9b to 9f).
 
 Units: SI throughout (m, s, kg, N, kPa). The grid stores centimetres; convert at
 the edges.
@@ -325,6 +326,153 @@ Control: the bone-dry cone (S = 0, c = 0) settles at 32° on both axis and diago
 as before. Volume drift 0.00000 m³. GPU cost of the slump rose ~1.3 ms for the
 extra trigonometry; the testbed runs at 56–58 fps with it, 77 fps idle.
 
+## 9c. Phase B measured (Tools/DirtboxSolid.txt, 2026-09-21)
+
+The pad is 60 cm of bulk dirt at compaction 0.25 = 33.3 cm of solids. Solid
+volume is what the audit sums now; the box holds 4661.458 m³ of solids, which a
+ruler would call 8274.6 m³.
+
+| action | surface | solids | compaction | drift |
+|---|---|---|---|---|
+| as built | 60.0 cm | 33.3 cm | 0.25 | 0 |
+| `DaDirt.Pack` to 1.0 | **57.2 cm** (−2.8) | 33.3 cm | 1.00 | 0.00000 m³ |
+| `DaDirt.Loosen` to 0 | **60.9 cm** (+0.9) | 33.3 cm | 0.00 | 0.00000 m³ |
+| `DaDirt.Dig` 30 cm | 31.1 cm hole, spoil rim at 63.9 cm | 16.7 / 35.5 cm | 0.00 / 0.07 | 0.00000 m³ |
+
+Packing drops the surface (the 15 cm skin shrinks by 1 − 0.52/0.66 = 19%) and
+loosening lifts it, with not one grain moved: the rut a tyre presses by packing
+alone is now a real thing. The 40-hole conserve test reads −0.00000 m³. Over a
+minute of drying and settling the audit shows ±0.00001–0.00003 m³ (4·10⁻⁹): the
+float rounding of a million cells exchanging tiny flows, not a leak.
+
+## 9d. Phase C measured (Tools/DirtboxWater.txt, 2026-09-21)
+
+`DaDirt.Water 3 -15 400` (a 400 L truck load over a 2.5 m radius, 6 cm at the
+centre) on the loose pad (K = 0.5 cm/s, game-paced):
+
+| | pond | moisture |
+|---|---|---|
+| 1 s | 4.4 cm | 0.17 |
+| 21 s | 0 | 0.29 (field capacity is 0.30) |
+
+The same pour on a patch packed to 0.7 with an 8 cm hole dug in it (K = 0.5 ×
+10^(−2·0.7) = 0.02 cm/s): **8.2 cm** of water standing at 1 s, **9.1 cm** at
+10 s as the surroundings run into the hole, moisture only 0.13 → 0.16. A puddle
+on hardpack, gone-in-seconds on loose dirt, exactly the split section 5 asks for.
+
+Rain at 60 mm/min for 8 s over the whole box: 26.8 m³ ponded (on the packed
+faces and in the trench), 17.9 m³ twenty seconds later, the loose pad at 0.23.
+
+Proctor: one pass of the wheel at 0.35 throttle over dry (0.14), damp (0.71)
+and soaked (1.00) pad:
+
+| moisture | compaction after one pass |
+|---|---|
+| 0.14 dry | 0.39 |
+| 0.71 damp | **0.49** |
+| 1.00 mud | 0.06 (it pumps; the tyre also loosened it) |
+
+Dirt volume drift through all of it: 0.00000 m³. Water is not audited against a
+baseline; it drains and dries by design.
+
+## 9e. Phase D measured (Tools/DirtboxTerra.txt, 2026-09-21)
+
+The test wheel (0.35 m radius, 0.12 m wide, 100 kg on it) parked on three soils.
+Section 6 predicted loose 3–4 cm, hardpack under 1 cm, mud more:
+
+| soil | compaction / moisture | Bekker sinkage | motion resistance |
+|---|---|---|---|
+| loose pad | 0.23 / 0.15 | **2.6–3.1 cm** | 48 N |
+| packed | 1.00 / 0.14 | **0.1 cm** | 12 N |
+| soaked | 0.23 / 0.98 | **8–9 cm** | 88 N |
+
+Grip (the Mohr–Coulomb ceiling as a coefficient) reads 0.78 on the pad, 0.96
+on hardpack (cohesion over the patch), 0.29 in mud. Full throttle from rest on
+the pad: slip ratio 0.57 and 605 N of traction at launch, falling to 220 N at
+i = 0.08 once rolling; 13.7 m/s (49 km/h) after 36 m. A locked brake at speed
+slides with slip = −v and shoves dirt forwards (2.8 L over the stop), then holds
+the wheel dead still: no phantom slip at rest.
+
+Four passes at 0.5 throttle over the same line at 3.9 cm cells:
+
+| pass | sinkage | floor compaction |
+|---|---|---|
+| 1 | 2.2 cm | 0.25 → 0.55 |
+| 2 | 1.3 cm | 0.40 |
+| 3 | 0.7 cm | 0.57 |
+| 4 | 0.9 cm | 0.91 (in the rut) |
+
+Rut after four passes: floor at 55.7 cm, shoulders at 59.4–59.5 cm on a 60 cm
+pad, a **4.3 cm rut with 0.5 cm shoulders**, floor packed to 0.91. The depth
+comes from Bekker sinkage pressed plastic plus the compaction shrink, and it
+saturates because the packed floor barely sinks, with no rule saying so.
+
+Burnout on the stand (anchored, full throttle, 3 s): wheel speed 9.9 m/s,
+**5.3 L of solid dirt thrown** as 10,316 parcels, a 15 cm hole under the tyre
+(60 → 44.9 cm), every parcel landed and audited, drift 0.00000 m³.
+
+## 9f. Phase E measured (Tools/DirtboxParcels.txt and DirtboxPerf.txt, 2026-09-21)
+
+**The hand-off is exact.** `DaDirt.Throw 3 -20 4` scoops 4.00 L of solids and
+throws it at 6 m/s: the audit 0.3 s later reads ground 4661.4536 + air 0.0040 =
+4661.4576 m³, drift −0.00000; three seconds later all 4,096 parcels have landed,
+air 0, drift −0.00000. A burnout that put 143,267 parcels through the system
+(0.4 cm clods, 5 L) came back at −0.00001 m³. Mud parcels (moisture 0.95) splat
+where they land; dry ones hop and roll.
+
+**The size question.** The same anchored burnout (full throttle, 3 s, chase
+camera) at four parcel sizes, on the Arc 140T at 1080p:
+
+| parcel diameter | parcels per litre | live at 3 s | fps | GPU ms |
+|---|---|---|---|---|
+| 2 cm | 239 | 627 | 45 | 19.0 |
+| 1 cm | 1,910 | 4,621 | 42 | 20.9 |
+| 5 mm | 15,279 | 34,410 | 32 | 28.3 |
+| 4 mm (the floor) | 29,842 | 66,171 | 33 | 27.2 |
+| `soil` (damp, 0.5) | 46 (3.5 cm clods) | 272 | 39 | 22.4 |
+
+Idle, with nothing in the air, the testbed runs at 52 fps (16 ms GPU), of which
+the heightfield is nearly all: three slump passes at 1.4 ms each, twice a frame
+whenever the frame runs under 60 Hz, water 0.5 ms, deposit 0.4 ms. Two things
+keep an idle pool free: the free list hands out the lowest slots first so only
+the mesh sections up to the highest live slot are drawn (an idle pool of
+262,144 cost 7 ms before that), and the per-parcel "highest live slot" atomic
+is reduced per thread group first (20,000 parcels on one address cost 5 ms).
+
+Where the parcel cost is, with 66,000 in the air: in a `ProfileGPU` frame of the 4 mm burnout (74,000 live) the parcel passes are 0.11 ms (spawn 0.03, sim 0.08) and the scene render is 1.2 ms above idle (8.7 vs 7.5 ms), so the parcels are about 1.3 ms of a 21 ms frame. The rest is the heightfield sim running twice per frame once the frame is over 16.7 ms. Over whole 3 s runs the same burnout measured 42 fps in one run and 33 fps in another with the machine warmer: the Arc's run-to-run variance is ±3 ms, more than the parcels cost.
+
+So the honest answer to "how small": 4 mm is the floor today. A full roost at
+4 mm is ~66,000 live parcels at 33 fps, and the cost is drawing them, not
+simulating them (the sim and spawn passes are 0.15 ms together). The next step
+down needs a cheaper draw, not a cheaper sim: one triangle per parcel instead
+of a tetrahedron, or sprites for anything under a few pixels. The pool
+(262,144) would cap a 3 mm roost (~175,000 live); a 2 mm one (~600,000) needs a
+1024² pool, a setting, not a redesign. Below ~4 mm at chase-camera distance a
+parcel is under a pixel anyway; `ParcelMinScreenSize` holds it at ~1.5 px, so
+what changes as they get smaller is the density of the spray, which is exactly
+what reads as fine dirt. Dust proper (the sub-millimetre tail that never
+carries auditable volume) is still to come.
+
+## 9g. Open items from Phases B–E
+
+- **A small leak at rut resolution.** Whole-box runs audit to ±0.00001 m³ (float
+  rounding of a million cells exchanging tiny flows). Runs with the sim focused
+  on a 40 m region (3.9 cm cells) and the wheel roosting show **+0.0002 m³ over
+  four passes**, 4·10⁻⁷ of the region, positive, so dirt appearing rather than
+  vanishing. Clearing queued throws on a rebuild did not remove it. Suspects:
+  something in scoop/spawn/deposit that does not commute at sub-2-texel kernels.
+  Reproduce with `Tools/DirtboxTerra.txt` step 3.
+- **The sim double-steps below 60 fps.** With `MaxStepsPerFrame` 2, any frame over
+  16.7 ms runs two sim steps (~7 ms each) and stays there. The slump's
+  groupshared-tile rewrite is the known lever; the ProfileGPU rows say the three
+  slump passes are two thirds of the sim.
+- **Parcels render dark.** They are lit tetrahedra with vertex normals and no
+  shadow, and read as dark grit against the sunlit pad. Colour and a touch of
+  ambient are a material tweak, not a sim change.
+- The `DaDirt.Throw` heap test spreads 32 L over ~2 m² (a 1.8 cm bump), because
+  parcels roll on landing; a pile needs a cone of stopped parcels, which is the
+  angle-of-repose behaviour of the heightfield taking over once they deposit.
+
 ## 10. Implementation plan
 
 - **Phase A — strength (done 2026-09-21):** Mohr–Coulomb φ_eff and c_eff per cell
@@ -332,16 +480,37 @@ extra trigonometry; the testbed runs at 56–58 fps with it, 77 fps idle.
   stability view; wheel grip = tan φ_eff + c_eff A / N. Settings: `LooseReposeDeg`
   (φ loose), `PackedReposeDeg` (φ dense, now 42), `SuctionCohesionKPa`,
   `PackedCohesionKPa`, `UnitWeightKNm3`, `SaturationFrictionLoss`.
-- **Phase B — solid-volume conservation:** porosity from compaction; packing
-  shrinks the layer; audit reports solid m³; Scoop/Dump carry solid volume and
-  arrive loose (expanding).
-- **Phase C — water:** drain / run-off / evaporate passes; K from compaction;
-  Proctor-shaped packing; `DaDirt.Rain`, `DaDirt.Water`; a moisture debug view
-  that shows ponded water.
-- **Phase D — terramechanics wheel:** Bekker sinkage, Janosi–Hanamoto traction,
-  compaction resistance, excavation-based roost.
-- **Phase E — parcels:** the particle layer with volume-conserving hand-off, the
-  audit extended to airborne dirt. Alex's headline feature.
+- **Phase B — solid-volume conservation (done 2026-09-21):** the layer channel
+  now stores solid centimetres; bulk height = `DirtBulkCm(solid, C)`, a skin of
+  `CompactionDepthCm` (15 cm) at the cell's compaction over natural ground at
+  `DeepCompaction`. Packing drops the surface, loosening lifts it, every mass
+  move is in solids so it is exactly zero-sum. Settings: `LoosePorosity` 0.48,
+  `DensePorosity` 0.34. Audit reports solid and bulk m³. Section 9c.
+- **Phase C — water (done 2026-09-21):** one water pass per step: run-off of
+  ponded water over four neighbours (gather form, like the slump), rain,
+  infiltration at K = `InfiltrationCmPerSec` · 10^(−2C), overflow past
+  saturation into the pond, drainage above `FieldCapacity` at a rate falling
+  10^(−1.5C), surface drying. Pack strokes from a tyre are scaled by the
+  Proctor hump `DirtPackingEfficiency(M)`; tools are not. `DaDirt.Rain`,
+  `DaDirt.Water`, `DaDirt.WaterSim`; debug view 3 shows ponds in blue. Pore
+  water and pond are audited separately from dirt. Section 9d.
+- **Phase D — terramechanics wheel (done 2026-09-21):** Bekker sinkage in closed
+  form from load, width, radius and (n, k_c, k_φ) interpolated by compaction
+  (k in log space) and weakened by saturation; the rut pressed per pass is
+  `PlasticSinkage` (0.7) of it plus slip-sinkage; motion resistance
+  R = b K z^(n+1)/(n+1) replaces the rolling coefficient; traction is the
+  Mohr–Coulomb ceiling c·A + N·tan φ times the Janosi–Hanamoto build-up over
+  the contact patch; roost volume = width × lug failure depth × shear speed,
+  ejected at 0.85 of the slip speed, 35° up, as parcels. Section 9e.
+- **Phase E — parcels (done 2026-09-21):** `Shaders/Private/DirtParcels.usf`.
+  A parcel carries a real solid volume and its moisture; spawn requests split a
+  scooped volume into equal parcels of the chosen diameter (`DaDirt.Parcel`,
+  or `soil` for cohesion-sized clods); flight with quadratic drag a = K v²/d;
+  bilinear heightfield contact with restitution by wetness (mud splats), Coulomb
+  friction at the ground's φ (so a parcel keeps rolling down a face steeper than
+  repose), rest detection, and an atomic fixed-point deposit that the next step
+  folds into the layer. The audit counts ground + air. A quarter-million pool,
+  drawn as tetrahedra only up to the highest live slot. Section 9f.
 - **Phase F — soil presets:** sand / loam / hardpack as one switch, testbed
   sections built from each, and the FIM track assigned a soil per section (sand
   section, hardpack start straight).

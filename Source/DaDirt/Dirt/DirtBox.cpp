@@ -62,6 +62,16 @@ ADirtBox::ADirtBox()
 	GroundMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	GroundMesh->bUseAsyncCooking = false;
 	GroundMesh->SetCastShadow(true);
+
+	// Dirt in the air: one tiny mesh per parcel slot, moved entirely in the
+	// vertex shader from the parcel state textures. No shadows: a quarter of a
+	// million shadow casters is not a cost the Arc can carry, and dust does not
+	// need them.
+	ParcelMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ParcelMesh"));
+	ParcelMesh->SetupAttachment(GroundMesh);
+	ParcelMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ParcelMesh->bUseAsyncCooking = false;
+	ParcelMesh->SetCastShadow(false);
 }
 
 void ADirtBox::BeginPlay()
@@ -76,11 +86,16 @@ void ADirtBox::BeginPlay()
 	{
 		GroundMaterial = Cast<UMaterialInterface>(GroundMaterialPath.TryLoad());
 	}
+	if (!ParcelMaterial && ParcelMaterialPath.IsValid())
+	{
+		ParcelMaterial = Cast<UMaterialInterface>(ParcelMaterialPath.TryLoad());
+	}
 
 	ApplyModeDefaults();
 	CreateResources();
 	BuildTerrainAndUpload();
 	BuildDisplayMesh();
+	BuildParcelMesh();
 	UpdateMaterialParameters();
 
 	bResourcesReady = true;
@@ -107,6 +122,19 @@ void ADirtBox::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	}
 
 	ReleaseResources();
+
+	// The parcel bookkeeping holds pooled GPU buffers and a readback that must be
+	// destroyed on the render thread, after every step that used them.
+	if (ParcelGPU)
+	{
+		TSharedPtr<FDirtParcelResources, ESPMode::ThreadSafe> Dying = MoveTemp(ParcelGPU);
+		ParcelGPU.Reset();
+		ENQUEUE_RENDER_COMMAND(DirtParcelRelease)(
+			[Dying](FRHICommandListImmediate&) mutable
+			{
+				Dying.Reset();
+			});
+	}
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -145,9 +173,34 @@ void ADirtBox::CreateResources()
 
 	StateA = MakeRT(TEXT("DirtStateA"), RTF_RGBA32f);
 	StateB = MakeRT(TEXT("DirtStateB"), RTF_RGBA32f);
+	PondA = MakeRT(TEXT("DirtPondA"), RTF_R32f);
+	PondB = MakeRT(TEXT("DirtPondB"), RTF_R32f);
 	DisplayRT = MakeRT(TEXT("DirtDisplay"), RTF_RGBA32f);
 	NormalRT = MakeRT(TEXT("DirtNormal"), RTF_RGBA16f);
 	DebugRT = MakeRT(TEXT("DirtDebug"), RTF_RGBA16f);
+
+	// Parcel state. Same 32-bit floats: a parcel position quantised to 16 bits
+	// would jitter by centimetres a hundred metres from the origin.
+	const int32 ParcelSide = FMath::Clamp(Settings.ParcelPoolSide, 64, 1024);
+	ParcelPoolCount = ParcelSide * ParcelSide;
+	const auto MakeParcelRT = [this, ParcelSide](const TCHAR* Name) -> UTextureRenderTarget2D*
+	{
+		UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(this, Name);
+		RT->RenderTargetFormat = RTF_RGBA32f;
+		RT->ClearColor = FLinearColor::Transparent;
+		RT->bAutoGenerateMips = false;
+		RT->bCanCreateUAV = true;
+		RT->AddressX = TA_Clamp;
+		RT->AddressY = TA_Clamp;
+		RT->Filter = TF_Nearest;             // the material reads one texel per parcel
+		RT->InitAutoFormat(ParcelSide, ParcelSide);
+		RT->UpdateResourceImmediate(true);
+		return RT;
+	};
+	ParcelPosRT = MakeParcelRT(TEXT("DirtParcelPos"));
+	ParcelVelRT = MakeParcelRT(TEXT("DirtParcelVel"));
+	ParcelPropRT = MakeParcelRT(TEXT("DirtParcelProp"));
+	ParcelGPU = MakeShared<FDirtParcelResources, ESPMode::ThreadSafe>();
 
 	// Bedrock is static, so it lives in a plain texture rather than a render
 	// target. R32F because 16-bit floats quantise to about 1 cm at 10 m, which
@@ -227,6 +280,19 @@ void ADirtBox::BuildTerrainAndUpload()
 
 	BedrockCm = SrcBedrock;
 
+	// The builders think in bulk centimetres (what a ruler would measure). The
+	// simulation stores solids, so convert here, once, and take the baseline
+	// from the converted values so the audit measures exactly what was uploaded.
+	{
+		double SumSolidCm = 0.0;
+		for (int32 i = 0; i < Count; ++i)
+		{
+			SrcLayer[i] = DirtSolidCm(FMath::Max(SrcLayer[i], 0.0f), SrcCompaction[i], Settings);
+			SumSolidCm += SrcLayer[i];
+		}
+		BaselineVolumeM3 = SumSolidCm * Settings.TexelAreaCm2() / 1000000.0;
+	}
+
 	// --- bedrock -> R32F ---------------------------------------------------
 	{
 		FTexture2DMipMap& Mip = BaseHeightTex->GetPlatformData()->Mips[0];
@@ -244,10 +310,10 @@ void ADirtBox::BuildTerrainAndUpload()
 		for (int32 i = 0; i < Count; ++i)
 		{
 			FLinearColor& C = Initial[i];
-			C.R = SrcLayer[i];                                       // dirt thickness, cm
+			C.R = SrcLayer[i];                                       // solid dirt, cm
 			C.G = SrcCompaction[i];
 			C.B = SrcMoisture[i];
-			C.A = SrcBedrock[i] + SrcLayer[i];                       // total surface, cm
+			C.A = SrcBedrock[i] + DirtBulkCm(SrcLayer[i], SrcCompaction[i], Settings);   // total surface, cm
 		}
 
 		FTexture2DMipMap& Mip = InitialStateTex->GetPlatformData()->Mips[0];
@@ -374,6 +440,126 @@ void ADirtBox::UpdateMaterialParameters()
 	GroundMID->SetTextureParameterValue(TEXT("DirtDisplay"), DisplayRT);
 	GroundMID->SetTextureParameterValue(TEXT("DirtNormal"), NormalRT);
 	GroundMID->SetTextureParameterValue(TEXT("DirtDebug"), DebugRT);
+
+	if (ParcelMaterial && ParcelMesh)
+	{
+		if (!ParcelMID)
+		{
+			ParcelMID = UMaterialInstanceDynamic::Create(ParcelMaterial, this);
+		}
+		ParcelMID->SetTextureParameterValue(TEXT("ParcelPos"), ParcelPosRT);
+		ParcelMID->SetTextureParameterValue(TEXT("ParcelProp"), ParcelPropRT);
+		ParcelMID->SetScalarParameterValue(TEXT("MinScreenSize"), Settings.ParcelMinScreenSize);
+		for (int32 S = 0; S < FMath::DivideAndRoundUp(ParcelPoolCount, ParcelSectionSlots); ++S)
+		{
+			ParcelMesh->SetMaterial(S, ParcelMID);
+		}
+	}
+	else if (Settings.bParcels)
+	{
+		UE_LOG(LogDirt, Warning, TEXT("Dirtbox has no ParcelMaterial — parcels will be simulated but invisible. ")
+			TEXT("Run Tools/BuildDirtAssets.py to build /Game/Dirt/M_DirtParcel."));
+	}
+}
+
+void ADirtBox::BuildParcelMesh()
+{
+	if (!ParcelMesh)
+	{
+		return;
+	}
+	ParcelMesh->ClearAllMeshSections();
+	if (!Settings.bParcels || ParcelPoolCount <= 0)
+	{
+		return;
+	}
+
+	// One tetrahedron per parcel slot, one centimetre across, sitting at the
+	// actor origin. Its UV names the slot: the material reads that texel of the
+	// parcel state, moves the four vertices to the parcel and scales them to its
+	// diameter. Dead parcels have zero volume and collapse to a point, which
+	// rasterises nothing — but their vertices still cost the vertex shader, so
+	// the slots are split into sections and only the sections up to the highest
+	// live slot are drawn (UpdateParcelSections). Each tetrahedron is given its
+	// own random orientation here, so a stream of them reads as tumbled clods,
+	// not a row of identical crystals.
+	const int32 Side = FMath::Clamp(Settings.ParcelPoolSide, 64, 1024);
+	const int32 N = Side * Side;
+	const int32 SectionCount = FMath::DivideAndRoundUp(N, ParcelSectionSlots);
+
+	static const FVector Tetra[4] =
+	{
+		FVector( 0.4714f,  0.0000f, -0.3333f),
+		FVector(-0.2357f,  0.4082f, -0.3333f),
+		FVector(-0.2357f, -0.4082f, -0.3333f),
+		FVector( 0.0000f,  0.0000f,  1.0000f)
+	};
+	static const int32 Faces[4][3] = { { 0, 2, 1 }, { 0, 1, 3 }, { 1, 2, 3 }, { 2, 0, 3 } };
+
+	// Honest bounds for every section: a parcel can be anywhere in the box, and
+	// a section's real vertices all sit at the origin until the material moves
+	// them. A zero-area triangle spanning the box gives the renderer the truth.
+	const float Half = Settings.WorldSizeCm * 0.5f;
+	const FVector BoundsLo(-Half, -Half, -2500.0f);
+	const FVector BoundsHi(Half, Half, 4000.0f);
+
+	FRandomStream Rand(7);
+	int32 TotalVerts = 0;
+	for (int32 Section = 0; Section < SectionCount; ++Section)
+	{
+		const int32 First = Section * ParcelSectionSlots;
+		const int32 Last = FMath::Min(First + ParcelSectionSlots, N);
+
+		TArray<FVector> Vertices;
+		TArray<FVector> Normals;
+		TArray<FVector2D> UVs;
+		TArray<int32> Triangles;
+		TArray<FProcMeshTangent> Tangents;
+		TArray<FLinearColor> Colors;
+		Vertices.Reserve((Last - First) * 4 + 3);
+		Normals.Reserve((Last - First) * 4 + 3);
+		UVs.Reserve((Last - First) * 4 + 3);
+		Triangles.Reserve((Last - First) * 12 + 3);
+
+		for (int32 I = First; I < Last; ++I)
+		{
+			const FQuat Rot = FQuat::MakeFromEuler(FVector(Rand.FRandRange(0, 360), Rand.FRandRange(0, 360), Rand.FRandRange(0, 360)));
+			const FVector2D UV((static_cast<double>(I % Side) + 0.5) / Side, (static_cast<double>(I / Side) + 0.5) / Side);
+			const int32 Base = Vertices.Num();
+			for (int32 V = 0; V < 4; ++V)
+			{
+				const FVector P = Rot.RotateVector(Tetra[V]);
+				Vertices.Add(P);
+				Normals.Add(P.GetSafeNormal());
+				UVs.Add(UV);
+			}
+			for (int32 F = 0; F < 4; ++F)
+			{
+				Triangles.Add(Base + Faces[F][0]);
+				Triangles.Add(Base + Faces[F][1]);
+				Triangles.Add(Base + Faces[F][2]);
+			}
+		}
+
+		// The bounds triangle carries the UV of a slot that is never live: its
+		// own vertices then collapse to the origin at zero size, drawing nothing.
+		const int32 BoundsBase = Vertices.Num();
+		Vertices.Add(BoundsLo); Vertices.Add(BoundsHi); Vertices.Add(BoundsLo);
+		for (int32 V = 0; V < 3; ++V)
+		{
+			Normals.Add(FVector::UpVector);
+			UVs.Add(FVector2D(1.0 - 0.5 / Side, 1.0 - 0.5 / Side));
+		}
+		Triangles.Add(BoundsBase); Triangles.Add(BoundsBase + 1); Triangles.Add(BoundsBase + 2);
+
+		ParcelMesh->CreateMeshSection_LinearColor(Section, Vertices, Triangles, Normals, UVs, Colors, Tangents, false);
+		ParcelMesh->SetMeshSectionVisible(Section, false);
+		TotalVerts += Vertices.Num();
+	}
+	ParcelSectionsVisible = 0;
+
+	UE_LOG(LogDirt, Log, TEXT("Parcel mesh: %d slots in %d sections of %d, %d vertices; only sections with live parcels are drawn."),
+		N, SectionCount, ParcelSectionSlots, TotalVerts);
 }
 
 // ---------------------------------------------------------------------------
@@ -398,8 +584,8 @@ void ADirtBox::Tick(float DeltaSeconds)
 			PendingMeasureSeconds = -1.0f;
 
 			const FDirtAudit A = RunAudit();
-			UE_LOG(LogDirt, Log, TEXT("[%s] volume %.3f m3 (baseline %.3f, drift %+.4f m3 = %+.3f%%)"),
-				*PendingMeasureLabel, A.VolumeM3, A.BaselineM3, A.DriftM3, A.DriftPercent);
+			UE_LOG(LogDirt, Log, TEXT("[%s] solid volume %.3f m3 = ground %.3f + airborne %.4f (baseline %.3f, drift %+.4f m3 = %+.3f%%)"),
+				*PendingMeasureLabel, A.VolumeM3, A.GroundM3, A.AirborneM3, A.BaselineM3, A.DriftM3, A.DriftPercent);
 			UE_LOG(LogDirt, Log, TEXT("[%s] max slope on loose dirt %.1f deg (repose setting %.1f), ")
 				TEXT("max slope anywhere %.1f deg, cells scraped to bedrock %d"),
 				*PendingMeasureLabel, A.MaxLooseSlopeDeg, Settings.LooseReposeDeg,
@@ -445,8 +631,62 @@ void ADirtBox::Tick(float DeltaSeconds)
 		StepAccumulator = 0.0f;
 	}
 
+	// Rain that was asked for by the second stops on its own.
+	if (Settings.RainSecondsLeft > 0.0f && Settings.RainCmPerSec > 0.0f)
+	{
+		Settings.RainSecondsLeft -= DeltaSeconds;
+		if (Settings.RainSecondsLeft <= 0.0f)
+		{
+			Settings.RainSecondsLeft = 0.0f;
+			Settings.RainCmPerSec = 0.0f;
+			UE_LOG(LogDirt, Log, TEXT("Rain stopped."));
+		}
+	}
+
 	// After the step is enqueued, so a window reads this frame's surface.
 	UpdateHeightWindows();
+	UpdateParcelCounters();
+	UpdateParcelSections(DeltaSeconds);
+}
+
+void ADirtBox::UpdateParcelSections(float DeltaSeconds)
+{
+	if (!ParcelMesh || ParcelPoolCount <= 0)
+	{
+		return;
+	}
+
+	// Whatever the GPU last reported, plus whatever was asked for since — the
+	// readback runs a frame or two behind, and a burst must not flicker in late.
+	const int32 HighestLive = static_cast<int32>(ParcelCounters[DirtSim::ParcelCounterMaxLive]);
+	const int32 Needed = FMath::Min(HighestLive + ParcelSlotsRequested, ParcelPoolCount);
+	const int32 SectionsNeeded = Settings.bParcels ? FMath::DivideAndRoundUp(Needed, ParcelSectionSlots) : 0;
+	ParcelSlotsRequested = 0;
+
+	// Grow at once, shrink only after a short hold, so a stream that pulses
+	// does not make sections blink.
+	if (SectionsNeeded >= ParcelSectionsVisible)
+	{
+		ParcelSectionHoldSeconds = 0.5f;
+	}
+	else
+	{
+		ParcelSectionHoldSeconds -= DeltaSeconds;
+		if (ParcelSectionHoldSeconds > 0.0f)
+		{
+			return;
+		}
+	}
+
+	if (SectionsNeeded != ParcelSectionsVisible)
+	{
+		const int32 SectionCount = FMath::DivideAndRoundUp(ParcelPoolCount, ParcelSectionSlots);
+		for (int32 S = 0; S < SectionCount; ++S)
+		{
+			ParcelMesh->SetMeshSectionVisible(S, S < SectionsNeeded);
+		}
+		ParcelSectionsVisible = SectionsNeeded;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +890,7 @@ void ADirtBox::UpdateHeightWindows()
 
 void ADirtBox::StepSimulation(bool bForceReinit)
 {
-	if (!StateA || !StateB || !DisplayRT || !NormalRT || !DebugRT || !BaseHeightTex || !InitialStateTex)
+	if (!StateA || !StateB || !PondA || !PondB || !DisplayRT || !NormalRT || !DebugRT || !BaseHeightTex || !InitialStateTex)
 	{
 		return;
 	}
@@ -662,18 +902,52 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	FTextureResource* InitialStateRes = InitialStateTex->GetResource();
 	FTextureRenderTargetResource* StateARes = StateA->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* StateBRes = StateB->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* PondARes = PondA->GameThread_GetRenderTargetResource();
+	FTextureRenderTargetResource* PondBRes = PondB->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* DisplayRes = DisplayRT->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* NormalRes = NormalRT->GameThread_GetRenderTargetResource();
 	FTextureRenderTargetResource* DebugRes = DebugRT->GameThread_GetRenderTargetResource();
 
-	if (!BaseHeightRes || !InitialStateRes || !StateARes || !StateBRes || !DisplayRes || !NormalRes || !DebugRes)
+	if (!BaseHeightRes || !InitialStateRes || !StateARes || !StateBRes || !PondARes || !PondBRes
+		|| !DisplayRes || !NormalRes || !DebugRes)
 	{
 		return;
 	}
 
+	const bool bParcelsReady = Settings.bParcels && ParcelPosRT && ParcelVelRT && ParcelPropRT && ParcelGPU.IsValid();
+	FTextureRenderTargetResource* ParcelPosRes = bParcelsReady ? ParcelPosRT->GameThread_GetRenderTargetResource() : nullptr;
+	FTextureRenderTargetResource* ParcelVelRes = bParcelsReady ? ParcelVelRT->GameThread_GetRenderTargetResource() : nullptr;
+	FTextureRenderTargetResource* ParcelPropRes = bParcelsReady ? ParcelPropRT->GameThread_GetRenderTargetResource() : nullptr;
+	FDirtParcelResources* ParcelRes = bParcelsReady ? ParcelGPU.Get() : nullptr;
+
 	FDirtSimFrame Frame;
 	Frame.Resolution = FIntPoint(Settings.SimResolution, Settings.SimResolution);
 	Frame.TexelSizeCm = Settings.TexelSizeCm();
+	Frame.RegionOriginCm = FVector2f(
+		static_cast<float>(Settings.SimRegionCentreCm.X) - Settings.RegionSizeCm() * 0.5f,
+		static_cast<float>(Settings.SimRegionCentreCm.Y) - Settings.RegionSizeCm() * 0.5f);
+	Frame.Dt = 1.0f / FMath::Max(Settings.SimHz, 1.0f);
+	Frame.LoosePorosity = Settings.LoosePorosity;
+	Frame.DensePorosity = Settings.DensePorosity;
+	Frame.CompactionDepthCm = Settings.CompactionDepthCm;
+	Frame.DeepCompaction = Settings.DeepCompaction;
+	Frame.DepositCompaction = Settings.DepositCompaction;
+	Frame.bWater = Settings.bWater;
+	Frame.RunoffRate = Settings.RunoffRate;
+	Frame.RainCmPerSec = Settings.RainCmPerSec;
+	Frame.InfiltrationCmPerSec = Settings.InfiltrationCmPerSec;
+	Frame.DrainPerSec = Settings.DrainPerSec;
+	Frame.EvapPerSec = Settings.EvapPerSec;
+	Frame.FieldCapacity = Settings.FieldCapacity;
+	Frame.WetDepthCm = Settings.WetDepthCm;
+	Frame.AmbientMoisture = Settings.AmbientMoisture;
+	Frame.bParcels = bParcelsReady;
+	Frame.ParcelRes = FMath::Clamp(Settings.ParcelPoolSide, 64, 1024);
+	Frame.ParcelDragK = Settings.ParcelDragK;
+	Frame.ParcelRestitutionDry = Settings.ParcelRestitutionDry;
+	Frame.ParcelRestitutionWet = Settings.ParcelRestitutionWet;
+	Frame.ParcelRestSpeedCmS = Settings.ParcelRestSpeedCmS;
+	Frame.ParcelRestSeconds = Settings.ParcelRestSeconds;
 	Frame.LooseReposeDeg = Settings.LooseReposeDeg;
 	Frame.PackedReposeDeg = Settings.PackedReposeDeg;
 	Frame.SuctionCohesionKPa = Settings.SuctionCohesionKPa;
@@ -690,24 +964,93 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	Frame.bReinitialise = bForceReinit;
 	Frame.Strokes = MoveTemp(PendingStrokes);
 	PendingStrokes.Reset();
+	if (bParcelsReady)
+	{
+		Frame.Spawns = MoveTemp(PendingSpawns);
+	}
+	PendingSpawns.Reset();
+	if (Settings.bWater && !bPaused)
+	{
+		Frame.WaterSources = MoveTemp(PendingWater);
+		PendingWater.Reset();
+	}
 
 	ENQUEUE_RENDER_COMMAND(DirtSimStep)(
-		[Frame, BaseHeightRes, InitialStateRes, StateARes, StateBRes, DisplayRes, NormalRes, DebugRes]
+		[Frame, BaseHeightRes, InitialStateRes, StateARes, StateBRes, PondARes, PondBRes, DisplayRes, NormalRes, DebugRes,
+		 ParcelPosRes, ParcelVelRes, ParcelPropRes, ParcelRes]
 		(FRHICommandListImmediate& RHICmdList) mutable
 		{
 			Frame.BaseHeight = BaseHeightRes->TextureRHI;
 			Frame.InitialState = InitialStateRes->TextureRHI;
 			Frame.StateA = StateARes->GetRenderTargetTexture();
 			Frame.StateB = StateBRes->GetRenderTargetTexture();
+			Frame.PondA = PondARes->GetRenderTargetTexture();
+			Frame.PondB = PondBRes->GetRenderTargetTexture();
 			Frame.Display = DisplayRes->GetRenderTargetTexture();
 			Frame.NormalOut = NormalRes->GetRenderTargetTexture();
 			Frame.DebugOut = DebugRes->GetRenderTargetTexture();
+			if (ParcelRes && ParcelPosRes && ParcelVelRes && ParcelPropRes)
+			{
+				Frame.ParcelPos = ParcelPosRes->GetRenderTargetTexture();
+				Frame.ParcelVel = ParcelVelRes->GetRenderTargetTexture();
+				Frame.ParcelProp = ParcelPropRes->GetRenderTargetTexture();
+				Frame.Parcels = ParcelRes;
+			}
 
 			if (Frame.IsValid())
 			{
 				DirtSim::Execute_RenderThread(RHICmdList, Frame);
 			}
 		});
+}
+
+void ADirtBox::UpdateParcelCounters()
+{
+	if (!ParcelGPU.IsValid())
+	{
+		return;
+	}
+
+	{
+		FScopeLock L(&ParcelGPU->CounterLock);
+		for (int32 i = 0; i < DirtSim::ParcelCounterCount; ++i)
+		{
+			ParcelCounters[i] = ParcelGPU->Counters_Shared[i];
+		}
+	}
+
+	FDirtParcelResources* P = ParcelGPU.Get();
+	TSharedPtr<FDirtParcelResources, ESPMode::ThreadSafe> Keep = ParcelGPU;
+	ENQUEUE_RENDER_COMMAND(DirtParcelCounters)(
+		[Keep](FRHICommandListImmediate& RHICmdList)
+		{
+			DirtSim::UpdateParcelCounters_RenderThread(RHICmdList, *Keep);
+		});
+}
+
+void ADirtBox::GetParcelCounters(uint32 OutCounters[8]) const
+{
+	for (int32 i = 0; i < DirtSim::ParcelCounterCount; ++i)
+	{
+		OutCounters[i] = ParcelCounters[i];
+	}
+}
+
+void ADirtBox::SetParcelsVisible(bool bVisible)
+{
+	if (ParcelMesh)
+	{
+		ParcelMesh->SetVisibility(bVisible);
+	}
+}
+
+int32 ADirtBox::GetLiveParcels() const
+{
+	if (!ParcelGPU.IsValid() || !ParcelGPU->bInitialised)
+	{
+		return 0;
+	}
+	return FMath::Clamp(ParcelPoolCount - 1 - static_cast<int32>(ParcelCounters[DirtSim::ParcelCounterFree]), 0, ParcelPoolCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -730,12 +1073,13 @@ FVector2f ADirtBox::WorldToTexel(FVector2D WorldXYCm) const
 }
 
 FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode,
-									  float DisturbOverride) const
+									  float DisturbOverride, bool bProctor) const
 {
 	const float TexelSize = Settings.TexelSizeCm();
 
 	FDirtBrushStroke S;
 	S.Mode = static_cast<int32>(Mode);
+	S.bProctor = bProctor;
 	S.CenterTexel = WorldToTexel(WorldXYCm);
 	S.CoreRadiusTexels = FMath::Max(RadiusCm / TexelSize, 1.0f);
 	S.RimRadiusTexels = S.CoreRadiusTexels * FMath::Max(Settings.BrushRimScale, 1.05f);
@@ -780,8 +1124,12 @@ FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float
 	if (Mode == EDirtBrushMode::Dig || Mode == EDirtBrushMode::Raise)
 	{
 		// The core kernel is 1.0 at its centre, so scaling by CoreNorm makes
-		// Amount read as "peak depth in cm" at the middle of the stroke.
-		S.Amount = Amount * S.CoreNorm;
+		// Amount read as "peak depth in cm" at the middle of the stroke. The
+		// layer stores solids, so a depth in bulk centimetres of natural ground
+		// becomes that many solid centimetres at the ground's solid fraction: a
+		// 15 cm hole in loose dirt is 15 cm deep, and the same stroke in hardpack
+		// comes out shallower, which is what a shovel finds too.
+		S.Amount = Amount * S.CoreNorm * DirtSolidFraction(Settings.DeepCompaction, Settings);
 	}
 	else
 	{
@@ -791,14 +1139,105 @@ FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float
 	return S;
 }
 
-void ADirtBox::ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode, float DisturbOverride)
+void ADirtBox::ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode,
+						  float DisturbOverride, bool bProctor)
 {
 	if (!bResourcesReady || RadiusCm <= 0.0f)
 	{
 		return;
 	}
 
-	PendingStrokes.Add(MakeStroke(WorldXYCm, RadiusCm, Amount, Mode, DisturbOverride));
+	PendingStrokes.Add(MakeStroke(WorldXYCm, RadiusCm, Amount, Mode, DisturbOverride, bProctor));
+}
+
+void ADirtBox::PourWater(FVector2D WorldXYCm, float RadiusCm, float Litres)
+{
+	if (!bResourcesReady || Litres <= 0.0f || RadiusCm <= 0.0f)
+	{
+		return;
+	}
+
+	// Same core kernel and the same exact discrete normalisation as a Scoop, so
+	// the pond receives exactly the litres asked for.
+	const FDirtBrushStroke Kernel = MakeStroke(WorldXYCm, RadiusCm, 0.0f, EDirtBrushMode::Scoop);
+	FDirtWaterSource W;
+	W.CenterTexel = Kernel.CenterTexel;
+	W.RadiusTexels = Kernel.CoreRadiusTexels;
+	W.AmountCm = Litres * 1000.0f / Settings.TexelAreaCm2() / FMath::Max(Kernel.CoreNorm, KINDA_SMALL_NUMBER);
+	PendingWater.Add(W);
+}
+
+void ADirtBox::ScoopDirt(FVector2D FromWorldXYCm, float RadiusCm, float VolumeCm3, float DisturbOverride)
+{
+	if (!bResourcesReady || VolumeCm3 <= 0.0f || RadiusCm <= 0.0f)
+	{
+		return;
+	}
+
+	const float Amount = VolumeCm3 / Settings.TexelAreaCm2();
+	PendingStrokes.Add(MakeStroke(FromWorldXYCm, RadiusCm, Amount, EDirtBrushMode::Scoop, DisturbOverride));
+}
+
+float ADirtBox::ChooseParcelDiameterCm(float Moisture, float Compaction) const
+{
+	float D = Settings.ParcelDiameterCm;
+	if (D <= 0.0f)
+	{
+		// A clod holds together while its cohesion beats its own weight stress,
+		// c > gamma d, so d ~ c / gamma: with 3 kPa and 17 kN/m3 that is 18 cm —
+		// far too big for anything a tyre flings, which is sheared into pieces
+		// well below that. Scale it down and let the min/max bound it: dry sand
+		// (no cohesion) goes to the minimum, damp loam to a few centimetres.
+		float TanPhi = 0.0f, CohesionKPa = 0.0f;
+		DirtSoilStrength(Compaction, Moisture, Settings, TanPhi, CohesionKPa);
+		D = 100.0f * CohesionKPa / FMath::Max(Settings.UnitWeightKNm3, 1.0f) * 0.15f;
+	}
+	return FMath::Clamp(D, Settings.ParcelMinDiameterCm, Settings.ParcelMaxDiameterCm);
+}
+
+void ADirtBox::SpawnParcels(FVector WorldPosCm, FVector VelocityCmS, float SpreadDeg, float VolumeCm3,
+							float Moisture, float Compaction)
+{
+	if (!bResourcesReady || VolumeCm3 <= 0.0f)
+	{
+		return;
+	}
+
+	const FVector2D XY(WorldPosCm.X, WorldPosCm.Y);
+	if (!Settings.bParcels || !ParcelGPU.IsValid())
+	{
+		// No parcels: the dirt still has to land somewhere. Put it straight back.
+		PendingStrokes.Add(MakeStroke(XY, FMath::Max(Settings.TexelSizeCm() * 2.0f, 15.0f),
+									  VolumeCm3 / Settings.TexelAreaCm2(), EDirtBrushMode::Dump));
+		return;
+	}
+
+	FDirtParcelSpawn S;
+	const FVector Origin = GetActorLocation();
+	S.PositionCm = FVector3f(WorldPosCm - Origin);
+	S.VelocityCmS = FVector3f(VelocityCmS);
+	S.VolumeCm3 = VolumeCm3;
+	S.SpreadDeg = SpreadDeg;
+	S.Moisture = Moisture;
+	S.Compaction = Compaction;
+	S.DiameterCm = ChooseParcelDiameterCm(Moisture, Compaction);
+	S.DiameterJitter = Settings.ParcelDiameterJitter;
+	S.SpeedJitter = 0.25f;
+	S.Seed = SpawnSeed++;
+
+	// Split the volume into parcels of the chosen size. A throw bigger than the
+	// per-throw cap gets bigger parcels rather than dropping any dirt.
+	const float ParcelVolume = PI / 6.0f * S.DiameterCm * S.DiameterCm * S.DiameterCm;
+	int32 Count = FMath::Max(1, FMath::RoundToInt(VolumeCm3 / FMath::Max(ParcelVolume, 1e-4f)));
+	if (Count > Settings.ParcelMaxPerThrow)
+	{
+		Count = Settings.ParcelMaxPerThrow;
+		S.DiameterCm = FMath::Pow(6.0f * VolumeCm3 / (PI * Count), 1.0f / 3.0f);
+	}
+	S.Count = Count;
+	ParcelSlotsRequested += Count;
+
+	PendingSpawns.Add(S);
 }
 
 void ADirtBox::TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3)
@@ -822,7 +1261,11 @@ void ADirtBox::ResetToTestbed()
 		return;
 	}
 
+	// Everything queued was scooped from the ground that is about to be thrown
+	// away. Letting it land on the new ground would be dirt from nowhere.
 	PendingStrokes.Reset();
+	PendingSpawns.Reset();
+	PendingWater.Reset();
 	BuildTerrainAndUpload();
 	bNeedsReinit = true;
 
@@ -832,6 +1275,8 @@ void ADirtBox::ResetToTestbed()
 void ADirtBox::RebuildTerrainAndMesh()
 {
 	PendingStrokes.Reset();
+	PendingSpawns.Reset();        // scooped from ground that no longer exists
+	PendingWater.Reset();
 	Readback.Empty();
 
 	// The simulation textures keep their resolution; only the ground they cover
@@ -918,6 +1363,21 @@ void ADirtBox::RefreshReadback()
 	// height probes and tests.
 	Readback.Reset();
 	Resource->ReadLinearColorPixels(Readback);
+
+	PondReadback.Reset();
+	if (PondA)
+	{
+		if (FTextureRenderTargetResource* PondRes = PondA->GameThread_GetRenderTargetResource())
+		{
+			TArray<FLinearColor> Pixels;
+			PondRes->ReadLinearColorPixels(Pixels);
+			PondReadback.SetNumUninitialized(Pixels.Num());
+			for (int32 i = 0; i < Pixels.Num(); ++i)
+			{
+				PondReadback[i] = Pixels[i].R;
+			}
+		}
+	}
 }
 
 FDirtAudit ADirtBox::RunAudit()
@@ -934,24 +1394,61 @@ FDirtAudit ADirtBox::RunAudit()
 		return Audit;
 	}
 
-	double SumCm = 0.0;
+	double SumSolidCm = 0.0;
+	double SumBulkCm = 0.0;
+	double SumWaterCm = 0.0;
+	double SumPondCm = 0.0;
 	float MinLayer = MAX_flt;
 	float MaxLayer = -MAX_flt;
 	int32 Exposed = 0;
 
 	for (int32 i = 0; i < Res * Res; ++i)
 	{
-		const float Layer = Readback[i].R;
-		SumCm += Layer;
-		MinLayer = FMath::Min(MinLayer, Layer);
-		MaxLayer = FMath::Max(MaxLayer, Layer);
-		if (Layer < 1.0f)
+		const FLinearColor& S = Readback[i];
+		const float Bulk = DirtBulkCm(S.R, S.G, Settings);
+		SumSolidCm += S.R;
+		SumBulkCm += Bulk;
+		// Pore water: saturation x porosity x the wet skin the moisture channel describes.
+		SumWaterCm += FMath::Clamp(S.B, 0.0f, 1.0f) * (1.0f - DirtSolidFraction(S.G, Settings)) * FMath::Min(Bulk, Settings.WetDepthCm);
+		if (PondReadback.IsValidIndex(i))
+		{
+			SumPondCm += PondReadback[i];
+		}
+		MinLayer = FMath::Min(MinLayer, Bulk);
+		MaxLayer = FMath::Max(MaxLayer, Bulk);
+		if (S.R < 0.5f)
 		{
 			++Exposed;
 		}
 	}
 
-	Audit.VolumeM3 = SumCm * Settings.TexelAreaCm2() / 1000000.0;
+	const double AreaM3PerCm = Settings.TexelAreaCm2() / 1000000.0;
+	Audit.GroundM3 = SumSolidCm * AreaM3PerCm;
+	Audit.BulkM3 = SumBulkCm * AreaM3PerCm;
+	Audit.PoreWaterM3 = SumWaterCm * AreaM3PerCm;
+	Audit.PondM3 = SumPondCm * AreaM3PerCm;
+
+	// Dirt in the air, parcel by parcel. Blocking, like the rest of the audit.
+	if (Settings.bParcels && ParcelPosRT && ParcelGPU.IsValid() && ParcelGPU->bInitialised)
+	{
+		if (FTextureRenderTargetResource* PosRes = ParcelPosRT->GameThread_GetRenderTargetResource())
+		{
+			TArray<FLinearColor> Pos;
+			PosRes->ReadLinearColorPixels(Pos);
+			double AirCm3 = 0.0;
+			for (const FLinearColor& P : Pos)
+			{
+				if (P.A > 0.0f)
+				{
+					AirCm3 += P.A;
+					++Audit.LiveParcels;
+				}
+			}
+			Audit.AirborneM3 = AirCm3 / 1000000.0;
+		}
+	}
+
+	Audit.VolumeM3 = Audit.GroundM3 + Audit.AirborneM3;
 	Audit.DriftM3 = Audit.VolumeM3 - Audit.BaselineM3;
 	Audit.DriftPercent = (Audit.BaselineM3 > 0.0) ? 100.0 * Audit.DriftM3 / Audit.BaselineM3 : 0.0;
 	Audit.MinLayerCm = MinLayer;
@@ -993,6 +1490,32 @@ FDirtAudit ADirtBox::RunAudit()
 	}
 
 	return Audit;
+}
+
+FLinearColor ADirtBox::GetStateAtWorld(FVector2D WorldXYCm) const
+{
+	const int32 Res = Settings.SimResolution;
+	if (Readback.Num() < Res * Res)
+	{
+		return FLinearColor(0, 0, 0, 0);
+	}
+	const FVector2f T = WorldToTexel(WorldXYCm);
+	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
+	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
+	return Readback[Y * Res + X];
+}
+
+float ADirtBox::GetPondAtWorld(FVector2D WorldXYCm) const
+{
+	const int32 Res = Settings.SimResolution;
+	if (PondReadback.Num() < Res * Res)
+	{
+		return 0.0f;
+	}
+	const FVector2f T = WorldToTexel(WorldXYCm);
+	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
+	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
+	return PondReadback[Y * Res + X];
 }
 
 bool ADirtBox::IsInsideBox(FVector2D WorldXYCm) const
@@ -1307,11 +1830,14 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtAuditCmd(
 			}
 
 			const FDirtAudit A = Box->RunAudit();
-			UE_LOG(LogDirt, Log, TEXT("--- volume audit ---"));
-			UE_LOG(LogDirt, Log, TEXT("  dirt in the box   %.4f m3"), A.VolumeM3);
+			UE_LOG(LogDirt, Log, TEXT("--- volume audit (solid m3: grains only, voids squeezed out) ---"));
+			UE_LOG(LogDirt, Log, TEXT("  in the ground     %.4f m3   (%.4f m3 bulk, the way a ruler sees it)"), A.GroundM3, A.BulkM3);
+			UE_LOG(LogDirt, Log, TEXT("  in the air        %.4f m3   (%d parcels)"), A.AirborneM3, A.LiveParcels);
+			UE_LOG(LogDirt, Log, TEXT("  total             %.4f m3"), A.VolumeM3);
 			UE_LOG(LogDirt, Log, TEXT("  baseline          %.4f m3"), A.BaselineM3);
 			UE_LOG(LogDirt, Log, TEXT("  drift             %+.5f m3  (%+.4f %%)"), A.DriftM3, A.DriftPercent);
-			UE_LOG(LogDirt, Log, TEXT("  layer min / max   %.1f / %.1f cm"), A.MinLayerCm, A.MaxLayerCm);
+			UE_LOG(LogDirt, Log, TEXT("  water             %.3f m3 in the pores, %.4f m3 ponded"), A.PoreWaterM3, A.PondM3);
+			UE_LOG(LogDirt, Log, TEXT("  layer min / max   %.1f / %.1f cm (bulk)"), A.MinLayerCm, A.MaxLayerCm);
 			UE_LOG(LogDirt, Log, TEXT("  scraped to rock   %d cells"), A.BedrockExposedCells);
 			UE_LOG(LogDirt, Log, TEXT("  steepest loose    %.1f deg  (repose setting %.1f)"),
 				A.MaxLooseSlopeDeg, Box->Settings.LooseReposeDeg);
@@ -1336,8 +1862,9 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 			const FVector2D World(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
 
 			Box->RefreshReadback();
-			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm."),
-				Xm, Ym, Box->GetSurfaceHeightAtWorld(World));
+			const FLinearColor S = Box->GetStateAtWorld(World);
+			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm]"),
+				Xm, Ym, Box->GetSurfaceHeightAtWorld(World), DirtBulkCm(S.R, S.G, Box->Settings), S.R, S.G, S.B, Box->GetPondAtWorld(World));
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtResetCmd(
@@ -1721,10 +2248,193 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtInfoCmd(
 				S.SuctionCohesionKPa, S.PackedCohesionKPa, S.UnitWeightKNm3);
 			UE_LOG(LogDirt, Log, TEXT("  slump          %d iterations at rate %.3f, %.0f Hz fixed step"),
 				S.SlumpIterations, S.SlumpRate, S.SimHz);
+			UE_LOG(LogDirt, Log, TEXT("  solids         porosity %.2f loose / %.2f dense, packing reaches %.0f cm"),
+				S.LoosePorosity, S.DensePorosity, S.CompactionDepthCm);
+			UE_LOG(LogDirt, Log, TEXT("  water          %s, soaks in at %.2f cm/s loose, rain %.1f mm/min"),
+				S.bWater ? TEXT("on") : TEXT("off"), S.InfiltrationCmPerSec, S.RainCmPerSec * 600.0f);
+			UE_LOG(LogDirt, Log, TEXT("  parcels        %s, pool %d, %s, %d live"),
+				S.bParcels ? TEXT("on") : TEXT("off"), S.ParcelPoolSide * S.ParcelPoolSide,
+				S.ParcelDiameterCm > 0.0f ? *FString::Printf(TEXT("%.2f cm"), S.ParcelDiameterCm) : TEXT("sized by the soil"),
+				Box->GetLiveParcels());
 
 			UE_LOG(LogDirt, Log, TEXT("--- testbed ---"));
 			for (const FString& Line : Box->GetFeatureLog())
 			{
 				UE_LOG(LogDirt, Log, TEXT("  %s"), *Line);
 			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtRainCmd(
+	TEXT("DaDirt.Rain"),
+	TEXT("DaDirt.Rain <mm per minute> [seconds=-1 forever] - rain on the whole box. 0 stops it. ")
+	TEXT("A real downpour is 20-50 mm/h; game-paced water, so 60 mm/min soaks the pad in a few seconds."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			const float MmPerMin = FMath::Max(ArgFloat(Args, 0, 0.0f), 0.0f);
+			Box->Settings.RainCmPerSec = MmPerMin * 0.1f / 60.0f;
+			Box->Settings.RainSecondsLeft = ArgFloat(Args, 1, -1.0f);
+			if (MmPerMin <= 0.0f)
+			{
+				UE_LOG(LogDirt, Log, TEXT("Rain off."));
+			}
+			else
+			{
+				UE_LOG(LogDirt, Log, TEXT("Raining %.0f mm/min%s."), MmPerMin,
+					Box->Settings.RainSecondsLeft > 0.0f ? *FString::Printf(TEXT(" for %.0f s"), Box->Settings.RainSecondsLeft) : TEXT(""));
+			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtWaterCmd(
+	TEXT("DaDirt.Water"),
+	TEXT("DaDirt.Water <Xm> <Ym> <litres> [RadiusCm=200] - pour water on a spot, like a water truck. ")
+	TEXT("It soaks in as far as the dirt can drink and the rest ponds and runs downhill."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			if (Args.Num() < 3)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Water <Xm> <Ym> <litres> [RadiusCm]"));
+				return;
+			}
+			const float Xm = ArgFloat(Args, 0, 0.0f);
+			const float Ym = ArgFloat(Args, 1, 0.0f);
+			const float Litres = FMath::Max(ArgFloat(Args, 2, 0.0f), 0.0f);
+			const float RadiusCm = FMath::Max(ArgFloat(Args, 3, 200.0f), Box->Settings.TexelSizeCm());
+			const FVector Origin = Box->GetActorLocation();
+			const FVector2D World(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
+			if (!Box->IsInsideBox(World))
+			{
+				UE_LOG(LogDirt, Warning, TEXT("(%.1f, %.1f) m is outside the box."), Xm, Ym);
+				return;
+			}
+
+			Box->PourWater(World, RadiusCm, Litres);
+			const float PeakCm = Litres * 1000.0f / (PI * RadiusCm * RadiusCm / 3.0f);
+			UE_LOG(LogDirt, Log, TEXT("Poured %.0f L at (%.1f, %.1f) m over a %.0f cm radius: about %.1f cm of water at the centre, ")
+				TEXT("soaking in at %.2f cm/s on loose dirt and %.4f cm/s on hardpack."),
+				Litres, Xm, Ym, RadiusCm, PeakCm, Box->Settings.InfiltrationCmPerSec, Box->Settings.InfiltrationCmPerSec * FMath::Exp(-4.6f));
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtParcelCmd(
+	TEXT("DaDirt.Parcel"),
+	TEXT("DaDirt.Parcel <diameterCm | soil> [minCm] [maxCm] [maxPerThrow] - how fine the airborne dirt is. ")
+	TEXT("'soil' lets cohesion pick the clod size. Halving the diameter means 8x the parcels for the same roost."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			FDirtSimSettings& S = Box->Settings;
+			if (Args.IsValidIndex(0))
+			{
+				S.ParcelDiameterCm = (Args[0].ToLower() == TEXT("soil")) ? 0.0f : FMath::Clamp(FCString::Atof(*Args[0]), 0.0f, 20.0f);
+			}
+			S.ParcelMinDiameterCm = FMath::Clamp(ArgFloat(Args, 1, S.ParcelMinDiameterCm), 0.05f, 20.0f);
+			S.ParcelMaxDiameterCm = FMath::Clamp(ArgFloat(Args, 2, S.ParcelMaxDiameterCm), S.ParcelMinDiameterCm, 50.0f);
+			S.ParcelMaxPerThrow = FMath::Clamp(ArgInt(Args, 3, S.ParcelMaxPerThrow), 1, 65536);
+
+			const float D = Box->ChooseParcelDiameterCm(0.2f, 0.25f);
+			const float PerLitre = 1000.0f / (PI / 6.0f * D * D * D);
+			UE_LOG(LogDirt, Log, TEXT("Parcels: %s (%.2f cm on the pad, %.0f parcels per litre), bounds %.2f-%.2f cm, at most %d per throw. Pool %d."),
+				S.ParcelDiameterCm > 0.0f ? *FString::Printf(TEXT("%.2f cm"), S.ParcelDiameterCm) : TEXT("sized by the soil"),
+				D, PerLitre, S.ParcelMinDiameterCm, S.ParcelMaxDiameterCm, S.ParcelMaxPerThrow, S.ParcelPoolSide * S.ParcelPoolSide);
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtParcelsCmd(
+	TEXT("DaDirt.Parcels"),
+	TEXT("DaDirt.Parcels [0|1] - airborne dirt on or off (off: thrown dirt lands where it was scooped). No argument: report the counters."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			if (Args.IsValidIndex(0))
+			{
+				Box->Settings.bParcels = ArgInt(Args, 0, 1) != 0;
+				Box->SetParcelsVisible(Box->Settings.bParcels);
+			}
+			uint32 C[8];
+			Box->GetParcelCounters(C);
+			UE_LOG(LogDirt, Log, TEXT("Parcels %s: %d live (highest slot %u), %u free, %u spawned, %u landed, %u pool-full fallbacks."),
+				Box->Settings.bParcels ? TEXT("on") : TEXT("off"), Box->GetLiveParcels(), C[DirtSim::ParcelCounterMaxLive],
+				C[DirtSim::ParcelCounterFree], C[DirtSim::ParcelCounterSpawned], C[DirtSim::ParcelCounterLanded], C[DirtSim::ParcelCounterFallback]);
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtWaterSimCmd(
+	TEXT("DaDirt.WaterSim"),
+	TEXT("DaDirt.WaterSim [0|1] - the water pass (run-off, soaking, draining, drying) on or off."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			Box->Settings.bWater = Args.IsValidIndex(0) ? (ArgInt(Args, 0, 1) != 0) : !Box->Settings.bWater;
+			UE_LOG(LogDirt, Log, TEXT("Water pass %s."), Box->Settings.bWater ? TEXT("on") : TEXT("off"));
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtThrowCmd(
+	TEXT("DaDirt.Throw"),
+	TEXT("DaDirt.Throw <Xm> <Ym> [litres=2] [speedMps=8] [headingDeg=0] [elevationDeg=45] [spreadDeg=12] - scoop dirt ")
+	TEXT("out of the ground and throw it. The hand-tool version of roost: watch it fly, land, roll and pile."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			if (Args.Num() < 2)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Throw <Xm> <Ym> [litres] [speedMps] [headingDeg] [elevationDeg] [spreadDeg]"));
+				return;
+			}
+			const float Xm = ArgFloat(Args, 0, 0.0f);
+			const float Ym = ArgFloat(Args, 1, 0.0f);
+			const float Litres = FMath::Clamp(ArgFloat(Args, 2, 2.0f), 0.01f, 500.0f);
+			const float Speed = ArgFloat(Args, 3, 8.0f) * 100.0f;
+			const float Heading = FMath::DegreesToRadians(ArgFloat(Args, 4, 0.0f));
+			const float Elev = FMath::DegreesToRadians(ArgFloat(Args, 5, 45.0f));
+			const float Spread = ArgFloat(Args, 6, 12.0f);
+			const FVector Origin = Box->GetActorLocation();
+			const FVector2D World(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
+			if (!Box->IsInsideBox(World))
+			{
+				UE_LOG(LogDirt, Warning, TEXT("(%.1f, %.1f) m is outside the box."), Xm, Ym);
+				return;
+			}
+
+			Box->RefreshReadback();
+			const FLinearColor S = Box->GetStateAtWorld(World);
+			const float Ground = Box->GetSurfaceHeightAtWorld(World);
+			const float RadiusCm = FMath::Max(40.0f, Box->Settings.TexelSizeCm() * 3.0f);
+			// Never scoop more than the ground under the shovel has.
+			const float Available = FMath::Max(S.R, 0.0f) * PI * RadiusCm * RadiusCm * 0.4f;
+			const float VolumeCm3 = FMath::Min(Litres * 1000.0f, Available);
+
+			const FVector Vel(FMath::Cos(Heading) * FMath::Cos(Elev) * Speed, FMath::Sin(Heading) * FMath::Cos(Elev) * Speed, FMath::Sin(Elev) * Speed);
+			Box->ScoopDirt(World, RadiusCm, VolumeCm3);
+			Box->SpawnParcels(FVector(World.X, World.Y, Ground + 10.0f), Vel, Spread, VolumeCm3, S.B, S.G);
+			UE_LOG(LogDirt, Log, TEXT("Threw %.2f L of solid dirt from (%.1f, %.1f) m at %.1f m/s, parcels of %.2f cm."),
+				VolumeCm3 / 1000.0f, Xm, Ym, Speed / 100.0f, Box->ChooseParcelDiameterCm(S.B, S.G));
 		}));

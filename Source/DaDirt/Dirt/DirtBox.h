@@ -1,8 +1,8 @@
 // DaDirt — the Dirtbox.
 //
 // One actor that owns the whole dirt simulation: the GPU textures, the display
-// mesh, the fixed-step sim tick, the deformation brushes, the debug views and the
-// volume-conservation audit.
+// mesh, the fixed-step sim tick, the deformation brushes, the water, the parcels
+// (dirt in the air), the debug views and the volume-conservation audit.
 //
 // Drop one into a level and it builds its own testbed terrain. Do not rotate or
 // scale it: the display material offsets vertices straight up in world space by
@@ -21,6 +21,7 @@ class UTexture2D;
 class UTextureRenderTarget2D;
 
 struct FDirtWindowSlot;
+struct FDirtParcelResources;
 
 /**
  * A small patch of the dirt state that is kept current from the GPU without ever
@@ -33,18 +34,29 @@ struct FDirtHeightWindow
 	/** Texel origin of Data within the sim grid. */
 	FIntPoint Origin = FIntPoint::ZeroValue;
 	int32 Size = 0;
-	/** Size x Size texels: R layer cm, G compaction, B moisture, A surface height cm. */
+	/** Size x Size texels: R solid layer cm, G compaction, B moisture, A surface height cm. */
 	TArray<FLinearColor> Data;
 	bool bValid = false;
 };
 
-/** Result of a volume-conservation audit. */
+/** Result of a volume-conservation audit. Volumes are SOLID cubic metres unless named otherwise. */
 struct FDirtAudit
 {
+	/** Solid dirt in the ground. */
+	double GroundM3 = 0.0;
+	/** Solid dirt in the air, carried by live parcels. */
+	double AirborneM3 = 0.0;
+	/** Ground + airborne: what must match the baseline. */
 	double VolumeM3 = 0.0;
 	double BaselineM3 = 0.0;
 	double DriftM3 = 0.0;
 	double DriftPercent = 0.0;
+	/** The same ground dirt measured with a ruler: bulk, voids included. */
+	double BulkM3 = 0.0;
+	/** Water in the pores and ponded on the surface. */
+	double PoreWaterM3 = 0.0;
+	double PondM3 = 0.0;
+	int32 LiveParcels = 0;
 	float MinLayerCm = 0.0f;
 	float MaxLayerCm = 0.0f;
 	int32 BedrockExposedCells = 0;
@@ -91,6 +103,18 @@ public:
 			  meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
 	FSoftObjectPath GroundMaterialPath = FSoftObjectPath(TEXT("/Game/Dirt/M_DirtGround.M_DirtGround"));
 
+	/**
+	 * Material for the parcels (dirt in the air): one tiny mesh per parcel, moved
+	 * in the vertex shader from the ParcelPos texture. Tools/BuildDirtAssets.py
+	 * builds it.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt")
+	TObjectPtr<UMaterialInterface> ParcelMaterial;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt",
+			  meta = (AllowedClasses = "/Script/Engine.MaterialInterface"))
+	FSoftObjectPath ParcelMaterialPath = FSoftObjectPath(TEXT("/Game/Dirt/M_DirtParcel.M_DirtParcel"));
+
 	/** Which channel the ground is coloured by. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "DaDirt|Debug")
 	EDirtDebugView DebugView = EDirtDebugView::Dirt;
@@ -107,21 +131,47 @@ public:
 
 	/**
 	 * Queue a deformation stroke. World XY in centimetres, radius in cm.
-	 * For Dig and Raise, Amount is the peak depth/height in cm and the stroke is
-	 * zero-sum: the core loses exactly what the rim gains. For the other modes
-	 * Amount is a 0-1 strength.
+	 * For Dig and Raise, Amount is the peak depth/height in cm of loose ground
+	 * and the stroke is zero-sum: the core loses exactly what the rim gains. For
+	 * the other modes Amount is a 0-1 strength. bProctor makes a Pack stroke
+	 * obey the moisture curve (a tyre); tools pack regardless.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
-	void ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode, float DisturbOverride = -1.0f);
+	void ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode,
+					float DisturbOverride = -1.0f, bool bProctor = false);
 
 	/**
-	 * Move a volume of dirt (cm^3) from one spot to another with no rim on either
-	 * end: a Scoop at From and a Dump at To of exactly the same volume. Zero-sum
-	 * except where the scoop hits bedrock, which the audit reports. A spinning
-	 * tyre roosting dirt backwards is this; so, later, is a particle landing.
+	 * Move a volume of SOLID dirt (cm^3) from one spot to another with no rim on
+	 * either end: a Scoop at From and a Dump at To of exactly the same volume.
+	 * Zero-sum except where the scoop hits bedrock, which the audit reports.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
 	void TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3);
+
+	/**
+	 * Take a volume of solid dirt (cm^3) out of the ground with no rim. The
+	 * caller owes it back: pair with SpawnParcels so it lands again somewhere.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "DaDirt")
+	void ScoopDirt(FVector2D FromWorldXYCm, float RadiusCm, float VolumeCm3, float DisturbOverride = -1.0f);
+
+	/**
+	 * Throw a volume of solid dirt (cm^3) into the air from a world position with
+	 * a velocity (cm/s), spread over a cone. It becomes parcels sized by the
+	 * settings, flies, lands, and is deposited back into the ground. With parcels
+	 * disabled it is dumped straight back where it started.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "DaDirt")
+	void SpawnParcels(FVector WorldPosCm, FVector VelocityCmS, float SpreadDeg, float VolumeCm3,
+					  float Moisture, float Compaction);
+
+	/**
+	 * Pour water on a spot, like a water truck. It lands as surface water and
+	 * soaks in at the soil's own rate: gone in seconds on loose dirt, a puddle on
+	 * hardpack. World XY in cm, radius in cm, volume in litres.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "DaDirt")
+	void PourWater(FVector2D WorldXYCm, float RadiusCm, float Litres);
 
 	/** Rebuild the terrain and throw away everything that has been dug. */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
@@ -154,8 +204,30 @@ public:
 	/** Total surface height in cm at a world XY, from the last readback. */
 	float GetSurfaceHeightAtWorld(FVector2D WorldXYCm) const;
 
+	/** Full dirt state at a world XY from the last readback: R solid cm, G compaction, B moisture, A surface. */
+	FLinearColor GetStateAtWorld(FVector2D WorldXYCm) const;
+
+	/** Ponded water depth in cm at a world XY, from the last readback. */
+	float GetPondAtWorld(FVector2D WorldXYCm) const;
+
 	/** True if the world XY lies inside the box. */
 	bool IsInsideBox(FVector2D WorldXYCm) const;
+
+	/** Parcel counters from the GPU, a frame or two old. Indices are DirtSim::ParcelCounter*. */
+	void GetParcelCounters(uint32 OutCounters[8]) const;
+
+	/** Parcels alive right now (pool minus free), a frame or two old. */
+	int32 GetLiveParcels() const;
+
+	/** Show or hide the parcel mesh (it is also hidden when parcels are switched off). */
+	void SetParcelsVisible(bool bVisible);
+
+	/**
+	 * The parcel size the soil says a throw breaks into: clods held together by
+	 * cohesion in damp loam, grains in dry sand. Honours ParcelDiameterCm when
+	 * that is set, and the min/max either way.
+	 */
+	float ChooseParcelDiameterCm(float Moisture, float Compaction) const;
 
 	// --- height windows (non-stalling ground queries for physics objects) ------
 
@@ -192,11 +264,15 @@ private:
 	void BuildTerrainAndUpload();
 	void RebuildTerrainAndMesh();
 	void BuildDisplayMesh();
+	void BuildParcelMesh();
 	void UpdateMaterialParameters();
 	void StepSimulation(bool bForceReinit);
 
 	/** Harvest finished window readbacks and enqueue the next ones. Once per frame. */
 	void UpdateHeightWindows();
+
+	/** Pull the latest parcel counters over from the render thread. Once per frame. */
+	void UpdateParcelCounters();
 
 	TArray<TSharedPtr<FDirtWindowSlot, ESPMode::ThreadSafe>> Windows;
 
@@ -208,7 +284,7 @@ private:
 	 * conserve volume exactly on this grid.
 	 */
 	FDirtBrushStroke MakeStroke(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode,
-								float DisturbOverride = -1.0f) const;
+								float DisturbOverride = -1.0f, bool bProctor = false) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UProceduralMeshComponent> GroundMesh;
@@ -216,11 +292,18 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> GroundMID;
 
+	/** One tiny tetrahedron per parcel slot, positioned by the material. */
+	UPROPERTY(Transient)
+	TObjectPtr<UProceduralMeshComponent> ParcelMesh;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialInstanceDynamic> ParcelMID;
+
 	/** Static bedrock, R32F. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> BaseHeightTex;
 
-	/** CPU-built starting state, RGBA16F. Kept so Reset can reseed from it. */
+	/** CPU-built starting state, RGBA32F. Kept so Reset can reseed from it. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> InitialStateTex;
 
@@ -229,6 +312,13 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> StateB;
+
+	/** Ponded surface water, cm. R32F, ping-ponged by the water pass. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> PondA;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> PondB;
 
 	/** What the material samples for displacement. */
 	UPROPERTY(Transient)
@@ -240,21 +330,62 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> DebugRT;
 
+	/** Parcel state, ParcelPoolSide^2 texels each. See DirtParcels.usf. */
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> ParcelPosRT;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> ParcelVelRT;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTextureRenderTarget2D> ParcelPropRT;
+
+	/** Free list, counters and deposit accumulators. Render thread owns the contents. */
+	TSharedPtr<FDirtParcelResources, ESPMode::ThreadSafe> ParcelGPU;
+
 	/** Strokes waiting for the next sim step. */
 	TArray<FDirtBrushStroke> PendingStrokes;
 
+	/** Throws waiting for the next sim step. */
+	TArray<FDirtParcelSpawn> PendingSpawns;
+
+	/** Water pours waiting for the next sim step. */
+	TArray<FDirtWaterSource> PendingWater;
+
 	/** CPU mirror of the dirt state, from the last RefreshReadback. */
 	TArray<FLinearColor> Readback;
+
+	/** CPU mirror of the pond, from the last RefreshReadback. */
+	TArray<float> PondReadback;
 
 	/** Bedrock kept on the CPU too, so audits and height probes need no GPU round trip. */
 	TArray<float> BedrockCm;
 
 	TArray<FString> FeatureLog;
 
+	/** Solid m^3 in the ground at build time. */
 	double BaselineVolumeM3 = 0.0;
 
 	/** Lap length in metres when a track is built, 0 for the testbed. */
 	float LapLengthM = 0.0f;
+
+	/** Latest parcel counters seen on the game thread. */
+	uint32 ParcelCounters[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	int32 ParcelPoolCount = 0;
+	uint32 SpawnSeed = 1;
+
+	/**
+	 * The parcel mesh is split into sections of this many slots. Live parcels
+	 * always occupy the lowest slots (the free list is a stack that starts with
+	 * slot 0 on top), so only the sections up to the highest live slot need
+	 * drawing, and an idle pool of a quarter million costs nothing.
+	 */
+	static constexpr int32 ParcelSectionSlots = 8192;
+	int32 ParcelSectionsVisible = 0;
+	/** Slots asked for this frame, so a burst shows up before the GPU count arrives. */
+	int32 ParcelSlotsRequested = 0;
+	float ParcelSectionHoldSeconds = 0.0f;
+	void UpdateParcelSections(float DeltaSeconds);
 
 	float StepAccumulator = 0.0f;
 	bool bResourcesReady = false;

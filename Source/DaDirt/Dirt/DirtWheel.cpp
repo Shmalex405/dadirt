@@ -45,7 +45,9 @@ void ADirtWheel::BeginPlay()
 	Box = ADirtBox::GetActive();
 	if (ADirtBox* B = Box.Get())
 	{
-		const int32 Texels = FMath::Clamp(FMath::CeilToInt(RadiusM * CmPerM * 8.0f / B->GetTexelSizeCm()), 16, 128);
+		// Wide enough that a wheel at 12 m/s can outrun the readback's two-frame
+		// lag, even through a hitch, without falling off its own window.
+		const int32 Texels = FMath::Clamp(FMath::CeilToInt(RadiusM * CmPerM * 16.0f / B->GetTexelSizeCm()), 24, 160);
 		WindowId = B->CreateHeightWindow(Texels);
 		B->SetHeightWindowCentre(WindowId, FVector2D(GetActorLocation()));
 	}
@@ -102,13 +104,40 @@ void ADirtWheel::Tick(float DeltaSeconds)
 	{
 		StatusTimer = 0.0f;
 		const FVector P = GetActorLocation();
+		ADirtBox* B = Box.Get();
 		UE_LOG(LogDirtWheel, Log,
-			TEXT("Wheel at (%.1f, %.1f) m hdg %.0f: %.1f m/s (%.0f km/h), wheel %.1f m/s, slip %+.1f m/s, grip %.2f, ")
-			TEXT("compaction %.2f, moisture %.2f, %s, odometer %.1f m, roost %.1f L"),
+			TEXT("Wheel at (%.1f, %.1f) m hdg %.0f: %.1f m/s (%.0f km/h), wheel %.1f m/s, slip %+.1f m/s (i %+.2f), ")
+			TEXT("grip %.2f, traction %.0f N, sink %.1f cm, resist %.0f N, compaction %.2f, moisture %.2f, %s, ")
+			TEXT("odometer %.1f m, roost %.2f L solid, %d parcels live"),
 			P.X / CmPerM, P.Y / CmPerM, HeadingDeg, VelocityMps.Size(), VelocityMps.Size() * 3.6f,
-			WheelOmega * RadiusM, LastSlipMps, LastFriction, LastCompaction, LastMoisture,
-			bOnGround ? TEXT("on ground") : TEXT("airborne"), OdometerM, RoostLitresTotal);
+			WheelOmega * RadiusM, LastSlipMps, LastSlipRatio, LastFriction, LastTractionN, LastSinkageCm, LastResistanceN,
+			LastCompaction, LastMoisture, bOnGround ? TEXT("on ground") : TEXT("airborne"), OdometerM, RoostLitresTotal,
+			B ? B->GetLiveParcels() : 0);
 	}
+}
+
+void ADirtWheel::SoilResponse(float Compaction, float Moisture, float LoadN,
+							  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const
+{
+	// Bekker: p = (k_c / b + k_phi) z^n, with the rigid wheel's contact length
+	// l = 2 sqrt(2 r z) and p = N / (b l). Both sides are power laws in z, so
+	// the sinkage has a closed form:  z = (N / (K b 2 sqrt(2 r)))^(1 / (n + 1/2)).
+	const float C = FMath::Clamp(Compaction, 0.0f, 1.0f);
+	const float Sat = FMath::SmoothStep(0.55f, 1.0f, FMath::Clamp(Moisture, 0.0f, 1.0f));
+	const float Weak = 1.0f - SaturationStiffnessLoss * Sat;
+
+	const float N = FMath::Lerp(BekkerNLoose, BekkerNDense, C);
+	const float Kc = FMath::Exp(FMath::Lerp(FMath::Loge(FMath::Max(BekkerKcLoose, 0.01f)), FMath::Loge(FMath::Max(BekkerKcDense, 0.01f)), C)) * Weak;
+	const float Kphi = FMath::Exp(FMath::Lerp(FMath::Loge(FMath::Max(BekkerKphiLoose, 1.0f)), FMath::Loge(FMath::Max(BekkerKphiDense, 1.0f)), C)) * Weak;
+	const float K = Kc / WidthM + Kphi;                                   // kN / m^(n+2)
+	const float LoadKN = FMath::Max(LoadN, 1.0f) * 0.001f;
+
+	const float Z = FMath::Pow(LoadKN / (K * WidthM * 2.0f * FMath::Sqrt(2.0f * RadiusM)), 1.0f / (N + 0.5f));
+	OutSinkageM = FMath::Clamp(Z, 0.0f, RadiusM * 0.5f);
+	OutContactLengthM = FMath::Max(2.0f * FMath::Sqrt(2.0f * RadiusM * OutSinkageM), 0.03f);
+
+	// Motion resistance is the work of pressing the rut: R = b K z^(n+1) / (n+1).
+	OutResistanceN = 1000.0f * WidthM * K * FMath::Pow(OutSinkageM, N + 1.0f) / (N + 1.0f);
 }
 
 void ADirtWheel::Step(float Dt)
@@ -153,16 +182,27 @@ void ADirtWheel::Step(float Dt)
 	}
 	if (!bHaveGround)
 	{
-		// Off the simulated ground (outside the box or a focused region): park
-		// rather than coast off into nothing.
-		VelocityMps.X = VelocityMps.Y = 0.0f;
+		// No ground data here. Off the simulated ground (outside the box or a
+		// focused region) the wheel parks rather than coasting off into nothing;
+		// inside it the window is just lagging behind a fast wheel, so keep
+		// rolling on for a substep and hold the current height.
+		const bool bInside = B && B->IsInsideBox(FVector2D(PosM) * CmPerM);
+		if (!bInside)
+		{
+			VelocityMps.X = VelocityMps.Y = 0.0f;
+		}
 		if (B && PosM.Z - RadiusM < B->GetActorLocation().Z / CmPerM)
 		{
 			PosM.Z = B->GetActorLocation().Z / CmPerM + RadiusM;
 			VelocityMps.Z = 0.0f;
 		}
+		else if (bInside)
+		{
+			PosM.Z -= VelocityMps.Z * Dt;         // undo this substep's fall: no data, no verdict
+			VelocityMps.Z = 0.0f;
+		}
 		SetActorLocation(PosM * CmPerM);
-		bOnGround = false;
+		bOnGround = bInside;
 		return;
 	}
 
@@ -173,17 +213,8 @@ void ADirtWheel::Step(float Dt)
 	// --- what the dirt under the tyre is like --------------------------------------
 	const float Compaction = FMath::Clamp(State.G, 0.0f, 1.0f);
 	const float Moisture = FMath::Clamp(State.B, 0.0f, 1.0f);
-
-	// Mohr-Coulomb grip: friction from the soil's phi, plus cohesion times the
-	// contact patch. Same strength model the slump uses.
-	float TanPhi = 0.6f, CohesionKPa = 0.0f;
-	DirtSoilStrength(Compaction, Moisture, B->Settings, TanPhi, CohesionKPa);
-	const float PatchAreaM2 = WidthM * ContactPatchLengthM;
-	const float Friction = TanPhi + (CohesionKPa * 1000.0f * PatchAreaM2) / (MassKg * Gravity);
-	const float RollingResistance = FMath::Lerp(RollingResistanceLoose, RollingResistancePacked, Compaction);
 	LastCompaction = Compaction;
 	LastMoisture = Moisture;
-	LastFriction = Friction;
 
 	// --- wheel spin from the engine and brake --------------------------------------
 	const float Inertia = 0.5f * WheelMassKg * RadiusM * RadiusM;
@@ -194,16 +225,31 @@ void ADirtWheel::Step(float Dt)
 	const float TopEnd = (Throttle * TyreSpeed > 0.0f)
 		? FMath::Clamp(1.0f - FMath::Abs(TyreSpeed) / FMath::Max(MaxWheelSpeedMps, 1.0f), 0.0f, 1.0f)
 		: 1.0f;
-	float AxleTorque = Throttle * MaxDriveTorqueNm * TopEnd;
-	if (Brake > 0.0f)
+	const float AxleTorque = Throttle * MaxDriveTorqueNm * TopEnd;
+	const float BrakeTorque = Brake * MaxBrakeTorqueNm;
+
+	// A brake is a friction clutch: it resists whatever net torque is trying to
+	// turn the wheel, up to its limit, and holds the wheel dead still below it.
+	// Applying it as a fixed torque let the ground's reaction spin the wheel a
+	// few tenths of a metre per second each way every substep, which the roost
+	// logic read as endless slip at a standstill.
+	const auto ApplyBrake = [&](float NetTorque) -> float
 	{
-		// Brakes oppose rotation and can hold the wheel at zero.
-		const float BrakeTorque = Brake * MaxBrakeTorqueNm;
-		const float StopTorque = FMath::Abs(WheelOmega) * Inertia / Dt;
-		AxleTorque -= FMath::Sign(WheelOmega) * FMath::Min(BrakeTorque, StopTorque);
-	}
+		if (BrakeTorque <= 0.0f)
+		{
+			return NetTorque;
+		}
+		const float Needed = -(WheelOmega * Inertia / Dt + NetTorque);     // torque that would stop and hold it
+		if (FMath::Abs(Needed) <= BrakeTorque)
+		{
+			WheelOmega = 0.0f;
+			return 0.0f;
+		}
+		return NetTorque + FMath::Sign(Needed) * BrakeTorque;
+	};
 
 	float SlipMps = 0.0f;
+	float SlipRatio = 0.0f;
 
 	if (bOnGround)
 	{
@@ -229,17 +275,43 @@ void ADirtWheel::Step(float Dt)
 		const float VForward = FVector::DotProduct(VelocityMps, FwdGround);
 		const float VLateral = FVector::DotProduct(VelocityMps, Lateral);
 
-		// Longitudinal: traction from slip. Positive slip = wheelspin.
+		// --- the soil's answer to this load ----------------------------------------------
+		float SinkageM, ContactLengthM, ResistanceN;
+		SoilResponse(Compaction, Moisture, Load, SinkageM, ContactLengthM, ResistanceN);
+
+		// Mohr-Coulomb ceiling on traction: cohesion over the whole contact patch
+		// plus friction under the load. Cohesion gives grip even under a light
+		// wheel; saturation takes both away.
+		float TanPhi = 0.6f, CohesionKPa = 0.0f;
+		DirtSoilStrength(Compaction, Moisture, B->Settings, TanPhi, CohesionKPa);
+		const float PatchAreaM2 = WidthM * ContactLengthM;
+		const float MaxTractionN = CohesionKPa * 1000.0f * PatchAreaM2 + Load * TanPhi;
+		LastFriction = MaxTractionN / FMath::Max(Load, 1.0f);
+
+		// Janosi-Hanamoto: shear stress builds along the patch with the shear
+		// displacement j = i x, so the mean over the patch of (1 - e^(-j/K)) is
+		// the fraction of the ceiling the tyre actually gets at this slip.
 		SlipMps = WheelOmega * RadiusM - VForward;
-		const float TractionN = Friction * Load * FMath::Tanh(SlipMps / FMath::Max(SlipScaleMps, 0.05f));
-		const float RollingN = -FMath::Sign(VForward) * RollingResistance * Load * FMath::Min(1.0f, FMath::Abs(VForward) / 0.2f);
+		SlipRatio = SlipMps / FMath::Max3(FMath::Abs(WheelOmega * RadiusM), FMath::Abs(VForward), 0.3f);
+		const float Kj = FMath::Lerp(ShearModulusLooseM, ShearModulusDenseM, Compaction);
+		const float A = FMath::Abs(SlipRatio) * ContactLengthM / Kj;
+		const float Build = (A > 1e-4f) ? 1.0f - (1.0f - FMath::Exp(-A)) / A : 0.0f;
+		const float TractionN = FMath::Sign(SlipRatio) * MaxTractionN * Build;
+
+		// Motion resistance: the rut being pressed, plus a floor for hardpack.
+		const float RollingN = -FMath::Sign(VForward) * (ResistanceN + BaseRollingResistance * Load)
+			* FMath::Min(1.0f, FMath::Abs(VForward) / 0.2f);
 
 		VelocityMps += FwdGround * ((TractionN + RollingN) / MassKg) * Dt;
-		WheelOmega += ((AxleTorque - TractionN * RadiusM) / Inertia) * Dt;
+		WheelOmega += (ApplyBrake(AxleTorque - TractionN * RadiusM) / Inertia) * Dt;
+
+		LastTractionN = TractionN;
+		LastResistanceN = ResistanceN;
+		LastSinkageCm = SinkageM * CmPerM * (1.0f + SlipSinkage * FMath::Abs(SlipRatio));
 
 		// Lateral: the tyre resists sliding sideways up to its grip; past that it
 		// slithers, which is what happens in mud.
-		const float LateralN = -FMath::Clamp(VLateral / 0.3f, -1.0f, 1.0f) * Friction * Load;
+		const float LateralN = -FMath::Clamp(VLateral / 0.3f, -1.0f, 1.0f) * MaxTractionN;
 		const float LateralImpulse = FMath::Clamp(LateralN * Dt, -FMath::Abs(VLateral) * MassKg, FMath::Abs(VLateral) * MassKg);
 		VelocityMps += Lateral * (LateralImpulse / MassKg);
 
@@ -251,8 +323,11 @@ void ADirtWheel::Step(float Dt)
 		const float Moved = FMath::Abs(VForward) * Dt;
 		OdometerM += Moved;
 		StrokeDistanceM += Moved;
-		StrokeSlipM += FMath::Min(FMath::Abs(SlipMps), RoostSlipCapMps) * Dt;
+		StrokeSinkageM += SinkageM * (1.0f + SlipSinkage * FMath::Abs(SlipRatio)) * Moved;
+		const float ShearSpeed = FMath::Max(FMath::Abs(SlipMps) - RoostSlipThresholdMps, 0.0f);
+		StrokeSlipM += FMath::Min(ShearSpeed, RoostSlipCapMps) * Dt;
 		StrokeSlipSign = SlipMps;
+		StrokeSlipRatio = SlipRatio;
 		StrokeTimeS += Dt;
 
 		// One batch of strokes every sixth of a radius travelled, or every 1/20 s
@@ -263,46 +338,62 @@ void ADirtWheel::Step(float Dt)
 			const float HalfWidthCm = WidthM * 0.5f * CmPerM;
 			const float LoadFactor = Load / (MassKg * Gravity);
 
-			// Rolling presses a rut and packs the line. Strokes are spaced along the
-			// ground, so a cell sees about (stroke spacing / cell size) of a pass per
-			// stroke; scaling by that makes "per pass" mean per pass whatever the
-			// grid resolution. Loose dirt takes the rut, packed dirt takes little more.
+			// Rolling presses the Bekker sinkage as a rut and packs the line at
+			// the Proctor rate. Strokes are spaced along the ground, so a cell
+			// sees about (stroke spacing / cell size) of a pass per stroke;
+			// scaling by that makes "per pass" mean per pass whatever the grid
+			// resolution. The sinkage already knows the soil: loose sinks
+			// centimetres, hardpack a millimetre, so a rut saturates as its floor
+			// packs without any rule saying so.
 			if (StrokeDistanceM > 0.0f)
 			{
 				const float PassFraction = StrokeDistanceM * CmPerM / B->GetTexelSizeCm();
-				const float RutCm = RutCmPerPass * PassFraction * LoadFactor * (1.0f - 0.85f * Compaction);
+				const float MeanSinkageCm = StrokeSinkageM / StrokeDistanceM * CmPerM;
+				const float RutCm = PlasticSinkage * MeanSinkageCm * PassFraction * LoadFactor;
 				if (RutCm > 0.005f)
 				{
 					// No disturb: a tyre pressing a rut is packing, not breaking up.
 					B->ApplyBrush(ContactCm, HalfWidthCm * 1.2f, RutCm, EDirtBrushMode::Dig, 0.0f);
 				}
-				B->ApplyBrush(ContactCm, HalfWidthCm * 1.3f, PackPerPass * PassFraction * LoadFactor, EDirtBrushMode::Pack);
+				B->ApplyBrush(ContactCm, HalfWidthCm * 1.3f, PackPerPass * PassFraction * LoadFactor,
+							  EDirtBrushMode::Pack, -1.0f, /*bProctor*/ true);
 			}
 
-			// Slip scoops dirt out from under the tyre and throws it. Wheelspin
-			// throws it backwards (roost); a locked brake shoves it forwards.
+			// Past the traction limit the lugs shear the soil off and fling it at
+			// about the slip speed: roost. Volume rate = width x failure depth x
+			// slip speed. It leaves the ground as parcels and comes back down as
+			// parcels; nothing is dumped by fiat.
 			if (StrokeSlipM > 0.001f)
 			{
 				// Never scoop more than the layer under the tyre can give: past
-				// bedrock there is nothing to throw, and the shader's clamp would
-				// otherwise turn the paired Dump into dirt from nowhere.
+				// bedrock there is nothing to throw.
 				const float ScoopRadiusCm = HalfWidthCm * 1.1f;
 				const float AvailableCm3 = FMath::Max(State.R, 0.0f) * PI * ScoopRadiusCm * ScoopRadiusCm * 0.4f;
-				const float WantedCm3 = RoostLitresPerSlipMetre * StrokeSlipM * LoadFactor * (1.0f - 0.6f * Compaction) * 1000.0f;
+				const float FailureDepthCm = LugFailureDepthCm * (1.0f - 0.6f * Compaction);
+				const float SolidFraction = DirtSolidFraction(Compaction, B->Settings);
+				const float WantedCm3 = WidthM * CmPerM * FailureDepthCm * SolidFraction * StrokeSlipM * CmPerM * LoadFactor;
 				const float VolumeCm3 = FMath::Min(WantedCm3, AvailableCm3);
-				const float Litres = VolumeCm3 / 1000.0f;
-				const float ThrowDir = (StrokeSlipSign >= 0.0f) ? -1.0f : 1.0f;
-				const float ThrowM = RadiusM * RoostDistanceRadii + FMath::Min(FMath::Abs(StrokeSlipSign), 15.0f) * 0.12f;
-				const FVector2D LandCm = ContactCm + FVector2D(FwdGround.X, FwdGround.Y) * ThrowDir * ThrowM * CmPerM;
 
-				if (VolumeCm3 > 1.0f)
+				if (VolumeCm3 > 0.5f)
 				{
-					B->TransferDirt(ContactCm, ScoopRadiusCm, LandCm, HalfWidthCm * 2.2f, VolumeCm3);
-					RoostLitresTotal += Litres;
+					const float ThrowDir = (StrokeSlipSign >= 0.0f) ? -1.0f : 1.0f;     // wheelspin throws back, a locked brake forward
+					const float EjectMps = FMath::Min(FMath::Abs(StrokeSlipSign), 25.0f) * RoostSpeedFraction;
+					const float Elev = FMath::DegreesToRadians(RoostElevationDeg);
+					const FVector Dir = (FwdGround * ThrowDir * FMath::Cos(Elev) + Normal * FMath::Sin(Elev)).GetSafeNormal();
+					const FVector LaunchCm = FVector(ContactCm.X, ContactCm.Y, GroundCm) + FwdGround * ThrowDir * RadiusM * 0.4f * CmPerM
+						+ FVector(0, 0, 4.0f);
+
+					// A gentle disturb: the lugs shear the top off, the floor under
+					// the patch is still being pressed. Full disturb wiped the line's
+					// packing every stroke and the rut never firmed up.
+					B->ScoopDirt(ContactCm, ScoopRadiusCm, VolumeCm3, 0.08f);
+					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM, RoostSpreadDeg, VolumeCm3, Moisture, Compaction);
+					RoostLitresTotal += VolumeCm3 / 1000.0f;
 				}
 			}
 
 			StrokeDistanceM = 0.0f;
+			StrokeSinkageM = 0.0f;
 			StrokeSlipM = 0.0f;
 			StrokeTimeS = 0.0f;
 		}
@@ -310,13 +401,14 @@ void ADirtWheel::Step(float Dt)
 	else
 	{
 		// In the air the wheel just spins up or down.
-		WheelOmega += (AxleTorque / Inertia) * Dt;
+		WheelOmega += (ApplyBrake(AxleTorque) / Inertia) * Dt;
 	}
 
 	// Engine braking / bearing drag so a free wheel eventually stops.
 	WheelOmega *= FMath::Max(0.0f, 1.0f - 0.15f * Dt);
 
 	LastSlipMps = SlipMps;
+	LastSlipRatio = SlipRatio;
 	SpinAngle += WheelOmega * Dt;
 
 	SetActorLocation(PosM * CmPerM);

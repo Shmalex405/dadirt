@@ -20,8 +20,9 @@ settles at its friction angle (32°), saturated mud at ~14°, and cohesion from
 moisture and packing lets faces stand vertical up to the Culmann height (a damp
 1 m sandcastle wall stands; a barely damp one keeps 60 cm; a soaked one runs).
 Probes have to land within a couple of degrees / centimetres of the prediction,
-and volume drift has to stay at 0.000 m³. *(Phase A measured 2026-09-21: all of
-the above.)*
+and volume drift has to stay at 0.000 m³. *(Phases A–E measured 2026-09-21:
+strength, solid volume, water, terramechanics and parcels, sections 9b–9f. The
+audit counts solids, in the ground and in the air.)*
 
 **G2 — A rut reads as a rut.** *(resolution: done. persistence: not yet.)*
 A rear tyre is 110–120 mm wide, so a rut is ~12 cm across at the bottom and 25–35 cm
@@ -120,7 +121,15 @@ a steep face while packed dirt holds it.
       volume conservation predicts; damp holds 41°, mud runs to 15°, packed does
       not move; volume drift < 0.0001 m³. Slumping is now 8-neighbour — the
       4-neighbour version let diagonals stand at 41° and made square pyramids
-- [ ] Riding over loose dirt packs it down — needs the test wheel (1e)
+- [x] Riding over loose dirt packs it down: four passes take a line from 0.25 to
+      0.91 compaction, at the Proctor rate (damp packs fastest, mud not at all)
+- [x] **Solid volume (2026-09-21):** the layer stores solids; packing drops the
+      surface 2.8 cm and loosening lifts it 0.9 cm with zero drift. A rut from
+      compaction alone is real now. `docs/SoilPhysics.md` 9c
+- [x] **Water (2026-09-21):** run-off, soaking at the soil's conductivity,
+      drainage to field capacity, drying to ambient. 400 L on loose dirt is gone
+      in 20 s; the same on hardpack stands 9 cm deep in a hole. `DaDirt.Rain`,
+      `DaDirt.Water`. 9d
 - [ ] Tuning pass on feel (rates, moisture curve) now that the numbers are trusted
 
 ### 1b-test — The testbed *(new, code written)*
@@ -182,17 +191,26 @@ worst class of bug available: invisible, plausible-looking, and a lie.
 - Known limit: 384 m site at 1024 cells is **37.5 cm per cell**, so this mode is for
   layout and scale. Dirt behaviour gets tuned in testbed mode at 12.5 cm. See G2.
 
-### 1c — Loose dirt particle layer ★ first-class, not decoration
+### 1c — Loose dirt particle layer ★ first-class, not decoration *(first version running, 2026-09-21)*
 Alex (2026-09-21): individual particles "in their most intense but clean sense"
 are half of what the dirt simulator *is*. Push this as hard as the hardware allows.
-- Niagara GPU particles spawn when dirt is moved aggressively (roost, throws,
-  spray off a berm, grains shedding down an over-steep face)
-- Particles collide with the heightfield, roll/bounce, then settle and
-  write their volume back into the ground (nothing vanishes; the hand-off both
-  ways is volume-conserving and audited)
-- Clean: no popping, no fake puffs; particles are dirt that temporarily left the
-  heightfield, and the audit still balances with them in the air
-- Budget by measurement on the Arc: find the particle count that holds 60 fps
+Built as **parcels**, our own GPU compute passes rather than Niagara (materials
+cannot read structured buffers and Niagara cannot be authored from text):
+- [x] Parcels spawn from roost and from `DaDirt.Throw`; each carries a real solid
+      volume and its moisture, scooped out of the heightfield
+- [x] They fly with quadratic drag, hit the heightfield, bounce (dry) or splat
+      (mud), roll with Coulomb friction at the ground's own friction angle so
+      they keep going down faces steeper than repose, come to rest and deposit
+- [x] Both hand-offs are exact: 4 L thrown = 0.0040 m³ in the air, total
+      unchanged; 143,000 parcels through a burnout, drift −0.00001 m³
+- [x] Budget measured on the Arc: the parcel system costs ~0.5 ms at 74,000 live
+      (4 mm clods, a full roost at 40–46 fps); the frame is the heightfield's.
+      Size is one knob: `DaDirt.Parcel <cm>` or `soil` (clods sized by cohesion).
+      `docs/SoilPhysics.md` 9f
+- [ ] Spray off a berm and grains shedding down an over-steep face (only roost
+      and throws spawn parcels today)
+- [ ] Dust: the sub-millimetre tail as sprites with drag, no audited volume
+- [ ] Parcels hitting the wheel and the (future) rider
 
 ### 1d — Sandbox tools & feel
 - [x] Debug views: dirt, layer depth, compaction, moisture, stability vs repose,
@@ -208,20 +226,21 @@ are half of what the dirt simulator *is*. Push this as hard as the hardware allo
 - [x] A driveable powered wheel (throttle / brake / steer) — the ancestor of the
       bike. `DaDirt.Wheel`, `DaDirt.Drive`, `DaDirt.Anchor`, `DaDirt.Follow`. No
       physics engine: it integrates against the dirt through a height window,
-      with a tyre model (slip → traction, grip from compaction and moisture,
-      rolling drag from looseness) and a 12 cm-wide three-point contact so ruts
-      hold it and berm walls push it back
-- [x] Slip-based digging: wheelspin scoops dirt from under the tyre and throws it
-      backwards with `TransferDirt` (Scoop + Dump, zero-sum); a locked brake
-      shoves it forwards. Anchored burnout: 5 cm hole, pile 1.6 m behind
-- [x] Rolling compaction and rutting: one pass on loose dirt presses ~1.5 cm and
-      packs the line; four passes at 3.9 cm cells gave a 2.4 cm rut with 0.8 cm
-      shoulders, compaction 1.0 on the floor, grip 0.55 → 1.00, and every pass ran
-      in the same rut. Depth saturates as the floor packs, as real ruts do
+      with a 12 cm-wide three-point contact so ruts hold it and berm walls push
+      it back
+- [x] **Terramechanics (2026-09-21):** Bekker sinkage from load and the soil's
+      (n, k_c, k_φ) — 3 cm on the loose pad, 1 mm on hardpack, 9 cm in mud;
+      Janosi–Hanamoto traction building with slip to the Mohr–Coulomb ceiling;
+      motion resistance from pressing the rut; a brake that locks instead of
+      oscillating. 49 km/h in 36 m from rest. `docs/SoilPhysics.md` 9e
+- [x] Roost as parcels: the lugs shear off width × failure depth × slip speed
+      of soil and fling it at 0.85 of the slip speed, 35° up; a locked brake
+      shoves it forwards. Anchored burnout: 5.3 L thrown in 3 s, 15 cm hole
+- [x] Rutting and packing: four passes at 3.9 cm cells gave a 4.3 cm rut with
+      0.5 cm shoulders, floor packed 0.25 → 0.91, sinkage per pass 2.2 → 0.7 cm:
+      the rut saturates because the packed floor barely sinks, no rule needed
 - [ ] Berm carving: repeated cornering builds up a banked wall — the turn works,
       the berm has not been measured yet
-- [ ] Roost as particles: the Scoop half stays, the Dump half becomes airborne
-      grains that land and dump themselves (this is where 1c plugs in)
 - [ ] Keyboard control for Alex (WASD), and a tyre mesh that is not a cylinder
 
 **Phase 1 exit bar:** dig a hole and the dirt piles beside it; piles slump at a

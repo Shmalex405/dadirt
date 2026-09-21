@@ -1,0 +1,57 @@
+# DaDirt Phase B: solid-volume conservation (docs/SoilPhysics.md section 10).
+# The layer now stores solids; bulk height follows from porosity. So:
+#   1. packing the pad drops the surface (a rut from compaction alone) and the
+#      audit still reads zero drift, because no grains moved
+#   2. loosening raises it back
+#   3. a dig is still zero-sum in solids, and the spoil (loose) stands taller
+#      than the hole is deep, because it is fluffier than the ground it came from
+# Pad surface is 60 cm at compaction 0.25 (skin 15 cm -> packing to 1.0 should
+# drop it by 15 * (1 - 0.52/0.66) ~ 3.2 cm; loosening to 0 raises 15 * (0.52/0.52 - 1) = 0).
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Info
+DaDirt.Reset
+wait 1
+DaDirt.Audit
+DaDirt.Probe 3 0
+DaDirt.Probe 3 10
+DaDirt.Probe 3 -10
+
+# --- 1. pack a patch hard, tool-style (no Proctor curve) ---------------------------------
+DaDirt.Pack 3 10 300 1
+wait 1 packed
+DaDirt.Probe 3 10
+DaDirt.Probe 3 8
+DaDirt.Audit
+
+# --- 2. loosen a patch fully -------------------------------------------------------------
+DaDirt.Loosen 3 -10 300 1
+wait 1 loosened
+DaDirt.Probe 3 -10
+DaDirt.Audit
+
+# --- 3. dig: the hole and its spoil -----------------------------------------------------
+DaDirt.Dig 3 0 200 30
+wait 3 dug
+DaDirt.Probe 3 0
+DaDirt.Probe 3 2.5
+DaDirt.Probe 3 3.5
+DaDirt.Audit
+camera -4 0 3 -25 0
+wait 0.4
+screenshot solid_10_pack_loosen_dig
+DaDirt.DebugView 2
+wait 0.4
+screenshot solid_11_compaction
+DaDirt.DebugView 1
+wait 0.4
+screenshot solid_12_depth
+DaDirt.DebugView 0
+
+# --- 4. the conserve test still reads zero with solids ------------------------------------
+DaDirt.Test conserve
+wait 4 conserve
+DaDirt.Audit
+quit

@@ -1,0 +1,400 @@
+// DaDirt — parcels: dirt that has temporarily left the heightfield.
+//
+// A parcel is not a grain. A litre of sand is ten million grains, so one
+// particle per grain is out of the question; a parcel carries a real volume of
+// dirt (with its moisture) and is rendered as a clod of that volume. Roost,
+// spray, and grains shedding down a face are all parcels. docs/SoilPhysics.md
+// section 7.
+//
+// The invariant that makes this a simulator rather than an effect: every cubic
+// centimetre a parcel carries was scooped out of the heightfield, and lands back
+// in it. The audit counts ground + airborne and must still read zero drift.
+//
+//   MainParcelInitCS   fill the free list; every slot is empty
+//   MainParcelSpawnCS  turn the frame's spawn requests into live parcels
+//   MainParcelSimCS    fly, hit the ground, bounce, roll, come to rest, deposit
+//
+// State lives in three RGBA32F textures so the display material can read it in
+// its vertex shader (materials cannot read structured buffers):
+//   Pos   xyz cm relative to the Dirtbox origin,  w volume cm^3 (0 = dead)
+//   Vel   xyz cm/s,                               w seconds spent at rest
+//   Prop  moisture, compaction, rendered diameter cm, random seed
+// Slot i lives at texel (i % Res, i / Res).
+
+#include "DirtCommon.ush"
+
+int DirtParcelRes;
+RWTexture2D<float4> DirtParcelPos;
+RWTexture2D<float4> DirtParcelVel;
+RWTexture2D<float4> DirtParcelProp;
+RWStructuredBuffer<uint> DirtParcelFree;       // stack of dead slot indices
+RWStructuredBuffer<uint> DirtParcelCounters;   // see DIRT_PARCEL_COUNTER_* in DirtCommon.ush
+
+float2 DirtRegionOriginCm;     // box-relative xy of texel (0,0)'s corner
+float DirtTexelSizeCm;
+float DirtTexelAreaCm2;
+RWTexture2D<uint> DirtDepositVol;
+RWTexture2D<uint> DirtDepositMoist;
+
+int2 ParcelTexel(uint I)
+{
+	return int2(I % (uint)DirtParcelRes, I / (uint)DirtParcelRes);
+}
+
+uint ParcelCount()
+{
+	return (uint)(DirtParcelRes * DirtParcelRes);
+}
+
+// --- randomness --------------------------------------------------------------
+
+uint DirtHash(uint X)
+{
+	X ^= X >> 16; X *= 0x7feb352du;
+	X ^= X >> 15; X *= 0x846ca68bu;
+	X ^= X >> 16;
+	return X;
+}
+
+float DirtRand01(uint Seed, uint Salt)
+{
+	return (float)(DirtHash(Seed * 0x9E3779B1u + Salt * 0x85EBCA77u + 0x27D4EB2Fu) & 0xFFFFFFu) / 16777216.0f;
+}
+
+// --- the ground under a parcel ------------------------------------------------
+
+float2 ParcelToTexel(float2 PosCm)
+{
+	return (PosCm - DirtRegionOriginCm) / DirtTexelSizeCm;
+}
+
+int2 ParcelCell(float2 PosCm)
+{
+	return clamp(int2(floor(ParcelToTexel(PosCm))), int2(0, 0), DirtResolution - 1);
+}
+
+// Bilinear surface height and its normal at a box-relative xy.
+void SampleGround(float2 PosCm, out float Height, out float3 Normal, out float4 State)
+{
+	const float2 T = ParcelToTexel(PosCm) - 0.5f;
+	const float2 F = frac(T);
+	const int2 C0 = clamp(int2(floor(T)), int2(0, 0), DirtResolution - 2);
+	const float4 S00 = DirtState(C0);
+	const float4 S10 = DirtState(C0 + int2(1, 0));
+	const float4 S01 = DirtState(C0 + int2(0, 1));
+	const float4 S11 = DirtState(C0 + int2(1, 1));
+
+	const float HB = lerp(S00.a, S10.a, F.x);
+	const float HT = lerp(S01.a, S11.a, F.x);
+	Height = lerp(HB, HT, F.y);
+
+	const float DHDX = (lerp(S10.a, S11.a, F.y) - lerp(S00.a, S01.a, F.y)) / DirtTexelSizeCm;
+	const float DHDY = (HT - HB) / DirtTexelSizeCm;
+	Normal = normalize(float3(-DHDX, -DHDY, 1.0f));
+
+	State = lerp(lerp(S00, S10, F.x), lerp(S01, S11, F.x), F.y);
+}
+
+void DepositAt(float2 PosCm, float VolumeCm3, float Moisture)
+{
+	const int2 Cell = ParcelCell(PosCm);
+	InterlockedAdd(DirtDepositVol[Cell], (uint)(VolumeCm3 * DIRT_DEPOSIT_SCALE + 0.5f));
+	InterlockedAdd(DirtDepositMoist[Cell], (uint)(VolumeCm3 * saturate(Moisture) * DIRT_DEPOSIT_SCALE + 0.5f));
+}
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+
+#if DIRT_PARCEL_INIT_PASS
+
+[numthreads(64, 1, 1)]
+void MainParcelInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint I = DispatchThreadId.x;
+	const uint N = ParcelCount();
+	if (I >= N)
+	{
+		return;
+	}
+
+	const int2 T = ParcelTexel(I);
+	DirtParcelPos[T] = float4(0, 0, 0, 0);
+	DirtParcelVel[T] = float4(0, 0, 0, 0);
+	DirtParcelProp[T] = float4(0, 0, 0, 0);
+
+	// The free list is a stack, and it starts with slot 0 on top. So slot k is
+	// first handed out only when k parcels are already alive, and a slot that
+	// dies goes back on top to be reused first: the live parcels always sit in
+	// the lowest slots. The Dirtbox draws only the mesh sections up to the
+	// highest live slot, which is what makes a big pool cost nothing when idle.
+	// The last slot is never handed out: the mesh sections use its texel for
+	// their bounds triangles, which must always collapse to nothing.
+	if (I < N - 1u)
+	{
+		DirtParcelFree[I] = N - 2u - I;
+	}
+
+	if (I == 0u)
+	{
+		DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE] = N - 1u;
+		DirtParcelCounters[DIRT_PARCEL_COUNTER_SPAWNED] = 0u;
+		DirtParcelCounters[DIRT_PARCEL_COUNTER_LANDED] = 0u;
+		DirtParcelCounters[DIRT_PARCEL_COUNTER_FALLBACK] = 0u;
+		DirtParcelCounters[DIRT_PARCEL_COUNTER_MAXLIVE] = 0u;
+	}
+}
+
+#endif // DIRT_PARCEL_INIT_PASS
+
+// ---------------------------------------------------------------------------
+// Spawn
+// ---------------------------------------------------------------------------
+// Each request is one throw: a volume of dirt leaving one spot with one base
+// velocity, split into Count parcels of equal volume, each with its own
+// direction inside a cone and its own speed and rendered size. Equal volumes
+// keep the hand-off exact; the size jitter is only what you see.
+//
+// If the pool is full, the dirt is not lost: it is deposited straight back into
+// the ground where it was scooped, and counter [3] says how often that happened.
+
+#if DIRT_PARCEL_SPAWN_PASS
+
+#define DIRT_MAX_SPAWNS 16
+
+int DirtSpawnCount;
+int DirtSpawnTotal;
+float4 DirtSpawnA[DIRT_MAX_SPAWNS];   // pos.xyz cm (box-relative), total volume cm^3
+float4 DirtSpawnB[DIRT_MAX_SPAWNS];   // vel.xyz cm/s, count
+float4 DirtSpawnC[DIRT_MAX_SPAWNS];   // spread deg, moisture, compaction, mean diameter cm
+float4 DirtSpawnD[DIRT_MAX_SPAWNS];   // seed, first thread, speed jitter, diameter jitter
+
+[numthreads(64, 1, 1)]
+void MainParcelSpawnCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint T = DispatchThreadId.x;
+	if (T >= (uint)DirtSpawnTotal)
+	{
+		return;
+	}
+
+	// Which request does this thread belong to?
+	int K = 0;
+	[loop]
+	for (int i = 0; i < DirtSpawnCount; ++i)
+	{
+		if (T >= (uint)DirtSpawnD[i].y)
+		{
+			K = i;
+		}
+	}
+	const uint J = T - (uint)DirtSpawnD[K].y;
+	const uint Count = max((uint)DirtSpawnB[K].w, 1u);
+	if (J >= Count)
+	{
+		return;
+	}
+
+	const float3 Origin = DirtSpawnA[K].xyz;
+	const float Volume = DirtSpawnA[K].w / (float)Count;
+	const float Moisture = DirtSpawnC[K].y;
+	const uint Seed = (uint)DirtSpawnD[K].x + J * 7919u;
+
+	// Take a free slot. Adding 0xFFFFFFFF is a decrement; if the counter was
+	// already zero it wraps, so give it back and fall back to a direct deposit.
+	uint Old;
+	InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 0xFFFFFFFFu, Old);
+	if (Old == 0u || Old > ParcelCount())
+	{
+		InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 1u);
+		InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FALLBACK], 1u);
+		DepositAt(Origin.xy, Volume, Moisture);
+		return;
+	}
+	const uint Slot = DirtParcelFree[Old - 1u];
+	InterlockedMax(DirtParcelCounters[DIRT_PARCEL_COUNTER_MAXLIVE], Slot + 1u);
+
+	// Direction: the base velocity, nudged within a cone.
+	const float3 BaseVel = DirtSpawnB[K].xyz;
+	const float BaseSpeed = length(BaseVel);
+	float3 Dir = (BaseSpeed > 1e-3f) ? BaseVel / BaseSpeed : float3(0, 0, 1);
+	const float3 Side = normalize(abs(Dir.z) < 0.9f ? cross(Dir, float3(0, 0, 1)) : cross(Dir, float3(1, 0, 0)));
+	const float3 Up = cross(Side, Dir);
+	const float Spread = radians(DirtSpawnC[K].x);
+	const float A = (DirtRand01(Seed, 1u) * 2.0f - 1.0f) * Spread;
+	const float B = (DirtRand01(Seed, 2u) * 2.0f - 1.0f) * Spread;
+	Dir = normalize(Dir + Side * tan(A) + Up * tan(B));
+	const float Speed = BaseSpeed * (1.0f + (DirtRand01(Seed, 3u) * 2.0f - 1.0f) * DirtSpawnD[K].z);
+
+	// Rendered size: the parcel's own volume as a sphere, jittered so a stream
+	// does not look like ball bearings. Volume carried is exact regardless.
+	const float MeanDiameter = max(DirtSpawnC[K].w, 0.05f);
+	const float Diameter = MeanDiameter * (1.0f + (DirtRand01(Seed, 4u) * 2.0f - 1.0f) * DirtSpawnD[K].w);
+
+	// Start a little apart so a burst is a spray, not a point.
+	const float3 Jitter = (float3(DirtRand01(Seed, 5u), DirtRand01(Seed, 6u), DirtRand01(Seed, 7u)) - 0.5f) * MeanDiameter * 3.0f;
+
+	const int2 P = ParcelTexel(Slot);
+	DirtParcelPos[P] = float4(Origin + Jitter + float3(0, 0, MeanDiameter), Volume);
+	DirtParcelVel[P] = float4(Dir * Speed, 0.0f);
+	DirtParcelProp[P] = float4(saturate(Moisture), saturate(DirtSpawnC[K].z), Diameter, (float)(Seed & 0xFFFFu));
+	InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_SPAWNED], 1u);
+}
+
+#endif // DIRT_PARCEL_SPAWN_PASS
+
+// ---------------------------------------------------------------------------
+// Sim
+// ---------------------------------------------------------------------------
+// Ballistics with quadratic air drag (which is what makes small grains fall
+// short and big clods carry), then contact with the heightfield: a bounce whose
+// restitution depends on how wet the parcel is (mud splats, dry clods hop),
+// Coulomb friction along the surface at the ground's own friction angle, so a
+// parcel keeps rolling down a face steeper than repose and stops on one that is
+// not — and when it has stopped for long enough, it deposits and dies.
+
+#if DIRT_PARCEL_SIM_PASS
+
+float DirtDt;
+float DirtGravityCmS2;
+float DirtParcelDragK;             // a = K v^2 / d  (cm units)
+float DirtParcelRestitutionDry;
+float DirtParcelRestitutionWet;
+float DirtParcelRestSpeedCmS;
+float DirtParcelRestSeconds;
+float DirtLooseReposeDeg;
+float DirtPackedReposeDeg;
+float DirtSaturationFrictionLoss;
+
+// The highest live slot is reduced within the thread group first, so the
+// global counter takes one atomic per 64 parcels rather than one per parcel:
+// twenty thousand parcels hammering a single address cost 5 ms on the Arc.
+groupshared uint GroupMaxLive;
+
+[numthreads(64, 1, 1)]
+void MainParcelSimCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint GroupIndex : SV_GroupIndex)
+{
+	const uint I = DispatchThreadId.x;
+	const int2 T = ParcelTexel(min(I, ParcelCount() - 1u));
+	float4 P = DirtParcelPos[T];
+	const bool bLive = (I < ParcelCount()) && (P.w > 0.0f);
+
+	if (GroupIndex == 0u)
+	{
+		GroupMaxLive = 0u;
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (bLive)
+	{
+		InterlockedMax(GroupMaxLive, I + 1u);
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (GroupIndex == 0u && GroupMaxLive > 0u)
+	{
+		InterlockedMax(DirtParcelCounters[DIRT_PARCEL_COUNTER_MAXLIVE], GroupMaxLive);
+	}
+	if (!bLive)
+	{
+		return;
+	}
+
+	float4 V = DirtParcelVel[T];
+	const float4 Pr = DirtParcelProp[T];
+	const float Diameter = max(Pr.z, 0.05f);
+	const float Radius = 0.5f * Diameter;
+
+	const float2 Lo = DirtRegionOriginCm + Radius;
+	const float2 Hi = DirtRegionOriginCm + (float2)DirtResolution * DirtTexelSizeCm - Radius;
+
+	bool bDeposit = false;
+	const int Substeps = 2;
+	const float Dt = DirtDt / (float)Substeps;
+
+	[loop]
+	for (int Step = 0; Step < Substeps && !bDeposit; ++Step)
+	{
+		// --- flight ------------------------------------------------------------
+		V.z -= DirtGravityCmS2 * Dt;
+		const float Speed = length(V.xyz);
+		if (Speed > 1e-3f)
+		{
+			const float Drag = DirtParcelDragK * Speed * Speed / Diameter;
+			V.xyz -= V.xyz / Speed * min(Drag * Dt, Speed);
+		}
+		P.xyz += V.xyz * Dt;
+
+		// --- the walls of the box are sealed ---------------------------------------
+		if (P.x < Lo.x) { P.x = Lo.x; V.x = abs(V.x) * 0.3f; }
+		if (P.y < Lo.y) { P.y = Lo.y; V.y = abs(V.y) * 0.3f; }
+		if (P.x > Hi.x) { P.x = Hi.x; V.x = -abs(V.x) * 0.3f; }
+		if (P.y > Hi.y) { P.y = Hi.y; V.y = -abs(V.y) * 0.3f; }
+
+		// --- the ground ----------------------------------------------------------
+		float Height;
+		float3 N;
+		float4 Ground;
+		SampleGround(P.xy, Height, N, Ground);
+
+		if (P.z < Height + Radius)
+		{
+			P.z = Height + Radius;
+
+			const float Vn = dot(V.xyz, N);
+			if (Vn < 0.0f)
+			{
+				const float E = lerp(DirtParcelRestitutionDry, DirtParcelRestitutionWet, saturate(Pr.x));
+				V.xyz -= (1.0f + E) * Vn * N;
+			}
+
+			// Coulomb friction against the ground at the ground's friction angle.
+			float TanPhi, CohesionKPa;
+			DirtSoilStrength(Ground, DirtLooseReposeDeg, DirtPackedReposeDeg, 0.0f, 0.0f,
+							 DirtSaturationFrictionLoss, TanPhi, CohesionKPa);
+			float3 Vt = V.xyz - dot(V.xyz, N) * N;
+			const float SpeedT = length(Vt);
+			const float Decel = TanPhi * DirtGravityCmS2 * max(N.z, 0.0f) * Dt;
+			if (SpeedT > 1e-3f)
+			{
+				Vt -= Vt / SpeedT * min(Decel, SpeedT);
+			}
+			V.xyz = Vt + dot(V.xyz, N) * N;
+
+			// At rest: slow, and on ground it can actually stand on.
+			const float SlopeTan = sqrt(max(1.0f - N.z * N.z, 0.0f)) / max(N.z, 1e-3f);
+			if (length(V.xyz) < DirtParcelRestSpeedCmS && SlopeTan <= TanPhi * 1.05f)
+			{
+				V.w += Dt;
+				if (V.w >= DirtParcelRestSeconds)
+				{
+					bDeposit = true;
+				}
+			}
+			else
+			{
+				V.w = 0.0f;
+			}
+		}
+		else
+		{
+			V.w = 0.0f;
+		}
+	}
+
+	if (bDeposit)
+	{
+		DepositAt(P.xy, P.w, Pr.x);
+		DirtParcelPos[T] = float4(P.xyz, 0.0f);
+		DirtParcelVel[T] = float4(0, 0, 0, 0);
+
+		uint Old;
+		InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_FREE], 1u, Old);
+		DirtParcelFree[Old] = I;
+		InterlockedAdd(DirtParcelCounters[DIRT_PARCEL_COUNTER_LANDED], 1u);
+		return;
+	}
+
+	DirtParcelPos[T] = P;
+	DirtParcelVel[T] = V;
+}
+
+#endif // DIRT_PARCEL_SIM_PASS

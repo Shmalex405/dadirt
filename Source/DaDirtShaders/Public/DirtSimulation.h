@@ -3,12 +3,13 @@
 // The game thread fills in an FDirtSimFrame and hands it to the render thread,
 // which builds one render-graph pass list per simulation step:
 //
-//     [init] -> [brush] x strokes -> [slump] x iterations -> [resolve]
+//     [init] -> [deposit] -> [brush] x batches -> [slump] x iterations
+//            -> [water] -> [parcel spawn] -> [parcel sim] -> [resolve]
 //
-// The brush and slump passes ping-pong between two state textures. Resolve reads
-// whichever one ended up holding the answer and publishes it to fixed display,
-// normal and debug targets, so the ground material always has stable textures to
-// sample.
+// The brush, slump and water passes ping-pong between two state textures (the
+// water pass also between two pond textures). Resolve reads whichever one ended
+// up holding the answer and publishes it to fixed display, normal and debug
+// targets, so the ground material always has stable textures to sample.
 //
 // This lives in the DaDirtShaders module, not the game module, because global
 // shader classes must be registered before the engine builds its shader maps —
@@ -18,6 +19,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "RenderGraphResources.h"
 
 class FRHICommandListImmediate;
 class FRHITexture;
@@ -36,8 +38,9 @@ struct FDirtBrushStroke
 	float RimRadiusTexels = 16.0f;
 
 	/**
-	 * Kernel amplitude. Already scaled so that the peak of the core equals the
-	 * requested depth in cm — see ADirtBox::MakeStroke.
+	 * Kernel amplitude. For the mass modes this is SOLID centimetres, already
+	 * scaled so that the peak of the core equals the requested depth — see
+	 * ADirtBox::MakeStroke.
 	 */
 	float Amount = 0.0f;
 
@@ -50,6 +53,63 @@ struct FDirtBrushStroke
 
 	/** EDirtBrushMode as an integer. Must match DirtSim.usf. */
 	int32 Mode = 0;
+
+	/** Pack strokes only: scale by the Proctor moisture curve (a tyre) or not (a tool). */
+	bool bProctor = false;
+};
+
+/** Water poured on the surface this step, in grid space. */
+struct FDirtWaterSource
+{
+	FVector2f CenterTexel = FVector2f::ZeroVector;
+	float RadiusTexels = 8.0f;
+	/** Depth added per unit of kernel weight: litres x 1000 / texel area / kernel sum. Exact litres. */
+	float AmountCm = 0.0f;
+};
+
+/** One throw of dirt into the air: becomes Count parcels sharing VolumeCm3. */
+struct FDirtParcelSpawn
+{
+	/** Box-relative position, cm. */
+	FVector3f PositionCm = FVector3f::ZeroVector;
+	FVector3f VelocityCmS = FVector3f::ZeroVector;
+	float VolumeCm3 = 0.0f;
+	int32 Count = 1;
+	float SpreadDeg = 15.0f;
+	float SpeedJitter = 0.25f;
+	float Moisture = 0.2f;
+	float Compaction = 0.1f;
+	float DiameterCm = 1.0f;
+	float DiameterJitter = 0.4f;
+	uint32 Seed = 0;
+};
+
+/**
+ * GPU-side parcel bookkeeping that has no UTexture equivalent: the free-list
+ * stack, its counters, and the fixed-point deposit accumulators. Created lazily
+ * on the render thread and kept for the life of the Dirtbox. The counters are
+ * read back to the game thread a frame or two late through CounterReadback.
+ */
+struct DADIRTSHADERS_API FDirtParcelResources
+{
+	TRefCountPtr<FRDGPooledBuffer> FreeList;
+	TRefCountPtr<FRDGPooledBuffer> Counters;
+	TRefCountPtr<IPooledRenderTarget> DepositVol;
+	TRefCountPtr<IPooledRenderTarget> DepositMoist;
+	int32 ParcelRes = 0;
+	FIntPoint DepositRes = FIntPoint::ZeroValue;
+	bool bInitialised = false;
+
+	/** Latest counters seen by the render thread; see DirtSim::ParcelCounter*. */
+	uint32 Counters_RT[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	/** Copied under CounterLock for the game thread. */
+	FCriticalSection CounterLock;
+	uint32 Counters_Shared[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+
+	class FRHIGPUBufferReadback* Readback = nullptr;
+	bool bReadbackPending = false;
+
+	~FDirtParcelResources();
 };
 
 /** One simulation step's worth of work and resources. Built on the game thread. */
@@ -58,6 +118,9 @@ struct FDirtSimFrame
 	// --- grid --------------------------------------------------------------
 	FIntPoint Resolution = FIntPoint(1024, 1024);
 	float TexelSizeCm = 12.5f;
+	/** Box-relative xy of the corner of texel (0,0), cm. Parcels live in box space. */
+	FVector2f RegionOriginCm = FVector2f::ZeroVector;
+	float Dt = 1.0f / 60.0f;
 
 	// --- tunables ----------------------------------------------------------
 	float LooseReposeDeg = 32.0f;
@@ -72,6 +135,34 @@ struct FDirtSimFrame
 	float LooseningScaleCm = 2.0f;
 	int32 SlumpIterations = 3;
 
+	// solid volume
+	float LoosePorosity = 0.48f;
+	float DensePorosity = 0.34f;
+	float CompactionDepthCm = 15.0f;
+	float DeepCompaction = 0.25f;
+	float DepositCompaction = 0.05f;
+
+	// water
+	bool bWater = true;
+	float RunoffRate = 0.5f;
+	float RainCmPerSec = 0.0f;
+	float InfiltrationCmPerSec = 0.5f;
+	float DrainPerSec = 0.025f;
+	float EvapPerSec = 0.003f;
+	float FieldCapacity = 0.3f;
+	float WetDepthCm = 20.0f;
+	float AmbientMoisture = 0.05f;
+
+	// parcels
+	bool bParcels = true;
+	int32 ParcelRes = 512;
+	float GravityCmS2 = 981.0f;
+	float ParcelDragK = 2.6e-4f;
+	float ParcelRestitutionDry = 0.3f;
+	float ParcelRestitutionWet = 0.02f;
+	float ParcelRestSpeedCmS = 15.0f;
+	float ParcelRestSeconds = 0.12f;
+
 	// --- debug -------------------------------------------------------------
 	int32 DebugMode = 0;
 	float DebugLayerRangeCm = 120.0f;
@@ -79,6 +170,12 @@ struct FDirtSimFrame
 	// --- work --------------------------------------------------------------
 	/** Deformation strokes to apply before slumping, in order. */
 	TArray<FDirtBrushStroke> Strokes;
+
+	/** Dirt thrown into the air this step. */
+	TArray<FDirtParcelSpawn> Spawns;
+
+	/** Water poured this step. */
+	TArray<FDirtWaterSource> WaterSources;
 
 	/** Reseed the state from InitialState before doing anything else. */
 	bool bReinitialise = false;
@@ -90,13 +187,27 @@ struct FDirtSimFrame
 	FRHITexture* InitialState = nullptr;   // RGBA32F, CPU-built start state
 	FRHITexture* StateA = nullptr;         // RGBA32F, ping
 	FRHITexture* StateB = nullptr;         // RGBA32F, pong
+	FRHITexture* PondA = nullptr;          // R32F, ponded water ping
+	FRHITexture* PondB = nullptr;          // R32F, pong
 	FRHITexture* Display = nullptr;        // RGBA32F, sampled by the material
 	FRHITexture* NormalOut = nullptr;      // RGBA16F, encoded world normal
 	FRHITexture* DebugOut = nullptr;       // RGBA16F, base colour / debug view
 
+	FRHITexture* ParcelPos = nullptr;      // RGBA32F, ParcelRes^2
+	FRHITexture* ParcelVel = nullptr;
+	FRHITexture* ParcelProp = nullptr;
+
+	/** Owned by the Dirtbox, used only on the render thread. May be null if parcels are off. */
+	FDirtParcelResources* Parcels = nullptr;
+
 	bool IsValid() const
 	{
-		return BaseHeight && InitialState && StateA && StateB && Display && NormalOut && DebugOut;
+		return BaseHeight && InitialState && StateA && StateB && PondA && PondB && Display && NormalOut && DebugOut;
+	}
+
+	bool HasParcels() const
+	{
+		return bParcels && Parcels && ParcelPos && ParcelVel && ParcelProp && ParcelRes > 0;
 	}
 };
 
@@ -105,6 +216,26 @@ namespace DirtSim
 	/** Strokes applied per brush pass. Must match DIRT_MAX_STROKES in DirtSim.usf. */
 	constexpr int32 MaxStrokesPerPass = 16;
 
+	/** Spawn requests per spawn pass. Must match DIRT_MAX_SPAWNS in DirtParcels.usf. */
+	constexpr int32 MaxSpawnsPerPass = 16;
+
+	/** Water sources per water pass. Must match DIRT_MAX_WATER_SOURCES in DirtSim.usf. */
+	constexpr int32 MaxWaterSourcesPerPass = 16;
+
+	/** Fixed-point steps per cm^3 in the deposit textures. Must match DIRT_DEPOSIT_SCALE. */
+	constexpr float DepositScale = 65536.0f;
+
+	/** Parcel counter slots. Must match DIRT_PARCEL_COUNTER_* in DirtCommon.ush. */
+	constexpr int32 ParcelCounterFree = 0;
+	constexpr int32 ParcelCounterSpawned = 1;
+	constexpr int32 ParcelCounterLanded = 2;
+	constexpr int32 ParcelCounterFallback = 3;
+	constexpr int32 ParcelCounterMaxLive = 4;
+	constexpr int32 ParcelCounterCount = 8;
+
 	/** Run one simulation step. Render thread only. */
 	DADIRTSHADERS_API void Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const FDirtSimFrame& Frame);
+
+	/** Kick or harvest the non-blocking counter readback. Render thread only. */
+	DADIRTSHADERS_API void UpdateParcelCounters_RenderThread(FRHICommandListImmediate& RHICmdList, FDirtParcelResources& Parcels);
 }

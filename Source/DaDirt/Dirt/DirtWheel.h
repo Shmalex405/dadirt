@@ -3,17 +3,21 @@
 // One driven tyre on the dirt, with throttle, brake and steer. Like the ball it
 // does not use the physics engine: it integrates itself against the simulated
 // surface through a height window. What matters is the two-way conversation
-// with the dirt:
+// with the dirt, and since Phase D that conversation is terramechanics
+// (docs/SoilPhysics.md section 6):
 //
-//   dirt -> wheel   height and slope under the contact patch (ruts steer it),
-//                   compaction sets grip, saturation makes it slither,
-//                   loose dirt drags harder
-//   wheel -> dirt   wheelspin scoops dirt out from under the tyre and throws it
-//                   backwards (roost), a locked brake shoves it forwards, rolling
-//                   packs a line and presses a rut with shoulders on both sides
+//   dirt -> wheel   Bekker pressure-sinkage says how far the tyre sinks for its
+//                   load on this soil; Janosi-Hanamoto says how traction builds
+//                   with slip up to the Mohr-Coulomb limit c*A + N tan(phi);
+//                   the work of pressing the rut is the motion resistance;
+//                   ruts steer it, saturation makes it slither
+//   wheel -> dirt   the sinkage is pressed as a rut and the line is packed at
+//                   the Proctor rate; past the traction limit the lugs shear
+//                   the soil and throw it as parcels (roost), which fly, land
+//                   and rejoin the ground
 //
-// All of the dirt side goes through the same brushes the console uses, so every
-// cubic centimetre is still accounted for by DaDirt.Audit.
+// All of the dirt side goes through the same brushes and parcels the console
+// uses, so every cubic centimetre is still accounted for by DaDirt.Audit.
 //
 // Units: SI internally (m, s, kg, N). Positions are converted to Unreal cm at
 // the edges.
@@ -77,55 +81,89 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wheel")
 	float MaxYawRateDeg = 70.0f;
 
-	// --- the tyre-dirt contact ---------------------------------------------
+	// --- terramechanics: the soil as the tyre feels it ---------------------------
+	//
+	// Bekker: p = (k_c / b + k_phi) z^n. Loose and dense values are interpolated
+	// by compaction (k in log space), and saturation weakens both. Loose ~ dry
+	// sand (sinks 3-4 cm under this wheel), dense ~ hardpack (under 1 mm).
 
-	/**
-	 * Grip comes from the soil itself (docs/SoilPhysics.md section 6):
-	 * grip = tan(phi_eff) + c_eff * A / N, with A the contact patch. Cohesion
-	 * gives grip even under a light wheel; friction scales with load; saturation
-	 * takes both away. Contact patch length along the tyre, m.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float ContactPatchLengthM = 0.15f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BekkerNLoose = 0.9f;
 
-	/** Slip speed (m/s) at which traction is at ~76% of its peak. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float SlipScaleMps = 1.2f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BekkerNDense = 0.5f;
 
-	/** Rolling resistance coefficient on loose / packed dirt. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float RollingResistanceLoose = 0.10f;
+	/** kN / m^(n+1) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BekkerKcLoose = 1.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Grip")
-	float RollingResistancePacked = 0.02f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BekkerKcDense = 15.0f;
 
-	// --- what the wheel does to the dirt --------------------------------------
+	/** kN / m^(n+2) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BekkerKphiLoose = 400.0f;
 
-	/** Dirt thrown per metre of slip at full load, in litres. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
-	float RoostLitresPerSlipMetre = 0.12f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BekkerKphiDense = 5000.0f;
 
-	/** Slip beyond this throws no more dirt per metre: the tyre is just polishing the hole. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
-	float RoostSlipCapMps = 12.0f;
+	/** Fraction of soil stiffness lost when saturated: mud takes a wheel. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float SaturationStiffnessLoss = 0.8f;
 
-	/** How far behind the tyre roost lands, in radii, at zero slip; more slip throws further. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
-	float RoostDistanceRadii = 1.8f;
+	/** Janosi-Hanamoto shear deformation modulus, m: sand 1-2.5 cm, loam 2-5 cm. Loose / dense. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float ShearModulusLooseM = 0.02f;
 
-	/** Rut pressed by one pass at full load on fully loose dirt, cm. Packed dirt takes far less. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
-	float RutCmPerPass = 1.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float ShearModulusDenseM = 0.045f;
 
-	/** Compaction one pass adds to the line at full load. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
+	/** Share of the Bekker sinkage that stays as a rut once the tyre has passed (the rest springs back). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float PlasticSinkage = 0.5f;
+
+	/** Slip-sinkage: extra sinkage per unit slip ratio, as a fraction of the static sinkage. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float SlipSinkage = 0.5f;
+
+	/** Rolling loss on hardpack that Bekker does not see (bearings, tyre hysteresis). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float BaseRollingResistance = 0.02f;
+
+	/** Compaction one pass adds to the line at full load, before the Proctor moisture curve. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
 	float PackPerPass = 0.15f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
+	// --- roost: excavation past the traction limit --------------------------------
+
+	/** Depth of soil the lugs shear off per pass of tyre surface, in bulk cm, on loose dirt. Packed dirt gives less. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float LugFailureDepthCm = 0.4f;
+
+	/** Slip speed below which the lugs are not failing the soil yet, m/s. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float RoostSlipThresholdMps = 0.5f;
+
+	/** Slip beyond this throws no more dirt per metre: the tyre is just polishing the hole. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float RoostSlipCapMps = 14.0f;
+
+	/** Ejection speed as a fraction of the slip speed. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float RoostSpeedFraction = 0.85f;
+
+	/** Launch angle above the ground, degrees, and the half-angle of the spray cone. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float RoostElevationDeg = 35.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
+	float RoostSpreadDeg = 14.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	bool bDeformsDirt = true;
 
 	/** Test-rig mode: the wheel cannot translate, only spin. Burnouts on a stand. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Deform")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	bool bAnchored = false;
 
 	/** Keep the player's camera behind the wheel. */
@@ -138,17 +176,25 @@ public:
 	float HeadingDeg = 0.0f;
 	float WheelOmega = 0.0f;          // rad/s
 	float LastSlipMps = 0.0f;
-	float LastFriction = 0.0f;
+	float LastSlipRatio = 0.0f;
+	float LastFriction = 0.0f;        // c A / N + tan phi: the traction ceiling as a coefficient
+	float LastTractionN = 0.0f;
+	float LastSinkageCm = 0.0f;
+	float LastResistanceN = 0.0f;
 	float LastCompaction = 0.0f;
 	float LastMoisture = 0.0f;
 	bool bOnGround = false;
 	double OdometerM = 0.0;
-	double RoostLitresTotal = 0.0;
+	double RoostLitresTotal = 0.0;    // solid litres thrown
 
 private:
 	void Step(float Dt);
 	void UpdateVisuals(float Dt);
 	void UpdateFollowCamera();
+
+	/** Bekker static sinkage (m) and the soil constants for this state and load. */
+	void SoilResponse(float Compaction, float Moisture, float LoadN,
+					  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<USceneComponent> Root;
@@ -173,6 +219,8 @@ private:
 	float StrokeSlipM = 0.0f;
 	float StrokeSlipSign = 0.0f;
 	float StrokeTimeS = 0.0f;
+	float StrokeSinkageM = 0.0f;      // sinkage-weighted by distance, for the rut
+	float StrokeSlipRatio = 0.0f;
 
 	static constexpr float SubstepSeconds = 1.0f / 240.0f;
 	static constexpr float Gravity = 9.81f;

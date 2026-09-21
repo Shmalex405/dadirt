@@ -1,0 +1,138 @@
+# DaDirt Phase E: parcels, and the size question (docs/SoilPhysics.md section 7).
+#
+# Part 1 - the hand-off is honest: throw dirt, watch it fly, land, roll and pile,
+#          and check the audit balances with dirt in the air and after it lands.
+# Part 2 - how small can parcels be? The same burnout at 2, 1, 0.5 and 0.3 cm:
+#          live count, fps, and what it looks like from the chase camera. Halving
+#          the diameter is 8x the parcels; the pool is 262,144.
+#
+# The pad runs Y = -30..30 at X = 3, surface 60 cm.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+DaDirt.Info
+
+# --- 1a. one shovel-load, 1 cm clods -----------------------------------------------------------
+DaDirt.Parcel 1
+DaDirt.Throw 3 -20 4 6 90 45 10
+camera -2 -22 2.2 -18 55
+wait 0.3 flight
+screenshot parcel_10_throw_air
+DaDirt.Parcels
+DaDirt.Audit
+wait 3 landed
+screenshot parcel_11_throw_landed
+DaDirt.Parcels
+DaDirt.Audit
+DaDirt.Probe 3 -20
+DaDirt.Probe 3 -17
+DaDirt.Probe 3 -16
+DaDirt.Probe 3 -15
+
+# --- 1b. a heap built entirely from thrown dirt --------------------------------------------------
+DaDirt.Throw 3 0 8 5 0 60 8
+DaDirt.Throw 3 0 8 5 0 60 8
+DaDirt.Throw 3 0 8 5 0 60 8
+DaDirt.Throw 3 0 8 5 0 60 8
+wait 0.6 heap_air
+camera -2 0 2.2 -18 0
+screenshot parcel_20_heap_air
+wait 4 heap_landed
+screenshot parcel_21_heap_landed
+DaDirt.Probe 4.5 0
+DaDirt.Probe 5 0
+DaDirt.Probe 5.5 0
+DaDirt.Probe 6 0
+DaDirt.Audit
+
+# --- 1c. mud splats, dry dirt bounces ------------------------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Wet 3 20 300 0.95
+wait 0.5
+DaDirt.Throw 3 20 4 6 90 40 6
+DaDirt.Throw 3 -20 4 6 90 40 6
+wait 0.35
+camera -2 -22 2.2 -18 55
+screenshot parcel_30_dry_air
+camera -2 18 2.2 -18 55
+screenshot parcel_31_mud_air
+wait 3
+DaDirt.Audit
+
+# --- 2. the size question: burnout at four parcel sizes --------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Parcel 2
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 3 size_2cm
+DaDirt.Parcels
+screenshot parcel_40_burnout_2cm
+DaDirt.Drive 0 0 1
+wait 2
+
+DaDirt.Reset
+wait 0.5
+DaDirt.Parcel 1
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 3 size_1cm
+DaDirt.Parcels
+screenshot parcel_41_burnout_1cm
+DaDirt.Drive 0 0 1
+wait 2
+
+DaDirt.Reset
+wait 0.5
+DaDirt.Parcel 0.5
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 3 size_5mm
+DaDirt.Parcels
+screenshot parcel_42_burnout_5mm
+DaDirt.Drive 0 0 1
+wait 2
+
+DaDirt.Reset
+wait 0.5
+DaDirt.Parcel 0.3
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 3 size_3mm
+DaDirt.Parcels
+screenshot parcel_43_burnout_3mm
+DaDirt.Drive 0 0 1
+wait 2 size_3mm_settle
+DaDirt.Parcels
+DaDirt.Audit
+
+# --- 3. the soil picks the size ---------------------------------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Parcel soil
+DaDirt.Wet 8 -20 300 0.5
+wait 0.5
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 3 size_soil_damp
+DaDirt.Parcels
+screenshot parcel_50_burnout_soil_damp
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Audit
+quit

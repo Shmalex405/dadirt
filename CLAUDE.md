@@ -100,16 +100,41 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   `DirtBrushRimWeight` in both `DirtSimTypes.h` and `DirtCommon.ush`. They must
   stay identical: the CPU sums them to normalise the kernel, and that is what
   makes dig zero-sum. If they drift apart, the volume audit starts reporting drift.
+  The same goes for the soil strength and the solid-volume functions
+  (`DirtSoilStrength`, `DirtAllowedDrop`, `DirtSolidFraction`, `DirtBulkCm`,
+  `DirtSolidCm`, `DirtPackingEfficiency`): mirrored in both files, keep identical.
+- **The layer channel stores SOLID centimetres**, not bulk thickness. Bulk height
+  comes from porosity via `DirtBulkCm` (a packed skin over natural ground), so
+  packing lowers the surface and loosening raises it without moving any grains.
+  Every mass move (brush, slump, scoop, dump, parcel deposit) transfers solid cm,
+  which is why it is exactly zero-sum. Amounts handed to Dig/Raise are bulk cm of
+  natural ground; `MakeStroke` converts. The audit reports solid m³ and bulk m³.
+- **Parcels** (dirt in the air) live in `Shaders/Private/DirtParcels.usf` and
+  three RGBA32F textures; the mesh that draws them is one tetrahedron per slot,
+  moved in the vertex shader by `M_DirtParcel` (built by `Tools/BuildDirtAssets.py`).
+  The free list is a stack that starts with slot 0 on top, so live parcels always
+  sit in the lowest slots and only the mesh sections up to the highest live slot
+  are drawn. Never break that: an idle pool of a quarter million would cost 7 ms.
+  A parcel's volume was scooped from the heightfield and is deposited back by
+  atomics into fixed-point textures; the audit counts ground + air.
 - Alex works on a Mac; the project only builds on the Windows machine. Code
   written on the Mac has never seen a compiler, so hand it over with that said
   plainly and expect a first-compile fixing pass.
 - Keep every phase-1 feature toggleable with debug visualization (height,
   compaction, moisture, volume audit) — dirt tuning is the whole game.
   `DaDirt.DebugView 0-6`; view 4 (stability vs angle of repose) is the one that
-  says whether the dirt physics is behaving.
+  says whether the dirt physics is behaving. `DaDirt.Parcels`, `DaDirt.WaterSim`
+  and `DaDirt.Slump 0` switch whole systems off for attribution
+  (`Tools/DirtboxPerf.txt` does this and prints GPU ms per system).
 - The testbed terrain is a measuring instrument, not scenery: it exists to
   provoke every dirt behaviour we care about (a full spectrum of slope angles,
   a range of jump-lip sharpnesses, concave/convex pairs, a flat calibration pad).
   Add to it rather than making the box prettier.
 - Volume conservation is a hard invariant: any system that moves dirt must
-  account for where it goes. The debug audit view must stay ~zero-sum.
+  account for where it goes. The debug audit view must stay ~zero-sum — with
+  dirt in the air included. Water is audited separately (pore water and pond)
+  and is allowed to leave (drain, dry) because it is not dirt.
+- Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
+  (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf). Run them with
+  the `-DirtScript=` launch and read the numbers out of the log; a change that
+  moves a measured number is not done until the doc that quotes it is updated.

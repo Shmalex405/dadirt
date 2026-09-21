@@ -15,11 +15,11 @@ enum class EDirtBrushMode : uint8
 	Raise   = 1,
 	/** Pull the surface toward its local average. Roughly zero-sum. */
 	Smooth  = 2,
-	/** Add moisture. Moves no dirt. */
+	/** Add moisture. Moves no dirt. Past saturation the water pass ponds the excess. */
 	Wet     = 3,
-	/** Compact the dirt. Moves no dirt. */
+	/** Compact the dirt. Moves no dirt, but shrinks it: the surface drops. */
 	Pack    = 4,
-	/** Break up hardpack. Moves no dirt. */
+	/** Break up hardpack. Moves no dirt, but fluffs it: the surface rises. */
 	Loosen  = 5,
 	/**
 	 * Remove dirt from the core with NO rim: it goes somewhere else, via a paired
@@ -210,6 +210,143 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush", meta = (ClampMin = "1.05", ClampMax = "4"))
 	float BrushRimScale = 2.0f;
 
+	// --- solid volume (docs/SoilPhysics.md sections 1 and 4) -------------------
+	//
+	// The layer channel stores SOLID centimetres: the grains alone, voids
+	// squeezed out. Bulk (visible) thickness follows from porosity, so packing
+	// shrinks the ground and loosening fluffs it up, and nothing is created or
+	// destroyed either way. The audit sums solids.
+
+	/** Void fraction of fully loose dirt. Loam ~0.48, sand ~0.46, clay ~0.50. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "0.2", ClampMax = "0.7"))
+	float LoosePorosity = 0.48f;
+
+	/** Void fraction of fully packed dirt. Loam ~0.34. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "0.1", ClampMax = "0.6"))
+	float DensePorosity = 0.34f;
+
+	/**
+	 * How deep packing reaches, cm. A tyre or a tool packs a skin, not the whole
+	 * column; below it the ground stays at DeepCompaction. This is what makes a
+	 * rut from packing a few centimetres rather than a fifth of the layer.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "1", ClampMax = "100"))
+	float CompactionDepthCm = 15.0f;
+
+	/** Compaction of natural ground below the packed skin. Matches the builders' default. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "0", ClampMax = "1"))
+	float DeepCompaction = 0.25f;
+
+	/** Compaction landed parcels arrive with. Thrown dirt is the loosest dirt there is. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Solid", meta = (ClampMin = "0", ClampMax = "1"))
+	float DepositCompaction = 0.05f;
+
+	// --- water (docs/SoilPhysics.md section 5) ----------------------------------
+	//
+	// Real time scales are hours; these are game-paced, roughly 50x faster, and
+	// every one of them is a knob.
+
+	/** Run the water pass at all. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	bool bWater = true;
+
+	/** Fraction of a head difference that ponded water crosses per step. Keep under 1. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "1"))
+	float RunoffRate = 0.5f;
+
+	/** Rain falling on the whole box, cm per second of game time. 0 = dry. DaDirt.Rain sets it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
+	float RainCmPerSec = 0.0f;
+
+	/** Seconds of rain left, or a negative number for rain that never stops. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	float RainSecondsLeft = 0.0f;
+
+	/** How fast ponded water soaks into LOOSE dirt, cm/s. Packing cuts it a hundredfold. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
+	float InfiltrationCmPerSec = 0.5f;
+
+	/** Per second, the share of water above field capacity that drains away downward through loose dirt. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
+	float DrainPerSec = 0.025f;
+
+	/** Surface drying, saturation lost per second. 0.0007 dries a soaked pad in ~20 min of play. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
+	float EvapPerSec = 0.0007f;
+
+	/** Saturation air-dry dirt keeps (hygroscopic water). Drying stops here, so the box never goes bone-dry on its own. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "0.5"))
+	float AmbientMoisture = 0.05f;
+
+	/** Saturation the dirt holds against gravity by suction. ~0.3 for loam. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "1"))
+	float FieldCapacity = 0.3f;
+
+	/** Depth of ground the moisture channel describes, cm. Sets how much water a cell can drink. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "1"))
+	float WetDepthCm = 20.0f;
+
+	// --- parcels (docs/SoilPhysics.md section 7) ---------------------------------
+	//
+	// Dirt in the air. A parcel carries a real volume, lands, and hands it back.
+
+	/** Simulate and draw parcels at all. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels")
+	bool bParcels = true;
+
+	/** Parcels per side of the pool: 512 = 262,144 parcels. Set at startup only. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Parcels", meta = (ClampMin = "64", ClampMax = "1024"))
+	int32 ParcelPoolSide = 512;
+
+	/**
+	 * Rendered diameter of a parcel, cm. THE knob for how fine the airborne dirt
+	 * is: the volume a throw carries is split into parcels of this size, so
+	 * halving it means eight times as many parcels for the same roost.
+	 * 0 = choose from the soil: clods the size cohesion can hold together.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "20"))
+	float ParcelDiameterCm = 1.0f;
+
+	/** Smallest parcel the soil rule may pick, cm. Below ~3 mm nothing survives the budget. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0.05", ClampMax = "20"))
+	float ParcelMinDiameterCm = 0.4f;
+
+	/** Largest parcel the soil rule may pick, cm. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0.05", ClampMax = "50"))
+	float ParcelMaxDiameterCm = 5.0f;
+
+	/** +/- fraction of size jitter within one throw. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "0.9"))
+	float ParcelDiameterJitter = 0.45f;
+
+	/** Most parcels one throw may create; a bigger throw gets bigger parcels instead. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "1", ClampMax = "65536"))
+	int32 ParcelMaxPerThrow = 4096;
+
+	/** Air drag: deceleration = K v^2 / diameter (cm units). 2.6e-4 is a dirt clod. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0"))
+	float ParcelDragK = 0.00026f;
+
+	/** Bounce kept by a dry clod hitting the ground. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "1"))
+	float ParcelRestitutionDry = 0.3f;
+
+	/** Bounce kept by a lump of mud: it splats. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "1"))
+	float ParcelRestitutionWet = 0.02f;
+
+	/** Below this speed on ground it can stand on, a parcel is settling, cm/s. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0"))
+	float ParcelRestSpeedCmS = 15.0f;
+
+	/** Seconds of settling before a parcel deposits and disappears. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0"))
+	float ParcelRestSeconds = 0.12f;
+
+	/** Smallest parcel on screen, as a fraction of its distance (0.003 = ~1.5 px at 1080p). Stops grains flickering. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Parcels", meta = (ClampMin = "0", ClampMax = "0.05"))
+	float ParcelMinScreenSize = 0.003f;
+
 	// --- stepping ---------------------------------------------------------
 
 	/**
@@ -323,4 +460,45 @@ inline float DirtAllowedDropCm(float DropCm, float RunCm, float TanPhi, float Co
 								* FMath::Sin(Beta) * FMath::Cos(Phi) / Denom, MaxHcCm);
 
 	return FMath::Max(FrictionDrop, (DropCm <= Hc) ? DropCm : Hc);
+}
+
+// ---------------------------------------------------------------------------
+// Solid volume <-> bulk thickness. Mirrors DirtSolidFraction / DirtBulkCm /
+// DirtSolidCm in Shaders/Private/DirtCommon.ush — keep them identical.
+// ---------------------------------------------------------------------------
+
+/** Solid fraction (1 - porosity) of dirt at a given compaction. */
+inline float DirtSolidFraction(float Compaction, const FDirtSimSettings& S)
+{
+	return 1.0f - FMath::Lerp(S.LoosePorosity, S.DensePorosity, FMath::Clamp(Compaction, 0.0f, 1.0f));
+}
+
+/** Bulk (visible) thickness of a column holding SolidCm of grains, whose top skin is at Compaction. */
+inline float DirtBulkCm(float SolidCm, float Compaction, const FDirtSimSettings& S)
+{
+	const float SkinFrac = DirtSolidFraction(Compaction, S);
+	const float DeepFrac = DirtSolidFraction(S.DeepCompaction, S);
+	const float SkinSolid = SkinFrac * S.CompactionDepthCm;
+	return (SolidCm <= SkinSolid)
+		? SolidCm / SkinFrac
+		: S.CompactionDepthCm + (SolidCm - SkinSolid) / DeepFrac;
+}
+
+/** Inverse: the solids in a column BulkCm tall whose top skin is at Compaction. */
+inline float DirtSolidCm(float BulkCm, float Compaction, const FDirtSimSettings& S)
+{
+	const float SkinFrac = DirtSolidFraction(Compaction, S);
+	const float DeepFrac = DirtSolidFraction(S.DeepCompaction, S);
+	return (BulkCm <= S.CompactionDepthCm)
+		? BulkCm * SkinFrac
+		: S.CompactionDepthCm * SkinFrac + (BulkCm - S.CompactionDepthCm) * DeepFrac;
+}
+
+/** Proctor: packing efficiency as a function of moisture. Mirrors DirtPackingEfficiency in DirtCommon.ush. */
+inline float DirtPackingEfficiency(float Moisture)
+{
+	const float M = FMath::Clamp(Moisture, 0.0f, 1.0f);
+	const float Hump = FMath::SmoothStep(-0.2f, 0.7f, M);
+	const float Mud = 1.0f - FMath::SmoothStep(0.85f, 1.0f, M);
+	return (0.35f + 0.65f * Hump) * Mud;
 }

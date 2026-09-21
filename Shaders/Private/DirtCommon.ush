@@ -1,17 +1,23 @@
 // DaDirt — shared dirt-simulation helpers.
 //
 // STATE LAYOUT (RGBA32F render target, ping-ponged each pass)
-//   .r  dirt layer thickness, cm above bedrock. Always >= 0. This is the only
-//       channel that carries mass, so this is the channel the volume audit sums.
+//   .r  SOLID dirt in the layer, cm. Not bulk thickness: the centimetres of
+//       grains a column would make if every pore were squeezed out. This is
+//       the only channel that carries mass, so this is the channel the volume
+//       audit sums — and because every pass moves .r directly, packing or
+//       loosening dirt changes its height but never its amount.
 //   .g  compaction. 0 = loose fluffy dirt, 1 = packed hardpack.
-//   .b  moisture.   0 = bone dry, 1 = saturated.
-//   .a  total surface height in cm (bedrock + .r). Redundant, but it means the
-//       display material only has to sample one texture to displace the mesh.
+//   .b  moisture.   0 = bone dry, 1 = saturated. A brush may push it past 1;
+//       the water pass turns the excess into ponded water.
+//   .a  total surface height in cm = bedrock + bulk thickness of .r. Redundant,
+//       but it means the display material only has to sample one texture.
+//
+// A second, thinner state texture rides alongside (R32F): ponded surface water
+// in cm. Only the water pass touches it.
 //
 // Parameters are bound by NAME: each one declared here or in a pass below must
 // have a matching entry in that shader's FParameters struct in DirtSimulation.cpp.
-// The three declared here are shared by every pass, so every pass's struct has
-// them — even the init pass, which only reads DirtBaseHeight.
+// Those declared here are shared by every pass, so every pass's struct has them.
 
 #pragma once
 
@@ -28,12 +34,19 @@ int2 DirtResolution;
 Texture2D<float> DirtBaseHeight;      // static bedrock, cm
 Texture2D<float4> DirtStateIn;        // dirt state being read this pass
 
+// Porosity (void fraction) of loose and dense dirt, and how deep a tool's
+// packing reaches. docs/SoilPhysics.md sections 1 and 4.
+float DirtLoosePorosity;
+float DirtDensePorosity;
+float DirtCompactionDepthCm;
+float DirtDeepCompaction;
+
 #ifndef UNROLL
 	#define UNROLL [unroll]
 #endif
 
 // The four axis-aligned neighbours, in a fixed order. Index ^ 1 gives the
-// opposite direction. Used by the smooth brush.
+// opposite direction. Used by the smooth brush and the water run-off.
 static const int2 DirtOffsets4[4] = { int2(1, 0), int2(-1, 0), int2(0, 1), int2(0, -1) };
 
 // All eight neighbours, opposite pairs at i and i^1, which the slump pass relies
@@ -67,10 +80,49 @@ float4 DirtState(int2 C)
 	return DirtStateIn.Load(int3(C, 0));
 }
 
-// Total surface height at a texel: bedrock plus whatever dirt is sitting on it.
+// ---------------------------------------------------------------------------
+// Solid volume <-> bulk thickness
+// ---------------------------------------------------------------------------
+// MIRRORED in C++ (DirtSolidFraction / DirtBulkCm / DirtSolidCm in
+// DirtSimTypes.h) — keep them identical.
+//
+// Dirt is grains plus voids. Packing pushes the grains closer: the solid
+// fraction rises from ~0.52 (loose loam) to ~0.66 (dense), so the same grains
+// take up 20% less height. A tyre does not pack a whole 60 cm column though; it
+// reaches roughly CompactionDepthCm down. So a column is modelled as a skin at
+// the cell's compaction over a deep part at the natural-ground compaction.
+
+float DirtSolidFraction(float C)
+{
+	return 1.0f - lerp(DirtLoosePorosity, DirtDensePorosity, saturate(C));
+}
+
+// Bulk (visible) thickness of a column holding SolidCm of grains, cm.
+float DirtBulkCm(float SolidCm, float C)
+{
+	const float SkinFrac = DirtSolidFraction(C);
+	const float DeepFrac = DirtSolidFraction(DirtDeepCompaction);
+	const float SkinSolid = SkinFrac * DirtCompactionDepthCm;
+	return (SolidCm <= SkinSolid)
+		? SolidCm / SkinFrac
+		: DirtCompactionDepthCm + (SolidCm - SkinSolid) / DeepFrac;
+}
+
+// Inverse: the solids in a column BulkCm tall at compaction C.
+float DirtSolidCm(float BulkCm, float C)
+{
+	const float SkinFrac = DirtSolidFraction(C);
+	const float DeepFrac = DirtSolidFraction(DirtDeepCompaction);
+	return (BulkCm <= DirtCompactionDepthCm)
+		? BulkCm * SkinFrac
+		: DirtCompactionDepthCm * SkinFrac + (BulkCm - DirtCompactionDepthCm) * DeepFrac;
+}
+
+// Total surface height at a texel: bedrock plus the bulk of whatever dirt is on it.
 float DirtSurface(int2 C)
 {
-	return DirtBedrock(C) + DirtStateIn.Load(int3(C, 0)).r;
+	const float4 S = DirtStateIn.Load(int3(C, 0));
+	return DirtBedrock(C) + DirtBulkCm(S.r, S.g);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,10 +171,21 @@ float DirtAllowedDrop(float DropCm, float RunCm, float TanPhi, float CohesionKPa
 	return max(FrictionDrop, (DropCm <= Hc) ? DropCm : Hc);
 }
 
+// Proctor: how well dirt takes packing depends on its water. Bone dry it barely
+// packs (grains cannot rearrange), damp it packs fast, saturated it pumps and
+// will not pack at all. MIRRORED in C++ (DirtPackingEfficiency).
+float DirtPackingEfficiency(float Moisture)
+{
+	const float M = saturate(Moisture);
+	const float Hump = smoothstep(-0.2f, 0.7f, M);            // rises from ~0.3 dry to 1 at optimum
+	const float Mud = 1.0f - smoothstep(0.85f, 1.0f, M);      // past optimum it pumps
+	return (0.35f + 0.65f * Hump) * Mud;
+}
+
 // ---------------------------------------------------------------------------
 // Brush kernels
 // ---------------------------------------------------------------------------
-// IMPORTANT: these two functions are mirrored exactly in C++ (DirtBrush.h,
+// IMPORTANT: these two functions are mirrored exactly in C++ (DirtSimTypes.h,
 // DirtBrushCoreWeight / DirtBrushRimWeight). The CPU sums them over the brush
 // footprint to get normalisation constants, which is what makes dig and raise
 // conserve volume to the texel. If you change the shape here, change it there.
@@ -148,3 +211,22 @@ float DirtBrushRimWeight(float R, float CoreRadius, float RimRadius)
 	const float S = sin(DIRT_PI * T);
 	return S * S;                    // 0 at both edges of the ring, 1 mid-ring
 }
+
+// ---------------------------------------------------------------------------
+// Deposits from parcels
+// ---------------------------------------------------------------------------
+// Airborne dirt lands by atomically adding its volume into a fixed-point uint
+// texture, which the deposit pass folds into the layer at the start of the next
+// step. Fixed point because float atomics are not guaranteed on every GPU.
+// 65536 steps per cm^3 so a 3 mm grain (0.014 cm^3) rounds to 0.05%; a cell can
+// take 65 litres in one step before it wraps.
+#define DIRT_DEPOSIT_SCALE 65536.0f
+
+// Parcel counters (a small uint buffer, read back to the CPU a frame or two late).
+// Must match DirtSim::ParcelCounter* in DirtSimulation.h.
+#define DIRT_PARCEL_COUNTER_FREE     0   // free slots
+#define DIRT_PARCEL_COUNTER_SPAWNED  1   // total ever spawned
+#define DIRT_PARCEL_COUNTER_LANDED   2   // total ever deposited
+#define DIRT_PARCEL_COUNTER_FALLBACK 3   // spawns that found the pool full
+#define DIRT_PARCEL_COUNTER_MAXLIVE  4   // highest live slot + 1, this step
+#define DIRT_PARCEL_COUNTER_COUNT    8

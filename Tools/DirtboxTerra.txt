@@ -1,0 +1,116 @@
+# DaDirt Phase D: the terramechanics wheel (docs/SoilPhysics.md section 6).
+#   1. static sinkage: park the wheel on loose, packed and soaked pad and read
+#      the sinkage the Bekker rule gives (loose ~3 cm, hardpack < 1 mm, mud more)
+#   2. a run down the pad: traction builds with slip (Janosi-Hanamoto), motion
+#      resistance from the rut being pressed, roost as parcels behind the wheel
+#   3. ruts at rut resolution: four passes; the rut should saturate as the floor
+#      packs, most of its depth from compaction shrink + Bekker sinkage
+#   4. burnout on a stand: roost volume, and the audit with dirt in the air
+# The pad runs Y = -30..30 at X = 3. Heading 90 deg = +Y.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+DaDirt.Pack 3 20 300 1
+DaDirt.Wet 3 -20 300 1
+wait 1
+
+# --- 1. sinkage on three soils ------------------------------------------------------------
+DaDirt.Wheel 6 0 90
+DaDirt.Drive 0.05 0 0
+wait 1.5 sink_loose
+DaDirt.Wheel 3 20 90
+DaDirt.Drive 0.05 0 0
+wait 1.5 sink_packed
+DaDirt.Wheel 3 -20 90
+DaDirt.Drive 0.05 0 0
+wait 1.5 sink_mud
+DaDirt.Drive 0 0 1
+
+# --- 2. a run down the pad with the chase camera ---------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Wheel 3 -26 90
+DaDirt.Follow 1
+DaDirt.Drive 0.8 0 0
+wait 2.5 launch
+screenshot terra_20_launch_chase
+wait 3 run
+screenshot terra_21_run_chase
+DaDirt.Drive 0 0 1
+wait 2.5 stop
+DaDirt.Follow 0
+DaDirt.Parcels
+DaDirt.Audit
+camera 3 -20 2.5 -25 90
+wait 0.4
+screenshot terra_22_line_along
+
+# --- 3. ruts at rut resolution --------------------------------------------------------------
+DaDirt.Focus 3 0 40
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_1
+DaDirt.Probe 3 0
+DaDirt.Probe 3.06 0
+DaDirt.Probe 3.2 0
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_2
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_3
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_4
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Probe 2.7 0
+DaDirt.Probe 2.8 0
+DaDirt.Probe 2.88 0
+DaDirt.Probe 2.94 0
+DaDirt.Probe 3 0
+DaDirt.Probe 3.06 0
+DaDirt.Probe 3.12 0
+DaDirt.Probe 3.2 0
+DaDirt.Probe 3.3 0
+camera 1.6 0 0.8 -20 0
+wait 0.4
+screenshot terra_30_rut_across
+DaDirt.DebugView 2
+wait 0.4
+screenshot terra_31_rut_compaction
+DaDirt.DebugView 0
+DaDirt.Audit
+DaDirt.Focus off
+wait 1
+
+# --- 4. burnout on a stand: roost -------------------------------------------------------------
+DaDirt.Reset
+wait 0.5
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+camera 6.2 -23.5 1.1 -14 55
+DaDirt.Drive 1 0 0
+wait 1 burnout_1s
+screenshot terra_40_burnout_1s
+DaDirt.Parcels
+DaDirt.Audit
+wait 2 burnout_3s
+screenshot terra_41_burnout_3s
+DaDirt.Parcels
+DaDirt.Drive 0 0 1
+wait 3 settle
+DaDirt.Parcels
+DaDirt.Audit
+DaDirt.Probe 8 -20
+DaDirt.Probe 8 -21.5
+DaDirt.Probe 8 -23
+DaDirt.Probe 8 -25
+camera 4 -20 2.5 -25 0
+wait 0.4
+screenshot terra_42_burnout_after
+quit
