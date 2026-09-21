@@ -120,9 +120,17 @@ void ApplyStroke(int2 P, int K, inout float4 S)
 	{
 		S.g = saturate(S.g - Amount * Mask);
 	}
+	else if (Mode == 6)    // SCOOP — take dirt out of the core; a paired DUMP puts it down elsewhere
+	{
+		S.r -= Amount * CoreW;
+	}
+	else if (Mode == 7)    // DUMP — the other half of a SCOOP. Arrives loose.
+	{
+		S.r += Amount * CoreW;
+	}
 
 	// Dirt you have just moved is broken-up dirt — it loses its pack.
-	if (Mode <= 2)
+	if (Mode <= 2 || Mode >= 6)
 	{
 		S.g = saturate(S.g - Disturb * Mask);
 	}

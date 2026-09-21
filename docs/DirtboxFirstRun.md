@@ -209,6 +209,39 @@ at 3 passes (60 fps), and 8 passes costs 23.5 ms (38 fps). The groupshared-tile
 optimisation is now worth doing when the frame needs the headroom; 3 passes
 converge a collapsing cone within 5 s, so there is no reason to run more.
 
+## Ball and wheel (later the same day)
+
+Both objects read the ground through a **height window**: a 32–128 texel patch of
+the dirt state read back from the GPU every frame through `FRHIGPUTextureReadback`,
+arriving a frame or two later. Nothing stalls; the balls and the wheel run at 60 fps
+with strokes landing every frame (the brush pass now takes 16 strokes per dispatch).
+
+**Ball** (`Tools/DirtboxBall.txt`): a 30 cm ball dropped 5 m hit at 9.9 m/s — exactly
+√(2·g·5) — dented 15 cm, bounced twice and slept in its crater with the probe
+agreeing to 0.1 cm. A 60 cm ball from 12 m hit at 15.4 m/s. A ball on the 11 m dome
+bounced 20 m down the flank; a thrown ball skipped three times.
+
+**Wheel** (`Tools/DirtboxWheel.txt`), after three tuning rounds:
+
+| test | result |
+|---|---|
+| anchored burnout, 3 s | tyre at 9 m/s slip, 5 cm hole under it, 2.8 cm pile 1.6 m behind, 2.6 L moved |
+| run down the pad | 0 → 13.5 m/s (49 km/h) over 47 m, slip 1.7 → 0.4 m/s as it hooks up |
+| locked brake from 49 km/h | 25 m skid, slip −10 m/s, dirt shoved forwards |
+| rut, 3.9 cm cells, pass 1 | 1.5 cm deep, 0.5 cm shoulders |
+| rut, pass 4 | 2.4 cm deep, 0.8 cm shoulders, floor compaction 1.0, grip 0.55 → 1.00, all passes on the same line |
+| turn at 0.7 steer | clean arc, heading 90° → 238° |
+| volume | drift ≤ 0.00015 m³ through everything |
+
+Two bugs were caught by the numbers: the first version's tyre spun up without an
+engine cap (250 m/s) and each scoop dropped the ground enough to read as "airborne",
+which removed traction and let it spin faster — a runaway that dug 1,700 L and hit
+bedrock (the audit flagged +4.8 m³ created). A tyre speed cap, a 3 cm contact
+tolerance and a scoop capped by the layer available fixed it. Then the wheel would
+not stay in its own rut: a point contact tips off a shoulder. A three-point contact
+across the tyre's width (rest on the highest point, get pushed toward the lower
+edge) made the rut hold it.
+
 ## Open items (design calls, not bugs)
 
 1. **The repose test's metric needs a cleaner subject.** The box-wide "steepest

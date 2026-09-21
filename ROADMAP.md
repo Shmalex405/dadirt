@@ -200,11 +200,25 @@ are half of what the dirt simulator *is*. Push this as hard as the hardware allo
 - [ ] Droppable objects (ball, plate, block)
 - [ ] Camera + controls that make poking at dirt satisfying
 
-### 1e — The test wheel
-- A driveable powered wheel (throttle / brake / steer) — the ancestor of the bike
-- Slip-based digging: a spinning tire trenches in and roosts dirt behind it
-- Rolling compaction: driving packs a line into loose dirt
-- Berm carving: repeated cornering builds up a banked wall
+### 1e — The test wheel *(first version running, 2026-09-21)*
+- [x] A driveable powered wheel (throttle / brake / steer) — the ancestor of the
+      bike. `DaDirt.Wheel`, `DaDirt.Drive`, `DaDirt.Anchor`, `DaDirt.Follow`. No
+      physics engine: it integrates against the dirt through a height window,
+      with a tyre model (slip → traction, grip from compaction and moisture,
+      rolling drag from looseness) and a 12 cm-wide three-point contact so ruts
+      hold it and berm walls push it back
+- [x] Slip-based digging: wheelspin scoops dirt from under the tyre and throws it
+      backwards with `TransferDirt` (Scoop + Dump, zero-sum); a locked brake
+      shoves it forwards. Anchored burnout: 5 cm hole, pile 1.6 m behind
+- [x] Rolling compaction and rutting: one pass on loose dirt presses ~1.5 cm and
+      packs the line; four passes at 3.9 cm cells gave a 2.4 cm rut with 0.8 cm
+      shoulders, compaction 1.0 on the floor, grip 0.55 → 1.00, and every pass ran
+      in the same rut. Depth saturates as the floor packs, as real ruts do
+- [ ] Berm carving: repeated cornering builds up a banked wall — the turn works,
+      the berm has not been measured yet
+- [ ] Roost as particles: the Scoop half stays, the Dump half becomes airborne
+      grains that land and dump themselves (this is where 1c plugs in)
+- [ ] Keyboard control for Alex (WASD), and a tyre mesh that is not a cylinder
 
 **Phase 1 exit bar:** dig a hole and the dirt piles beside it; piles slump at a
 believable angle; the wheel roosts, ruts in, and packs a racing line; nothing in

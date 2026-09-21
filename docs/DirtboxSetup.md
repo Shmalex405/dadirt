@@ -245,6 +245,13 @@ DaDirt.Wet    <x> <y> [radiusCm=300] [amount=0.5]
 DaDirt.Pack   <x> <y> [radiusCm=300] [amount=0.5]
 DaDirt.Loosen <x> <y> [radiusCm=300] [amount=0.5]
 
+DaDirt.Ball   <x> <y> [dropM=5] [radiusCm=30] [vxMps vyMps]   drop or throw a ball
+DaDirt.ClearBalls
+DaDirt.Wheel  <x> <y> [headingDeg]   the powered test wheel (replaces the old one)
+DaDirt.Drive  <throttle -1..1> [steer -1..1] [brake 0..1]   inputs, held until changed
+DaDirt.Anchor [0|1]          hold the wheel in place: a burnout on a stand
+DaDirt.Follow [0|1]          chase camera behind the wheel
+
 DaDirt.Test   repose | anglefan | conserve | trench
 DaDirt.DebugView <0-6>
 DaDirt.Pause  [0|1]

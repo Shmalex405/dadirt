@@ -112,7 +112,16 @@ public:
 	 * Amount is a 0-1 strength.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
-	void ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode);
+	void ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode, float DisturbOverride = -1.0f);
+
+	/**
+	 * Move a volume of dirt (cm^3) from one spot to another with no rim on either
+	 * end: a Scoop at From and a Dump at To of exactly the same volume. Zero-sum
+	 * except where the scoop hits bedrock, which the audit reports. A spinning
+	 * tyre roosting dirt backwards is this; so, later, is a particle landing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "DaDirt")
+	void TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3);
 
 	/** Rebuild the terrain and throw away everything that has been dug. */
 	UFUNCTION(BlueprintCallable, Category = "DaDirt")
@@ -198,7 +207,8 @@ private:
 	 * Build a stroke, including the discrete kernel sums that make dig and raise
 	 * conserve volume exactly on this grid.
 	 */
-	FDirtBrushStroke MakeStroke(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode) const;
+	FDirtBrushStroke MakeStroke(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode,
+								float DisturbOverride = -1.0f) const;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UProceduralMeshComponent> GroundMesh;

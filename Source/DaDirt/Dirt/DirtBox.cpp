@@ -1,6 +1,7 @@
 #include "DirtBox.h"
 
 #include "DirtBall.h"
+#include "DirtWheel.h"
 #include "DirtSimulation.h"
 #include "DirtTestbed.h"
 #include "DirtTrack.h"
@@ -725,7 +726,8 @@ FVector2f ADirtBox::WorldToTexel(FVector2D WorldXYCm) const
 	return FVector2f((LocalX + Half) * CellsPerCm, (LocalY + Half) * CellsPerCm);
 }
 
-FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode) const
+FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode,
+									  float DisturbOverride) const
 {
 	const float TexelSize = Settings.TexelSizeCm();
 
@@ -734,7 +736,8 @@ FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float
 	S.CenterTexel = WorldToTexel(WorldXYCm);
 	S.CoreRadiusTexels = FMath::Max(RadiusCm / TexelSize, 1.0f);
 	S.RimRadiusTexels = S.CoreRadiusTexels * FMath::Max(Settings.BrushRimScale, 1.05f);
-	S.Disturb = Settings.BrushDisturb;
+	// A hand tool breaks the dirt up; a rolling tyre pressing a rut does not.
+	S.Disturb = (DisturbOverride >= 0.0f) ? DisturbOverride : Settings.BrushDisturb;
 
 	// Sum both kernels over exactly the cells the shader will touch, at exactly
 	// the sub-cell offsets the shader will use, skipping the cells the shader
@@ -785,14 +788,28 @@ FDirtBrushStroke ADirtBox::MakeStroke(FVector2D WorldXYCm, float RadiusCm, float
 	return S;
 }
 
-void ADirtBox::ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode)
+void ADirtBox::ApplyBrush(FVector2D WorldXYCm, float RadiusCm, float Amount, EDirtBrushMode Mode, float DisturbOverride)
 {
 	if (!bResourcesReady || RadiusCm <= 0.0f)
 	{
 		return;
 	}
 
-	PendingStrokes.Add(MakeStroke(WorldXYCm, RadiusCm, Amount, Mode));
+	PendingStrokes.Add(MakeStroke(WorldXYCm, RadiusCm, Amount, Mode, DisturbOverride));
+}
+
+void ADirtBox::TransferDirt(FVector2D FromWorldXYCm, float FromRadiusCm, FVector2D ToWorldXYCm, float ToRadiusCm, float VolumeCm3)
+{
+	if (!bResourcesReady || VolumeCm3 <= 0.0f || FromRadiusCm <= 0.0f || ToRadiusCm <= 0.0f)
+	{
+		return;
+	}
+
+	// Scoop/Dump amounts are layer-height sums in cm x texel^2: the shader adds
+	// Amount * CoreW per texel and the core weights sum to exactly 1.
+	const float Amount = VolumeCm3 / Settings.TexelAreaCm2();
+	PendingStrokes.Add(MakeStroke(FromWorldXYCm, FromRadiusCm, Amount, EDirtBrushMode::Scoop));
+	PendingStrokes.Add(MakeStroke(ToWorldXYCm, ToRadiusCm, Amount, EDirtBrushMode::Dump));
 }
 
 void ADirtBox::ResetToTestbed()
@@ -1551,6 +1568,99 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtBallCmd(
 				Ball->Velocity = FVector(ArgFloat(Args, 4, 0.0f) * 100.0f, ArgFloat(Args, 5, 0.0f) * 100.0f, 0.0f);
 				UE_LOG(LogDirt, Log, TEXT("Dropped a %.0f cm ball at (%.1f, %.1f) m from %.1f m above the ground (Z %.1f cm)."),
 					RadiusCm, Xm, Ym, DropM, Ground);
+			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtWheelCmd(
+	TEXT("DaDirt.Wheel"),
+	TEXT("DaDirt.Wheel <Xm> <Ym> [headingDeg=0] - put the powered test wheel on the dirt (replaces any existing one). ")
+	TEXT("Then DaDirt.Drive <throttle> <steer> [brake]."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box || !World)
+			{
+				return;
+			}
+			if (Args.Num() < 2)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Wheel <Xm> <Ym> [headingDeg]"));
+				return;
+			}
+
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				It->Destroy();
+			}
+
+			const float Xm = ArgFloat(Args, 0, 0.0f);
+			const float Ym = ArgFloat(Args, 1, 0.0f);
+			const float HeadingDeg = ArgFloat(Args, 2, 0.0f);
+			const FVector Origin = Box->GetActorLocation();
+			const FVector2D World2D(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
+
+			if (!Box->IsInsideBox(World2D))
+			{
+				UE_LOG(LogDirt, Warning, TEXT("(%.1f, %.1f) m is outside the box."), Xm, Ym);
+				return;
+			}
+
+			Box->RefreshReadback();
+			const float Ground = Box->GetSurfaceHeightAtWorld(World2D);
+
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ADirtWheel* Wheel = World->SpawnActor<ADirtWheel>(ADirtWheel::StaticClass(),
+				FVector(World2D.X, World2D.Y, Ground + 60.0f), FRotator(0.0f, HeadingDeg, 0.0f), Params);
+			if (Wheel)
+			{
+				UE_LOG(LogDirt, Log, TEXT("Test wheel at (%.1f, %.1f) m heading %.0f deg. DaDirt.Drive <throttle> <steer> to go."),
+					Xm, Ym, HeadingDeg);
+			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtDriveCmd(
+	TEXT("DaDirt.Drive"),
+	TEXT("DaDirt.Drive <throttle -1..1> [steer -1..1] [brake 0..1] - inputs for the test wheel, held until changed."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				It->SetInputs(FMath::Clamp(ArgFloat(Args, 0, 0.0f), -1.0f, 1.0f),
+							  FMath::Clamp(ArgFloat(Args, 1, 0.0f), -1.0f, 1.0f),
+							  FMath::Clamp(ArgFloat(Args, 2, 0.0f), 0.0f, 1.0f));
+				return;
+			}
+			UE_LOG(LogDirt, Warning, TEXT("No test wheel. DaDirt.Wheel <x> <y> first."));
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtAnchorCmd(
+	TEXT("DaDirt.Anchor"),
+	TEXT("DaDirt.Anchor [0|1] - hold the test wheel in place so it can spin against the dirt (a burnout on a stand)."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				It->bAnchored = Args.IsValidIndex(0) ? (ArgInt(Args, 0, 1) != 0) : !It->bAnchored;
+				UE_LOG(LogDirt, Log, TEXT("Wheel %s."), It->bAnchored ? TEXT("anchored") : TEXT("free"));
+				return;
+			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtFollowCmd(
+	TEXT("DaDirt.Follow"),
+	TEXT("DaDirt.Follow [0|1] - chase camera behind the test wheel."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				It->bFollowCamera = Args.IsValidIndex(0) ? (ArgInt(Args, 0, 1) != 0) : !It->bFollowCamera;
+				UE_LOG(LogDirt, Log, TEXT("Chase camera %s."), It->bFollowCamera ? TEXT("on") : TEXT("off"));
+				return;
 			}
 		}));
 

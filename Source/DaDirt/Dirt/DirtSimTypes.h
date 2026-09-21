@@ -20,7 +20,15 @@ enum class EDirtBrushMode : uint8
 	/** Compact the dirt. Moves no dirt. */
 	Pack    = 4,
 	/** Break up hardpack. Moves no dirt. */
-	Loosen  = 5
+	Loosen  = 5,
+	/**
+	 * Remove dirt from the core with NO rim: it goes somewhere else, via a paired
+	 * Dump of the same volume. Amount is volume in cm x texel^2 (see
+	 * ADirtBox::TransferDirt). This is how a spinning tyre throws dirt backwards.
+	 */
+	Scoop   = 6,
+	/** Add dirt to the core with no rim; the other half of a Scoop. */
+	Dump    = 7
 };
 
 /** What terrain the Dirtbox builds. */

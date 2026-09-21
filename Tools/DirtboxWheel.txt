@@ -1,0 +1,114 @@
+# DaDirt test wheel: the first powered thing on the dirt.
+#   1. anchored burnout on the loose pad       -> hole under the tyre, roost pile behind it
+#   2. a straight run down the pad              -> the wheel gets up to speed, brakes, skids
+#   3. ruts at rut resolution: focus a 40 m region on the pad (3.9 cm cells), then
+#      four passes over the same line            -> a rut with shoulders, packed floor
+#   4. a turn, then a locked-brake stop          -> arc, dirt shoved forwards
+# The pad runs Y = -30..30 at X = 3. Heading 90 deg = +Y.
+
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+
+# --- 1. burnout on a stand ------------------------------------------------------
+DaDirt.Wheel 8 -20 90
+DaDirt.Anchor 1
+DaDirt.Follow 1
+wait 0.5
+DaDirt.Drive 1 0 0
+wait 3 burnout
+DaDirt.Drive 0 0 1
+wait 1.5
+screenshot wheel_00_burnout_chase
+DaDirt.Follow 0
+camera 6.2 -23.5 1.1 -14 55
+wait 0.4
+screenshot wheel_01_burnout_closeup
+DaDirt.Probe 8 -20
+DaDirt.Probe 8 -20.8
+DaDirt.Probe 8 -21.6
+DaDirt.Probe 8 -22.4
+DaDirt.Audit
+
+# --- 2. a run down the pad ------------------------------------------------------------
+DaDirt.Wheel 3 -26 90
+DaDirt.Follow 1
+DaDirt.Drive 0.6 0 0
+wait 6 pass_full_res
+DaDirt.Drive 0 0 1
+wait 2.5
+screenshot wheel_02_run_chase
+DaDirt.Follow 0
+
+# --- 3. ruts at rut resolution -------------------------------------------------------
+DaDirt.Focus 3 0 40
+wait 1
+DaDirt.Wheel 3 -17 90
+DaDirt.Follow 1
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_1
+DaDirt.Probe 3 0
+DaDirt.Probe 3.06 0
+DaDirt.Probe 3.12 0
+DaDirt.Probe 3.2 0
+DaDirt.Probe 3.3 0
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_2
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_3
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_pass_4
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Probe 2.7 0
+DaDirt.Probe 2.8 0
+DaDirt.Probe 2.88 0
+DaDirt.Probe 2.94 0
+DaDirt.Probe 3 0
+DaDirt.Probe 3.06 0
+DaDirt.Probe 3.12 0
+DaDirt.Probe 3.2 0
+DaDirt.Probe 3.3 0
+DaDirt.Probe 3 8
+DaDirt.Probe 3 -8
+DaDirt.Follow 0
+camera 3 -6 0.9 -12 90
+wait 0.4
+screenshot wheel_10_rut_along
+camera 1.6 0 0.8 -20 0
+wait 0.4
+screenshot wheel_11_rut_across
+camera -3 0 3.5 -40 0
+wait 0.4
+DaDirt.DebugView 2
+wait 0.4
+screenshot wheel_12_rut_compaction
+DaDirt.DebugView 1
+wait 0.4
+screenshot wheel_13_rut_depth
+DaDirt.DebugView 0
+DaDirt.Audit
+DaDirt.Focus off
+wait 1
+
+# --- 4. a turn and a locked stop -----------------------------------------------------
+DaDirt.Wheel 3 -26 90
+DaDirt.Follow 1
+DaDirt.Drive 0.8 0 0
+wait 3
+DaDirt.Drive 0.5 0.7 0
+wait 3 turning
+DaDirt.Drive 0 0 1
+wait 2.5 braking
+screenshot wheel_20_turn_chase
+DaDirt.Follow 0
+camera -4 8 3 -30 30
+wait 0.4
+screenshot wheel_21_turn_closeup
+DaDirt.Audit
+quit
