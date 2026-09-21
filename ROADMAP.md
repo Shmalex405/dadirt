@@ -235,7 +235,9 @@ cannot read structured buffers and Niagara cannot be authored from text):
       the front of the patch, and the wheel is tested on every testbed shape
       (`Tools/DirtboxHills.txt`, docs/SoilPhysics.md 9j)
 - [ ] Suspension: the rigid wheel hops off whoops and berm banks a sprung one
-      would absorb. Part of the bike build.
+      would absorb. Part of the bike build: see `docs/BikeEngineering.md`, the
+      Phase 2 research and plan (tyre, wheel, brakes, fork and shock internals,
+      chassis, drivetrain, rider), component by component.
 - [ ] Mouse tools: click and drag to sculpt
 - [ ] Droppable objects (ball, plate, block)
 - [ ] Camera + controls that make poking at dirt satisfying

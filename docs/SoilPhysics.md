@@ -594,8 +594,8 @@ them; the status line prints heap / carried / plough and air time.
 
 | encounter | rigid contact | climb-or-shove |
 |---|---|---|
-| loose pile at 5.5 m/s | 0.79 s in the air, 51 cm up | a 0.02 s hop, the pile cut through and its dirt spilled ahead and to both sides |
-| loose pile at quarter throttle (crawl) | | heap 13.6 cm, carried 0.12, 132 N of push back, through at 0.5 m/s |
+| loose pile at 5.5 m/s | 0.80 s in the air, 52 cm up | a 0.03 s hop, the pile cut through and its dirt spilled ahead and to both sides |
+| loose pile at quarter throttle (crawl) | | heap 8–11 cm under the tyre, carried 0.09–0.11, 60–100 N of push back, through at 0.5–1.3 m/s, the pile cut down to the pad |
 | packed damp lip at 8 m/s | 0.5 s, 42 cm | carried ~0.6: still a kicker, 40 cm |
 
 Things the pile exposed on the way:
@@ -607,11 +607,14 @@ Things the pile exposed on the way:
   that volume spreads to at its angle of repose, 40 % ahead and 30 % to each
   side, since a tyre is a blade with no wings.
 - Judged against the mean of a ring, a hillside read as a 26 cm heap and the
-  wheel tried to bulldoze the dome. A heap is now what stands above the
-  highest point of two rings, one and two tyre radii out, by about the same
-  amount (a hill crest stands far taller over the far ring); a pile just
-  ahead is judged the same way with the near ring's forward samples left out,
-  because on a pile the size of the tyre they sit on the pile itself.
+  wheel tried to bulldoze the dome. The reference is now the highest point of
+  two rings, one and two tyre radii out, read *aside* (90° and more off the
+  heading, which follows the contour, so a hillside is level ground); a heap
+  is what stands above both by about the same amount (a hill crest stands far
+  taller over the far ring). A pile just ahead, not yet under the tyre, must
+  also clear the far ring's forward sample: beyond a pile that sample is back
+  at the base, beyond a slope it is higher still. Piles wider than the far
+  ring (about 70 cm) are terrain and are climbed.
 - Anything lower than the tyre's static sinkage is pressed as part of the rut,
   not shoved, so a packed rut floor is not churned by its own shoulders.
 
@@ -622,20 +625,20 @@ Drift in every case: under 0.05 cm³.
 Alex: test on the hills and the other things, not just the flat terrain.
 `Tools/DirtboxHills.txt` drives every shape in the testbed with the window
 following the wheel at 3.9 cm cells. With the tyre's own patch and the heap
-rule above (run 15, before the ahead-pile fix):
+rule above (final run, 2026-09-22):
 
 | shape | what happened |
 |---|---|
 | 7.5 m dome, 40° cosine face | climbs, slowing to 3.7 m/s at slip 0.31 on the steepest part, crests at 11 m/s and flies 2.6 m off the back |
-| SX whoops, 90 cm at 4.3 m, 5–6 m/s | airborne 3.6 of 8 s, hops to 69 cm: a rigid wheel with no suspension skips them |
-| FIM rolling waves, 80 cm at 10 m, 10 m/s | hops of 37 cm at most |
+| SX whoops, 90 cm at 4.3 m, 5–6 m/s | airborne 3.5 of 8 s, hops to 70 cm: a rigid wheel with no suspension skips them |
+| FIM rolling waves, 80 cm at 10 m, 10 m/s | hops of 44 cm at most |
 | 32° jump face, flat out (12 m/s) | 4.8 m of air, lands on the landing 10 m out |
 | 22° rounded tabletop, 10.6 m/s | 1.3 m of air |
 | 25° packed wedge, standing start | climbs at 3 m/s, slip 0.21, over the crest |
 | 40° packed wedge, standing start | crawls up at 1.2–1.5 m/s, slip 0.48, 640 N of traction against 630 N of gravity |
-| berm arc, 34° bank, 1.1 m | a 180° turn at 6–8 m/s; a 65 cm hop off the bank, again the rigid wheel |
+| berm arc, 34° bank, 1.1 m | a 180° turn at 6–8 m/s; a 74 cm hop off the bank, again the rigid wheel |
 | loose 3 m mound (compaction 0.3) | climbed at 5.5 m/s, sinking 1.8 cm |
-| 3 m bowl, 10 m/s | through, a 60 cm hop off the far rim |
+| 3 m bowl, 10 m/s | through, a 53 cm hop off the far rim |
 
 Drift in every section: 0.5 cm³ or less. Found on the way: the window could
 not reach the last, partial row of tiles at the box edge, so the whoops at

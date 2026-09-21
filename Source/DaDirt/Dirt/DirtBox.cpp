@@ -901,7 +901,9 @@ void ADirtBox::HarvestTileReadbacks(bool bBlock)
 
 	for (int32 i = InFlightTileReadbacks.Num() - 1; i >= 0; --i)
 	{
-		const TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe>& RB = InFlightTileReadbacks[i];
+		// By value: the array slot is removed below and a reference into it
+		// would dangle (it did, and asserted once in a hundred slides).
+		const TSharedPtr<FDirtTileReadback, ESPMode::ThreadSafe> RB = InFlightTileReadbacks[i];
 		if (!RB->bDone)
 		{
 			continue;

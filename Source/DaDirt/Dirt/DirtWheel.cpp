@@ -214,8 +214,14 @@ void ADirtWheel::Step(float Dt)
 		// both by the same amount (the pad is the highest thing round it).
 		// Judged against one ring's mean, the dome at (22, 30) read as a 26 cm
 		// heap all the way up and the wheel tried to bulldoze the hill.
+		// Each ring is read twice: everything, and "aside" (90 degrees and more
+		// off the heading). The aside references follow the contour, so a
+		// hillside reads as level ground; the forward samples of the near ring
+		// may sit on a pile just ahead, so they never serve as a reference; the
+		// forward sample of the far ring tells a pile (beyond it: back at the
+		// base) from a slope (beyond it: higher still).
 		float RingMax1 = -1e9f, RingMax2 = -1e9f;
-		float RingMax1Aside = -1e9f;      // ring 1 without its forward samples, which may sit on a pile just ahead
+		float RingMax1Aside = -1e9f, RingMax2Aside = -1e9f;
 		int32 RingN = 0;
 		const float RingHeadingRad = FMath::Atan2(Forward.Y, Forward.X);
 		for (int32 Ring = 1; Ring <= 2; ++Ring)
@@ -228,17 +234,12 @@ void ADirtWheel::Step(float Dt)
 				FVector Unused;
 				if (B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM + FVector2D(FMath::Cos(A), FMath::Sin(A)) * RingCm, H, Unused))
 				{
-					if (Ring == 1)
+					float& All = (Ring == 1) ? RingMax1 : RingMax2;
+					float& Aside = (Ring == 1) ? RingMax1Aside : RingMax2Aside;
+					All = FMath::Max(All, H);
+					if (K >= 2 && K <= 6)          // 90 degrees and more off the heading
 					{
-						RingMax1 = FMath::Max(RingMax1, H);
-						if (K >= 2 && K <= 6)          // 90 degrees and more off the heading
-						{
-							RingMax1Aside = FMath::Max(RingMax1Aside, H);
-						}
-					}
-					else
-					{
-						RingMax2 = FMath::Max(RingMax2, H);
+						Aside = FMath::Max(Aside, H);
 					}
 					++RingN;
 				}
@@ -246,14 +247,13 @@ void ADirtWheel::Step(float Dt)
 		}
 		if (RingN >= 12)
 		{
-			const float P1 = (GroundCm - RingMax1) / CmPerM;
-			const float P2 = (GroundCm - RingMax2) / CmPerM;
+			const float P1 = (GroundCm - RingMax1Aside) / CmPerM;
+			const float P2 = (GroundCm - RingMax2Aside) / CmPerM;
 			if (P1 > 0.0f && P2 <= P1 * 1.3f + 0.02f)
 			{
 				HeapM = FMath::Min(P1, RadiusM * 0.9f);
 			}
 		}
-		const float SurroundCm = FMath::Max(RingMax1, RingMax2);
 
 		// The obstacle is the whole thing in front of the tyre, not just the part
 		// under it now: the toe of a packed lip is held by the lip behind it.
@@ -308,7 +308,7 @@ void ADirtWheel::Step(float Dt)
 		// decides how much dirt moves.
 		const float FloorCm = GroundCm - HeapM * (1.0f - Carried) * CmPerM;
 		WedgeAheadM = ObstacleM;
-		BladeM = (RingN >= 12) ? FMath::Max(BladeCm - FMath::Max(FloorCm, SurroundCm), 0.0f) / CmPerM : 0.0f;
+		BladeM = (RingN >= 12) ? FMath::Max(BladeCm - FMath::Max3(FloorCm, RingMax2, RingMax1Aside), 0.0f) / CmPerM : 0.0f;
 	}
 	const float HeapSinkM = HeapM * (1.0f - Carried);
 	GroundCm -= HeapSinkM * CmPerM;
