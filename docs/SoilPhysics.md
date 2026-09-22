@@ -747,9 +747,13 @@ a bowl). The status line prints pond / drag / lift.
 | locked-brake stop from 7.1 m/s, dry pad | 693 N of retardation, about 3.7 m to stop |
 | locked-brake stop from 7.5 m/s, into the puddle | 213–387 N in the water (grip 0.29–0.44), about 5.5 m to stop |
 
-Pond and pore water are audited throughout (2.48 m³ ponded at the start,
-2.07 m³ forty seconds later: the packed basin lets 0.008 cm/s through and
-the pad dries at the set rate); dirt drift under 0.5 cm³. Not yet: the water
+Pond and pore water are audited throughout (2.50 m³ ponded at the start,
+2.47 m³ at the end: the packed basin lets under 0.001 cm/s through since
+infiltration went to a tenth of its pace for erosion, section 5b; before that
+it read 2.48 → 2.07 m³ in forty seconds); dirt drift under 0.5 cm³. Re-run
+after that change: through at 7.9 m/s, drag 650 N, lift 420 N, grip 0.34, out
+at 6.0 m/s; flat out at 9.7 m/s, drag 920 N, lift 970 N of 981 N, traction
+3 N, out at 8.0 m/s; the locked-brake stops read the same. Not yet: the water
 the tyre throws (a spray pool like dust), and puddles in the far mesh.
 
 ## 9l. The soils measured (2026-09-22)
@@ -764,13 +768,18 @@ air.
 | | sand | granite | loam | pnw | clay |
 |---|---|---|---|---|---|
 | cone face, deg (setting) | 32 (31) | 37 (36) | 33 (32) | 29 (28) | 25 (24) |
-| sinkage at rest, cm | 2.4 | 1.9 | 3.0 | 0.6 | 0.4 |
+| sinkage at rest, cm | 2.4 | 1.9 | 2.9 | 0.6 | 0.4 |
 | grip at rest / rolling | 0.66 / 0.68 | 0.79 / 0.83 | 0.75 / 0.79 | 0.70 / 0.77 | 0.70 / 0.81 |
-| rut after one pass, cm (compaction) | 1.5 (0.32) | 1.8 (0.62) | 1.9 (0.50) | 1.2 (0.45) | 1.2 (0.47) |
-| puddle left after 6 s, cm (moisture under it) | 13.8 (0.39) | 14.2 (0.36) | 15.1 (0.25) | 15.8 (0.17) | 16.0 (0.15) |
+| rut after one pass, cm (compaction) | 1.5 (0.25) | 1.7 (0.62) | 2.0 (0.39) | 1.6 (0.50) | 0.9 (0.41) |
+| puddle left after 6 s, cm (moisture under it) | 15.8 (0.16) | 15.9 (0.16) | 16.0 (0.15) | 16.1 (0.15) | 16.1 (0.14) |
+| dust after a 2 s burnout, motes | 207 | 480 | 312 | 92 | 264 |
 
-(The puddle row was measured before infiltration went to a tenth of its pace for erosion, section 5b; the soaking now takes ten times longer, in the same order.)
-| dust after a 2 s burnout, motes | 178 | 489 | 302 | 81 | 252 |
+(Re-run 2026-09-22 after infiltration went to a tenth of its pace for erosion,
+section 5b. Before that the puddle row read 13.8 / 14.2 / 15.1 / 15.8 / 16.0 cm
+with 0.39 / 0.36 / 0.25 / 0.17 / 0.15 moisture under it: the soils separated in
+six seconds. Now they separate in a minute, in the same order, and six seconds
+only shows the first millimetres of it. The rut row moves a few millimetres run
+to run with where the brake locks; the order is the same.)
 
 Every cone lands one degree over its friction angle, the same discretisation
 bias the loam cone has always had (9b). Drift after every section: under
