@@ -16,7 +16,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.LooseReposeDeg = 31.0f; S.PackedReposeDeg = 38.0f;
 		S.SuctionCohesionKPa = 2.0f; S.PackedCohesionKPa = 0.5f;
 		S.UnitWeightKNm3 = 16.5f; S.SaturationFrictionLoss = 0.5f;
-		S.InfiltrationCmPerSec = 1.2f; S.FieldCapacity = 0.10f; S.ProctorOptimum = 0.7f; S.DryingMultiplier = 1.5f;
+		S.InfiltrationCmPerSec = 0.12f; S.FieldCapacity = 0.10f; S.ProctorOptimum = 0.7f; S.DryingMultiplier = 1.5f;
 		S.Dustiness = 0.6f;
 		S.DryColour = FLinearColor(0.60f, 0.53f, 0.38f); S.PackedColour = FLinearColor(0.46f, 0.40f, 0.28f);
 		S.BekkerNLoose = 1.1f; S.BekkerNDense = 0.9f;
@@ -24,6 +24,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.BekkerKphiLoose = 1528.0f; S.BekkerKphiDense = 4000.0f;
 		S.ShearModulusLooseM = 0.015f; S.ShearModulusDenseM = 0.025f;
 		S.SaturationStiffnessLoss = 0.5f;
+		S.ErodibilityCmPerSecPa = 0.010f; S.CriticalShearPa = 0.5f; S.SettlingCmPerSec = 3.0f; S.TransportPerPa = 0.002f;
 		Out.Add(S);
 	}
 	// 1. Loam: the classic track dirt. The defaults, measured in sections 9b-9k.
@@ -40,7 +41,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.LooseReposeDeg = 28.0f; S.PackedReposeDeg = 38.0f;
 		S.SuctionCohesionKPa = 6.0f; S.PackedCohesionKPa = 12.0f;
 		S.UnitWeightKNm3 = 16.0f; S.SaturationFrictionLoss = 0.65f;
-		S.InfiltrationCmPerSec = 0.15f; S.FieldCapacity = 0.45f; S.ProctorOptimum = 0.6f; S.DryingMultiplier = 0.6f;
+		S.InfiltrationCmPerSec = 0.015f; S.FieldCapacity = 0.45f; S.ProctorOptimum = 0.6f; S.DryingMultiplier = 0.6f;
 		S.Dustiness = 0.3f;
 		S.DryColour = FLinearColor(0.28f, 0.20f, 0.13f); S.PackedColour = FLinearColor(0.17f, 0.12f, 0.08f);
 		S.BekkerNLoose = 0.7f; S.BekkerNDense = 0.5f;
@@ -48,6 +49,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.BekkerKphiLoose = 1515.0f; S.BekkerKphiDense = 5000.0f;
 		S.ShearModulusLooseM = 0.03f; S.ShearModulusDenseM = 0.05f;
 		S.SaturationStiffnessLoss = 0.85f;
+		S.ErodibilityCmPerSecPa = 0.006f; S.CriticalShearPa = 2.0f; S.SettlingCmPerSec = 0.1f; S.TransportPerPa = 0.004f;
 		Out.Add(S);
 	}
 	// 3. American Southwest: decomposed granite, angular sand and grit, dries in minutes, a dust storm.
@@ -58,7 +60,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.LooseReposeDeg = 36.0f; S.PackedReposeDeg = 44.0f;
 		S.SuctionCohesionKPa = 1.5f; S.PackedCohesionKPa = 3.0f;
 		S.UnitWeightKNm3 = 17.5f; S.SaturationFrictionLoss = 0.45f;
-		S.InfiltrationCmPerSec = 1.0f; S.FieldCapacity = 0.12f; S.ProctorOptimum = 0.45f; S.DryingMultiplier = 1.6f;
+		S.InfiltrationCmPerSec = 0.1f; S.FieldCapacity = 0.12f; S.ProctorOptimum = 0.45f; S.DryingMultiplier = 1.6f;
 		S.Dustiness = 1.6f;
 		S.DryColour = FLinearColor(0.55f, 0.42f, 0.30f); S.PackedColour = FLinearColor(0.40f, 0.30f, 0.21f);
 		S.BekkerNLoose = 1.0f; S.BekkerNDense = 0.6f;
@@ -66,6 +68,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.BekkerKphiLoose = 1200.0f; S.BekkerKphiDense = 6000.0f;
 		S.ShearModulusLooseM = 0.015f; S.ShearModulusDenseM = 0.03f;
 		S.SaturationStiffnessLoss = 0.55f;
+		S.ErodibilityCmPerSecPa = 0.008f; S.CriticalShearPa = 1.0f; S.SettlingCmPerSec = 4.0f; S.TransportPerPa = 0.002f;
 		Out.Add(S);
 	}
 	// 4. Hardpack clay / caliche: the Southwest's cemented base and any blue-groove line.
@@ -76,7 +79,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.LooseReposeDeg = 24.0f; S.PackedReposeDeg = 34.0f;
 		S.SuctionCohesionKPa = 8.0f; S.PackedCohesionKPa = 25.0f;
 		S.UnitWeightKNm3 = 18.0f; S.SaturationFrictionLoss = 0.75f;
-		S.InfiltrationCmPerSec = 0.02f; S.FieldCapacity = 0.40f; S.ProctorOptimum = 0.5f; S.DryingMultiplier = 0.8f;
+		S.InfiltrationCmPerSec = 0.002f; S.FieldCapacity = 0.40f; S.ProctorOptimum = 0.5f; S.DryingMultiplier = 0.8f;
 		S.Dustiness = 0.8f;
 		S.DryColour = FLinearColor(0.50f, 0.45f, 0.36f); S.PackedColour = FLinearColor(0.34f, 0.30f, 0.24f);
 		S.BekkerNLoose = 0.5f; S.BekkerNDense = 0.4f;
@@ -84,6 +87,7 @@ void FDirtSoil::Presets(TArray<FDirtSoil>& Out)
 		S.BekkerKphiLoose = 692.0f; S.BekkerKphiDense = 8000.0f;
 		S.ShearModulusLooseM = 0.04f; S.ShearModulusDenseM = 0.06f;
 		S.SaturationStiffnessLoss = 0.9f;
+		S.ErodibilityCmPerSecPa = 0.003f; S.CriticalShearPa = 8.0f; S.SettlingCmPerSec = 0.02f; S.TransportPerPa = 0.005f;
 		Out.Add(S);
 	}
 }

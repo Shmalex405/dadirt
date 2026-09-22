@@ -212,8 +212,8 @@ void ADirtBox::CreateResources()
 
 	StateA = MakeRT(TEXT("DirtStateA"), RTF_RGBA32f);
 	StateB = MakeRT(TEXT("DirtStateB"), RTF_RGBA32f);
-	PondA = MakeRT(TEXT("DirtPondA"), RTF_R32f);
-	PondB = MakeRT(TEXT("DirtPondB"), RTF_R32f);
+	PondA = MakeRT(TEXT("DirtPondA"), RTF_RG32f);
+	PondB = MakeRT(TEXT("DirtPondB"), RTF_RG32f);
 	DisplayRT = MakeRT(TEXT("DirtDisplay"), RTF_RGBA32f);
 	NormalRT = MakeRT(TEXT("DirtNormal"), RTF_RGBA16f);
 	DebugRT = MakeRT(TEXT("DirtDebug"), RTF_RGBA16f);
@@ -288,7 +288,7 @@ void ADirtBox::CreateResources()
 	SoilTex->AddressY = TA_Clamp;
 	SoilTex->NeverStream = true;
 
-	InitialPondTex = UTexture2D::CreateTransient(Res, Res, PF_R32_FLOAT);
+	InitialPondTex = UTexture2D::CreateTransient(Res, Res, PF_G32R32F);
 	InitialPondTex->SRGB = false;
 	InitialPondTex->Filter = TF_Nearest;
 	InitialPondTex->AddressX = TA_Clamp;
@@ -337,7 +337,7 @@ void ADirtBox::BuildTerrainAndUpload()
 	// joins the world baseline.
 	TArray<float> Bedrock;
 	TArray<FLinearColor> Initial;
-	TArray<float> InitialPond;
+	TArray<FVector2f> InitialPond;
 	TArray<uint8> Soils;
 	Bedrock.SetNumZeroed(Count);
 	Initial.SetNumZeroed(Count);
@@ -364,7 +364,7 @@ void ADirtBox::BuildTerrainAndUpload()
 				if (bFromCache)
 				{
 					FMemory::Memcpy(Initial.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
-					FMemory::Memcpy(InitialPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(float));
+					FMemory::Memcpy(InitialPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(FVector2f));
 				}
 				else
 				{
@@ -386,7 +386,7 @@ void ADirtBox::BuildTerrainAndUpload()
 	UploadFloats(BaseHeightTex, Bedrock);
 	UploadBytes(SoilTex, SoilId);
 	UploadColors(InitialStateTex, Initial);
-	UploadFloats(InitialPondTex, InitialPond);
+	UploadFloat2s(InitialPondTex, InitialPond);
 
 	// Make sure the uploads have actually landed before the first sim step
 	// reads them. This happens on a rebuild, so the stall does not matter.
@@ -398,6 +398,15 @@ void ADirtBox::UploadFloats(UTexture2D* Texture, const TArray<float>& Data)
 	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
 	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
 	FMemory::Memcpy(Dest, Data.GetData(), Data.Num() * sizeof(float));
+	Mip.BulkData.Unlock();
+	Texture->UpdateResource();
+}
+
+void ADirtBox::UploadFloat2s(UTexture2D* Texture, const TArray<FVector2f>& Data)
+{
+	FTexture2DMipMap& Mip = Texture->GetPlatformData()->Mips[0];
+	void* Dest = Mip.BulkData.Lock(LOCK_READ_WRITE);
+	FMemory::Memcpy(Dest, Data.GetData(), Data.Num() * sizeof(FVector2f));
 	Mip.BulkData.Unlock();
 	Texture->UpdateResource();
 }
@@ -841,7 +850,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 	TArray<float> NewBedrock;
 	TArray<uint8> NewSoil;
 	TArray<FLinearColor> Patch;
-	TArray<float> PatchPond;
+	TArray<FVector2f> PatchPond;
 	NewBedrock.SetNumZeroed(Count);
 	NewSoil.SetNumZeroed(Count);
 	Patch.SetNumZeroed(Count);
@@ -890,7 +899,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 				if (bFromCache)
 				{
 					FMemory::Memcpy(Patch.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
-					FMemory::Memcpy(PatchPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(float));
+					FMemory::Memcpy(PatchPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(FVector2f));
 				}
 				else
 				{
@@ -913,7 +922,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 	UploadFloats(BaseHeightTex, BedrockCm);
 	UploadBytes(SoilTex, SoilId);
 	UploadColors(InitialStateTex, Patch);
-	UploadFloats(InitialPondTex, PatchPond);
+	UploadFloat2s(InitialPondTex, PatchPond);
 
 	// 3. Everything that addresses the window by texel moves with it.
 	WindowTile = NewTile;
@@ -976,12 +985,12 @@ void ADirtBox::HarvestTileReadbacks(bool bBlock)
 						}
 						RB->State->Unlock();
 					}
-					if (const float* Src = static_cast<const float*>(RB->Pond->Lock(Pitch)))
+					if (const FVector2f* Src = static_cast<const FVector2f*>(RB->Pond->Lock(Pitch)))
 					{
 						RB->ResultPond.SetNumUninitialized(N * N);
 						for (int32 Y = 0; Y < N; ++Y)
 						{
-							FMemory::Memcpy(RB->ResultPond.GetData() + Y * N, Src + Y * Pitch, N * sizeof(float));
+							FMemory::Memcpy(RB->ResultPond.GetData() + Y * N, Src + Y * Pitch, N * sizeof(FVector2f));
 						}
 						RB->Pond->Unlock();
 					}
@@ -1683,10 +1692,13 @@ void ADirtBox::UpdateHeightWindows()
 						int32 PondPitch = 0;
 						if (const void* PondSrc = Slot->PondReadback[i]->Lock(PondPitch))
 						{
-							const float* PondRows = static_cast<const float*>(PondSrc);
+							const FVector2f* PondRows = static_cast<const FVector2f*>(PondSrc);
 							for (int32 Y = 0; Y < N; ++Y)
 							{
-								FMemory::Memcpy(PondCopy.GetData() + Y * N, PondRows + Y * PondPitch, N * sizeof(float));
+								for (int32 X = 0; X < N; ++X)
+								{
+									PondCopy[Y * N + X] = PondRows[Y * PondPitch + X].X;
+								}
 							}
 							Slot->PondReadback[i]->Unlock();
 						}
@@ -1790,6 +1802,8 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	Frame.DepositCompaction = Settings.DepositCompaction;
 	Frame.bWater = Settings.bWater;
 	Frame.RunoffRate = Settings.RunoffRate;
+	Frame.bErosion = Settings.bErosion;
+	Frame.ErosionPace = Settings.ErosionPace;
 	Frame.RainCmPerSec = Settings.RainCmPerSec;
 	Frame.DrainPerSec = Settings.DrainPerSec;
 	Frame.EvapPerSec = Settings.EvapPerSec;
@@ -2375,9 +2389,11 @@ void ADirtBox::RefreshReadback()
 			TArray<FLinearColor> Pixels;
 			PondRes->ReadLinearColorPixels(Pixels);
 			PondReadback.SetNumUninitialized(Pixels.Num());
+			SedimentReadback.SetNumUninitialized(Pixels.Num());
 			for (int32 i = 0; i < Pixels.Num(); ++i)
 			{
 				PondReadback[i] = Pixels[i].R;
+				SedimentReadback[i] = Pixels[i].G;
 			}
 		}
 	}
@@ -2401,6 +2417,7 @@ FDirtAudit ADirtBox::RunAudit()
 	double SumBulkCm = 0.0;
 	double SumWaterCm = 0.0;
 	double SumPondCm = 0.0;
+	double SumSuspendedCm = 0.0;
 	float MinLayer = MAX_flt;
 	float MaxLayer = -MAX_flt;
 	int32 Exposed = 0;
@@ -2417,6 +2434,10 @@ FDirtAudit ADirtBox::RunAudit()
 		if (PondReadback.IsValidIndex(i))
 		{
 			SumPondCm += PondReadback[i];
+		}
+		if (SedimentReadback.IsValidIndex(i))
+		{
+			SumSuspendedCm += SedimentReadback[i];
 		}
 		MinLayer = FMath::Min(MinLayer, Bulk);
 		MaxLayer = FMath::Max(MaxLayer, Bulk);
@@ -2438,6 +2459,7 @@ FDirtAudit ADirtBox::RunAudit()
 	Audit.BulkM3 = SumBulkCm * AreaM3PerCm;
 	Audit.PoreWaterM3 = SumWaterCm * AreaM3PerCm;
 	Audit.PondM3 = SumPondCm * AreaM3PerCm;
+	Audit.SuspendedM3 = SumSuspendedCm * AreaM3PerCm;
 
 	// Dirt in the air, parcel by parcel. Blocking, like the rest of the audit.
 	if (Settings.bParcels && ParcelPosRT && ParcelGPU.IsValid() && ParcelGPU->bInitialised)
@@ -2463,7 +2485,7 @@ FDirtAudit ADirtBox::RunAudit()
 	// cache is waited for, so the books are complete.
 	HarvestTileReadbacks(true);
 	Audit.StoredM3 = WorldStoredM3;
-	Audit.VolumeM3 = Audit.GroundM3 + Audit.AirborneM3 + Audit.StoredM3;
+	Audit.VolumeM3 = Audit.GroundM3 + Audit.AirborneM3 + Audit.StoredM3 + Audit.SuspendedM3;
 	Audit.DriftM3 = Audit.VolumeM3 - Audit.BaselineM3;
 	Audit.DriftPercent = (Audit.BaselineM3 > 0.0) ? 100.0 * Audit.DriftM3 / Audit.BaselineM3 : 0.0;
 	Audit.MinLayerCm = MinLayer;
@@ -2531,6 +2553,19 @@ float ADirtBox::GetPondAtWorld(FVector2D WorldXYCm) const
 	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
 	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
 	return PondReadback[Y * Res + X];
+}
+
+float ADirtBox::GetSedimentAtWorld(FVector2D WorldXYCm) const
+{
+	const int32 Res = Settings.SimResolution;
+	if (SedimentReadback.Num() < Res * Res)
+	{
+		return 0.0f;
+	}
+	const FVector2f T = WorldToTexel(WorldXYCm);
+	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
+	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
+	return SedimentReadback[Y * Res + X];
 }
 
 float ADirtBox::MaxScoopCm3(float SolidCm, float RadiusCm) const
@@ -2865,6 +2900,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtAuditCmd(
 			UE_LOG(LogDirt, Log, TEXT("  in the ground     %.4f m3   (%.4f m3 bulk, the way a ruler sees it)"), A.GroundM3, A.BulkM3);
 			UE_LOG(LogDirt, Log, TEXT("  in the air        %.4f m3   (%d parcels)"), A.AirborneM3, A.LiveParcels);
 			UE_LOG(LogDirt, Log, TEXT("  out of the window %.4f m3   (%d tiles cached, %d slides)"), A.StoredM3, Box->GetCachedTileCount(), Box->GetShiftCount());
+			UE_LOG(LogDirt, Log, TEXT("  in the run-off    %.4f m3   (suspended in water)"), A.SuspendedM3);
 			UE_LOG(LogDirt, Log, TEXT("  total             %.4f m3"), A.VolumeM3);
 			UE_LOG(LogDirt, Log, TEXT("  baseline          %.4f m3"), A.BaselineM3);
 			UE_LOG(LogDirt, Log, TEXT("  drift             %+.5f m3  (%+.4f %%)  = %+.2f cm3"), A.DriftM3, A.DriftPercent, A.DriftM3 * 1000000.0);
@@ -2912,10 +2948,11 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 			const FLinearColor S = Box->GetStateAtWorld(World);
 			const float PondHere = Box->GetPondAtWorld(World);
 			const float SurfaceZ = Box->GetSurfaceHeightAtWorld(World);
+			const float SedHere = Box->GetSedimentAtWorld(World);
 			const FDirtSoil& ProbeSoil = Box->SoilAtWorld(World);
 			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [%s, layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm%s]"),
 				Xm, Ym, SurfaceZ, *ProbeSoil.Name, DirtBulkCm(S.R, S.G, ProbeSoil, Box->Settings), S.R, S.G, S.B, PondHere,
-				PondHere > 0.05f ? *FString::Printf(TEXT(", water top at Z = %.1f cm"), SurfaceZ + PondHere) : TEXT(""));
+				PondHere > 0.05f ? *FString::Printf(TEXT(", water top at Z = %.1f cm, %.3f cm of dirt in it"), SurfaceZ + PondHere, SedHere) : TEXT(""));
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtResetCmd(
@@ -2997,6 +3034,19 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtReposeCmd(
 			UE_LOG(LogDirt, Log, TEXT("Soil: friction %.0f deg loose / %.0f dense, mud %.0f deg; cohesion %.1f kPa damp, ")
 				TEXT("%.1f kPa packed; a damp vertical wall stands to %.0f cm."),
 				S.LooseReposeDeg, S.PackedReposeDeg, MudDeg, S.SuctionCohesionKPa, S.PackedCohesionKPa, DampWallCm);
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtErosionCmd(
+	TEXT("DaDirt.Erosion"),
+	TEXT("DaDirt.Erosion [0|1] - run-off carrying dirt (detachment, transport, settling). On by default; off for attribution."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			if (ADirtBox* Box = GetDirtBoxOrWarn())
+			{
+				Box->Settings.bErosion = Args.IsValidIndex(0) ? (ArgInt(Args, 0, 1) != 0) : !Box->Settings.bErosion;
+				UE_LOG(LogDirt, Log, TEXT("Erosion %s."), Box->Settings.bErosion ? TEXT("on") : TEXT("off"));
+			}
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtSoilCmd(

@@ -85,7 +85,7 @@ public:
 		DIRT_SHARED_PARAMETERS()
 		SHADER_PARAMETER_TEXTURE(Texture2D<float4>, DirtInitialState)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, DirtPondOut)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, DirtPondOut)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
@@ -112,10 +112,10 @@ public:
 		DIRT_SHARED_PARAMETERS()
 		SHADER_PARAMETER(FIntPoint, DirtShiftTexels)
 		SHADER_PARAMETER_TEXTURE(Texture2D<float4>, DirtPatchState)
-		SHADER_PARAMETER_TEXTURE(Texture2D<float>, DirtPatchPond)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, DirtPondIn)
+		SHADER_PARAMETER_TEXTURE(Texture2D<float2>, DirtPatchPond)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, DirtPondIn)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, DirtPondOut)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, DirtPondOut)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
@@ -240,6 +240,9 @@ public:
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 		DIRT_SHARED_PARAMETERS()
 		SHADER_PARAMETER(float, DirtDt)
+		SHADER_PARAMETER(float, DirtTexelSizeCm)
+		SHADER_PARAMETER(int32, DirtErosionEnabled)
+		SHADER_PARAMETER(float, DirtErosionPace)
 		SHADER_PARAMETER(float, DirtRunoffRate)
 		SHADER_PARAMETER(float, DirtRainCmPerSec)
 		SHADER_PARAMETER(float, DirtDrainPerSec)
@@ -248,8 +251,8 @@ public:
 		SHADER_PARAMETER(float, DirtAmbientMoisture)
 		SHADER_PARAMETER(int32, DirtWaterSourceCount)
 		SHADER_PARAMETER_ARRAY(FVector4f, DirtWaterSource, [DirtSim::MaxWaterSourcesPerPass])
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, DirtPondIn)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float>, DirtPondOut)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, DirtPondOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -278,7 +281,7 @@ public:
 		DIRT_SOIL_PARAMETERS()
 		SHADER_PARAMETER(int32, DirtDebugMode)
 		SHADER_PARAMETER(float, DirtDebugLayerRangeCm)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, DirtPondIn)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtDisplayOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtNormalOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtDebugOut)
@@ -880,6 +883,9 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Params->DirtDt = Frame.Dt;
 		Params->DirtRunoffRate = Frame.RunoffRate;
 		Params->DirtRainCmPerSec = Frame.RainCmPerSec;
+		Params->DirtTexelSizeCm = Frame.TexelSizeCm;
+		Params->DirtErosionEnabled = Frame.bErosion ? 1 : 0;
+		Params->DirtErosionPace = Frame.ErosionPace;
 		Params->DirtDrainPerSec = Frame.DrainPerSec;
 		Params->DirtEvapPerSec = Frame.EvapPerSec;
 		Params->DirtWetDepthCm = Frame.WetDepthCm;

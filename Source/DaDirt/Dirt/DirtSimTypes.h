@@ -123,9 +123,14 @@ struct FDirtSoil
 	float SaturationFrictionLoss = 0.6f;
 
 	// --- water (section 5) --------------------------------------------------------
-	/** Saturated conductivity of the loose soil, cm/s, game-paced. Sand ~1, loam 0.5, silt loam 0.15, clay 0.02. */
+	/**
+	 * Saturated conductivity of the loose soil, cm/s, game-paced. Sand 0.12, loam
+	 * 0.05, silt loam 0.015, granite 0.1, clay 0.002: real K_s (loam ~1e-3 cm/s)
+	 * times fifty, so a puddle on loose ground soaks in within minutes of play,
+	 * while the game's rain (mm per minute, a cloudburst) still runs off it.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0"))
-	float InfiltrationCmPerSec = 0.5f;
+	float InfiltrationCmPerSec = 0.05f;
 	/** Saturation the soil holds against gravity. Sand 0.1, loam 0.3, silt loam 0.45, clay 0.4. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil", meta = (ClampMin = "0", ClampMax = "1"))
 	float FieldCapacity = 0.3f;
@@ -160,6 +165,16 @@ struct FDirtSoil
 	/** Fraction of Bekker stiffness lost when saturated: mud takes a wheel. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float SaturationStiffnessLoss = 0.8f;
 
+	// --- erosion (section 5b): run-off detaches, carries and drops the grains ------------
+	/** Solid cm detached per second per Pa of excess shear (rill erodibility, game-paced). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float ErodibilityCmPerSecPa = 0.005f;
+	/** Shear stress the flowing water must beat before loose grains move, Pa. Packing raises it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float CriticalShearPa = 3.0f;
+	/** Settling velocity of the suspended grains, cm/s: sand drops out in a metre, clay stays in the water. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float SettlingCmPerSec = 0.5f;
+	/** Volume fraction of sediment the water can carry per Pa of shear: its transport capacity. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Soil") float TransportPerPa = 0.003f;
+
 	/** The five float4 rows the shaders read. Out must hold DirtSim::SoilRows entries. */
 	void ToRows(FVector4f* Out) const
 	{
@@ -168,6 +183,7 @@ struct FDirtSoil
 		Out[2] = FVector4f(InfiltrationCmPerSec, FieldCapacity, ProctorOptimum, DryingMultiplier);
 		Out[3] = FVector4f(DryColour.R, DryColour.G, DryColour.B, Dustiness);
 		Out[4] = FVector4f(PackedColour.R, PackedColour.G, PackedColour.B, 0.0f);
+		Out[5] = FVector4f(ErodibilityCmPerSecPa, CriticalShearPa, SettlingCmPerSec, TransportPerPa);
 	}
 
 	/** The reference soils, docs/SoilPhysics.md section 8. Index 1 (loam) is the default. */
@@ -372,6 +388,19 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "0.5"))
 	float AmbientMoisture = 0.05f;
 
+
+	/** Run-off carries dirt: erosion and deposition in the water pass. Off for attribution. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
+	bool bErosion = true;
+
+	/**
+	 * Erosion runs at the water's pace. The water cycle is game-paced (soaking and
+	 * drying a hundred times faster than the field), so the erodibility and the
+	 * transport capacity are multiplied by this to match: a real 40 s storm moves
+	 * ten litres off a 3 m mound; the game wants a minute of rain to show.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0", ClampMax = "100"))
+	float ErosionPace = 3.0f;
 
 	/** Depth of ground the moisture channel describes, cm. Sets how much water a cell can drink. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "1"))

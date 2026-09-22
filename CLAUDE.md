@@ -113,6 +113,10 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   `const FDirtSoil&` (the cell's, `SoilAtTexel` / `SoilAtWorld`), and a new
   property goes into the struct, the rows and the docs table, never a global.
   Wet, mud and dust are moisture states of a soil, not soils.
+- **The pond texture is two channels**: x ponded water cm, y solid cm of dirt
+  suspended in it. Anything that reads or copies the pond (window readback,
+  tile cache, shift patch, audit) carries both; the audit counts the y channel
+  as "in the run-off" and the total must still book to the baseline.
 - **The layer channel stores SOLID centimetres**, not bulk thickness. Bulk height
   comes from porosity via `DirtBulkCm` (a packed skin over natural ground), so
   packing lowers the surface and loosening raises it without moving any grains.
@@ -175,7 +179,7 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
   (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist,
-  Plough, Hills, WaterGrip, Soils). Anything that touches the wheel or soil strength runs
+  Plough, Hills, WaterGrip, Soils, Erosion). Anything that touches the wheel or soil strength runs
   `DirtboxHills.txt` too: the pad only exercises ruts, and every contact bug so
   far showed up on the dome, the jump faces or the berm. `DaDirt.Wheel` makes a
   new wheel with every part on, so `DaDirt.WheelParts` must follow it. Run them with

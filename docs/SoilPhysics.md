@@ -206,6 +206,30 @@ of the pond texture), the display height carries the water top so a puddle is
 a flat sheet over the rut rather than a groove in it, and every dirt-surface
 query takes the pond off again. Section 9k.
 
+**5b. Erosion: run-off carrying dirt (2026-09-22).** Water that runs over
+dirt shears the bed. The shear stress of a sheet of water h deep on a slope S
+is τ = ρ_w g h S; grains move once it beats the soil's **critical shear** τ_c
+(Shields: ~0.5 Pa for loose sand, a few Pa for loam, 8 Pa or more for a clay
+that holds together; packing raises it), and they are detached at a rate set
+by the soil's **erodibility**, D = k_d (τ − τ_c), the rill erodibility of the
+WEPP family of models scaled to the game's water pace. The water can only
+carry so much: its **transport capacity** is a volume fraction that grows with
+τ, and what it carries beyond that settles at the grains' **settling
+velocity** (Stokes: sand a few cm/s, silt 0.1, clay 0.02, which is why clay
+water stays brown). Water that goes, by soaking in or drying, drops all of it.
+
+The simulator keeps the suspended dirt as a second channel of the pond
+texture, solid centimetres beside the water's depth. In the water pass the
+run-off between cells carries sediment with it in proportion to the water
+moved; then each cell computes τ from its pond depth and the steepest fall of
+its water surface, detaches from the layer up to capacity, or drops the excess,
+and dried cells drop everything. Settled dirt lands loose and soaked, taking
+the surface over by the deposit fold's skin rule. Every centimetre detached
+leaves the layer and every centimetre dropped returns to it, so the audit adds
+a column, *in the run-off*, and the total still books to the baseline. The four
+erosion numbers are soil properties (section 8, row 5 of the table).
+`DaDirt.Erosion 0|1` switches it for attribution. Section 9m.
+
 ## 6. The tyre and the soil: terramechanics
 
 **Pressure–sinkage (Bekker).** A plate of width b pushed into soil to depth z
@@ -352,7 +376,7 @@ the friction angle collapses.
 | packed cohesion, kPa | 0.5 | 8 | 12 | 3 | 25 |
 | unit weight, kN/m³ | 16.5 | 17 | 16 | 17.5 | 18 |
 | friction lost saturated | 0.50 | 0.60 | 0.65 | 0.45 | 0.75 |
-| K_s loose, cm/s (game-paced) | 1.2 | 0.5 | 0.15 | 1.0 | 0.02 |
+| K_s loose, cm/s (game-paced, fifty times the field) | 0.12 | 0.05 | 0.015 | 0.1 | 0.002 |
 | field capacity | 0.10 | 0.30 | 0.45 | 0.12 | 0.40 |
 | Proctor optimum moisture | 0.70 | 0.55 | 0.60 | 0.45 | 0.50 |
 | drying rate × | 1.5 | 1.0 | 0.6 | 1.6 | 0.8 |
@@ -362,6 +386,10 @@ the friction angle collapses.
 | Bekker k_φ loose / dense | 1528 / 4000 | 400 / 5000 | 1515 / 5000 | 1200 / 6000 | 692 / 8000 |
 | Janosi K loose / dense, m | 0.015 / 0.025 | 0.02 / 0.045 | 0.03 / 0.05 | 0.015 / 0.03 | 0.04 / 0.06 |
 | stiffness lost saturated | 0.5 | 0.8 | 0.85 | 0.55 | 0.9 |
+| erodibility, solid cm/s/Pa | 0.010 | 0.005 | 0.006 | 0.008 | 0.003 |
+| critical shear, Pa | 0.5 | 3 | 2 | 1 | 8 |
+| settling velocity, cm/s | 3 | 0.5 | 0.1 | 4 | 0.02 |
+| transport capacity per Pa | 0.002 | 0.003 | 0.004 | 0.002 | 0.005 |
 
 Where the numbers come from: friction angles from the standard geotechnical
 ranges (rounded sand 30–34°, angular sand and gravel 35–45°, silt 26–32°,
@@ -740,6 +768,8 @@ air.
 | grip at rest / rolling | 0.66 / 0.68 | 0.79 / 0.83 | 0.75 / 0.79 | 0.70 / 0.77 | 0.70 / 0.81 |
 | rut after one pass, cm (compaction) | 1.5 (0.32) | 1.8 (0.62) | 1.9 (0.50) | 1.2 (0.45) | 1.2 (0.47) |
 | puddle left after 6 s, cm (moisture under it) | 13.8 (0.39) | 14.2 (0.36) | 15.1 (0.25) | 15.8 (0.17) | 16.0 (0.15) |
+
+(The puddle row was measured before infiltration went to a tenth of its pace for erosion, section 5b; the soaking now takes ten times longer, in the same order.)
 | dust after a 2 s burnout, motes | 178 | 489 | 302 | 81 | 252 |
 
 Every cone lands one degree over its friction angle, the same discretisation
@@ -750,6 +780,48 @@ the point of putting loam in the middle. Not yet: the roost volume and the
 lug failure depth do not depend on the soil (they should: sand roosts more,
 clay less), and a parcel keeps the soil it lands on rather than the one it came
 from.
+
+## 9m. Erosion measured (2026-09-22)
+
+`Tools/DirtboxErosion.txt`: a 1.2 m mound (22° flanks) raised on the pad,
+then 60 s of rain at 60 mm/min (a cloudburst; the game's rain is in mm per
+minute), in loam, sand and clay; then a rut driven up the loam mound and
+rained on. Probes read the crest, the flank and the toe before and after,
+and what is in the water. Erosion pace 3, infiltration at the new game pace
+(a tenth of what it was, section 5b).
+
+| | loam | sand | clay |
+|---|---|---|---|
+| mid-flank (Y = −10.5 / −9.5) | −0.6 cm | −0.3 cm | 0 |
+| lower flank (Y = −8.5) | −4.2 cm | | |
+| toe (Y = −7.5) | +4.5 cm, under a 14 cm puddle carrying 1.1 cm of dirt | +3.4 cm, 0.65 cm of sand in the puddle | 0, 0.03 cm of clay in a 22 cm puddle |
+| in the run-off after the storm | 7.7 m³ | 2.8 m³ | 6.9 m³ |
+| the big dome's packed flank (18, −20) | −4.0 cm | | |
+| drift | +8 cm³ | +9 cm³ | +1 cm³ |
+
+What the three columns say: loam erodes as sheet flow gathers down the
+flank and drops its load where the slope dies, at the toe. Sand's grains
+move at half a pascal but settle in a metre, so the flank thins a little and
+the toe grows a lot. Clay's loose mound needs 8 Pa, more than a 22° sheet
+flow supplies, so it stands; what clay is in the water came off the packed
+dome flank under concentrated flow, and with a settling velocity of 0.02 cm/s
+it stays there: the puddles are brown.
+
+**The rut washes out.** A rut driven up the loam mound and rained on: on the
+flank (Y = −14) the rut floor cut 1.4 cm deeper and its shoulder 1.3 cm, as
+the run-off concentrated in it; at the mound's foot (Y = −16) the rut became
+a channel 14 cm deep in water and filled with 2.5 cm of what came down it,
+with 2.4 cm of dirt still in suspension. Drift +11 cm³.
+
+Two things found on the way. The first pass read the shear from the model's
+per-step water: a filling pond's head differences looked like slopes and
+scoured 22 cm out of a clay toe, and a one-step rain sheet was too thin to
+move anything on a flank; Manning depth from the throughput on the bed slope
+fixed both. The second: at the old infiltration pace loose ground drank
+0.5 cm/s, more than a cloudburst, so nothing ever ran off a loose mound and
+only packed ground eroded; infiltration is now a tenth of that everywhere
+(still fifty times the field). Not yet: rain-splash detachment, and the
+rills are as fine as the cells let them be, no finer.
 
 ## 10. Implementation plan
 
@@ -766,7 +838,7 @@ from.
   `DensePorosity` 0.34. Audit reports solid and bulk m³. Section 9c.
 - **Phase C — water (done 2026-09-21):** one water pass per step: run-off of
   ponded water over four neighbours (gather form, like the slump), rain,
-  infiltration at K = `InfiltrationCmPerSec` · 10^(−2C), overflow past
+  infiltration at K = the soil's K_s · 10^(−2C), overflow past
   saturation into the pond, drainage above `FieldCapacity` at a rate falling
   10^(−1.5C), surface drying. Pack strokes from a tyre are scaled by the
   Proctor hump `DirtPackingEfficiency(M)`; tools are not. `DaDirt.Rain`,

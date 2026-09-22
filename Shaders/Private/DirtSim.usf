@@ -22,7 +22,7 @@
 
 Texture2D<float4> DirtInitialState;   // CPU-built starting state (.r already solid cm)
 RWTexture2D<float4> DirtStateOut;
-RWTexture2D<float> DirtPondOut;
+RWTexture2D<float2> DirtPondOut;      // x ponded water cm, y suspended solid cm
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -40,7 +40,7 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));      // derive the surface rather than trusting the upload
 
 	DirtStateOut[P] = S;
-	DirtPondOut[P] = 0.0f;
+	DirtPondOut[P] = float2(0.0f, 0.0f);
 }
 
 #endif // DIRT_INIT_PASS
@@ -57,10 +57,10 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 int2 DirtShiftTexels;                 // old texel = new texel + shift
 Texture2D<float4> DirtPatchState;     // entering cells, already in NEW texel coordinates
-Texture2D<float> DirtPatchPond;
-Texture2D<float> DirtPondIn;
+Texture2D<float2> DirtPatchPond;
+Texture2D<float2> DirtPondIn;
 RWTexture2D<float4> DirtStateOut;
-RWTexture2D<float> DirtPondOut;
+RWTexture2D<float2> DirtPondOut;      // x ponded water cm, y suspended solid cm
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -73,18 +73,18 @@ void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	const int2 Q = P + DirtShiftTexels;
 	float4 S;
-	float Pond;
+	float2 Pond;
 	if (DirtInBounds(Q))
 	{
 		S = DirtState(Q);
-		Pond = DirtPondIn.Load(int3(Q, 0)).x;
+		Pond = DirtPondIn.Load(int3(Q, 0)).xy;
 	}
 	else
 	{
 		// Taken exactly as stored: any clamp here would create or destroy dirt
 		// that the ledger has already counted.
 		S = DirtPatchState.Load(int3(P, 0));
-		Pond = DirtPatchPond.Load(int3(P, 0)).x;
+		Pond = DirtPatchPond.Load(int3(P, 0)).xy;
 	}
 	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
 
@@ -630,6 +630,9 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 #if DIRT_WATER_PASS
 
 float DirtDt;
+float DirtTexelSizeCm;
+int DirtErosionEnabled;
+float DirtErosionPace;            // erodibility and capacity run at the water's game pace
 float DirtRunoffRate;
 float DirtRainCmPerSec;
 float DirtDrainPerSec;            // of the water above field capacity, loose dirt
@@ -644,8 +647,8 @@ float DirtAmbientMoisture;        // air-dry dirt keeps this much (hygroscopic w
 int DirtWaterSourceCount;
 float4 DirtWaterSource[DIRT_MAX_WATER_SOURCES];   // centre.xy (cells), core radius, cm per unit kernel weight
 
-Texture2D<float> DirtPondIn;
-RWTexture2D<float> DirtPondOut;
+Texture2D<float2> DirtPondIn;
+RWTexture2D<float2> DirtPondOut;      // x ponded water cm, y suspended solid cm
 RWTexture2D<float4> DirtStateOut;
 
 float PondHead(int2 Q)
@@ -685,7 +688,12 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	float4 S = DirtState(P);
-	float Pond = DirtPondIn.Load(int3(P, 0)).x;
+	const float2 PW = DirtPondIn.Load(int3(P, 0)).xy;
+	float Pond = PW.x;
+	float Sed = PW.y;                 // solid cm of dirt suspended in this cell's water
+	const float PondBefore = Pond;
+	float SedIn = 0.0f;
+	float MaxBedDropCm = 0.0f;        // steepest fall of the BED toward a neighbour the water flows to
 
 	// 1. run-off
 	float OutP[4];
@@ -702,10 +710,20 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			float OutQ[4];
 			float ScaleQ;
 			ComputePondOutflow(Q, OutQ, ScaleQ);
-			Pond += OutQ[i ^ 1] * ScaleQ;
+			const float In = OutQ[i ^ 1] * ScaleQ;
+			Pond += In;
+			// The dirt in that water comes along with it, in proportion.
+			const float2 QW = DirtPondIn.Load(int3(Q, 0)).xy;
+			SedIn += (QW.x > 1e-5f) ? QW.y * min(In / QW.x, 1.0f) : 0.0f;
+			if (OutP[i] > 0.0f)
+			{
+				MaxBedDropCm = max(MaxBedDropCm, S.a - DirtState(Q).a);
+			}
 		}
 	}
+	const float SedOut = (PondBefore > 1e-5f) ? Sed * min(Moved / PondBefore, 1.0f) : 0.0f;
 	Pond = max(Pond - Moved, 0.0f);
+	Sed = max(Sed - SedOut, 0.0f) + SedIn;
 
 	// 2. rain, and anything poured from a truck
 	Pond += DirtRainCmPerSec * DirtDt;
@@ -743,8 +761,68 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	S.b -= DirtEvapPerSec * SoilR2.w * DirtDt * saturate((S.b - DirtAmbientMoisture) / 0.05f);
 	S.b = max(S.b, 0.0f);
 
+	// 7. erosion: docs/SoilPhysics.md 5b. Flowing water shears the bed with
+	//    tau = rho g h S on the bed slope S. The run-off model moves water a
+	//    cell a step, far faster than a real sheet, so its resting depth says
+	//    nothing about the flow: h comes from the THROUGHPUT instead, by
+	//    Manning (h = (q n / sqrt S)^0.6, n = 0.03 for bare soil), which puts a
+	//    22 degree flank under 30 mm/min at the few pascals a real one sees.
+	//    Past the soil's critical shear (higher when packed) grains detach at
+	//    the erodibility rate, up to what the water passing can carry (a volume
+	//    fraction per Pa of the throughput). Water carrying more than it can
+	//    drops the excess at the settling velocity; water that has gone (soaked
+	//    in, dried) drops everything. Solid cm in, solid cm out: the audit counts
+	//    what is in the water as "in the run-off". Moves under a floor are
+	//    skipped, as in the slump: float rounding on thousands of tiny ones
+	//    makes dirt.
+	float Deposited = 0.0f;
+	if (DirtErosionEnabled != 0)
+	{
+		const float4 SoilR5 = DirtSoilRow(Soil, 5);
+		const float Slope = max(MaxBedDropCm, 0.0f) / DirtTexelSizeCm;
+		const float ThroughputM2s = Moved * 0.01f * DirtTexelSizeCm * 0.01f / DirtDt;      // m^2/s per unit width
+		const float DepthM = (Slope > 1e-4f && ThroughputM2s > 0.0f)
+			? pow(ThroughputM2s * 0.03f / sqrt(Slope), 0.6f)
+			: 0.0f;
+		const float TauPa = 9810.0f * DepthM * Slope;
+		const float TauC = SoilR5.y * (1.0f + 2.0f * C);
+		const float Capacity = SoilR5.w * DirtErosionPace * TauPa * (Pond + Moved);
+		if (Sed < Capacity)
+		{
+			const float Detach = min(min(SoilR5.x * DirtErosionPace * max(TauPa - TauC, 0.0f) * DirtDt, Capacity - Sed), max(S.r, 0.0f));
+			if (Detach >= 1e-4f)
+			{
+				S.r -= Detach;
+				Sed += Detach;
+			}
+		}
+		else if (Sed > 0.0f)
+		{
+			Deposited = min(Sed - Capacity, Sed * SoilR5.z * DirtDt / max(Pond, 0.05f));
+			if (Deposited < 1e-4f)
+			{
+				Deposited = 0.0f;
+			}
+		}
+	}
+	if (Pond <= 1e-4f && Sed > 0.0f)
+	{
+		Deposited = Sed;                 // the water is gone; whatever it carried is on the ground
+	}
+	if (Deposited > 0.0f)
+	{
+		// Settled dirt lands loose and soaked, and takes the surface over as it
+		// piles up (the skin rule the deposit fold uses).
+		const float W = Deposited / (Deposited + 2.0f);
+		S.g = saturate(lerp(S.g, 0.05f, W));
+		S.b = saturate(lerp(S.b, 1.0f, W));
+		S.r += Deposited;
+		Sed -= Deposited;
+	}
+	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, Soil);
+
 	DirtStateOut[P] = S;
-	DirtPondOut[P] = Pond;
+	DirtPondOut[P] = float2(Pond, max(Sed, 0.0f));
 }
 
 #endif // DIRT_WATER_PASS
@@ -760,7 +838,7 @@ float DirtMaxCohesiveHeightCm;
 int DirtDebugMode;
 float DirtDebugLayerRangeCm;
 
-Texture2D<float> DirtPondIn;
+Texture2D<float2> DirtPondIn;
 
 // The brush and slump passes ping-pong between two state textures, so which one
 // holds the answer changes from frame to frame. Resolve copies the finished state

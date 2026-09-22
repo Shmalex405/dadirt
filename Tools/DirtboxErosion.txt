@@ -1,0 +1,110 @@
+# Erosion: run-off carrying dirt. A 1.2 m loam mound on the pad (22 deg flanks)
+# is rained on at 60 mm/min for 60 s (erosion runs at the water's game pace, x10). The water runs off its flanks, shears the
+# bed, carries grains down and drops them at the toe. Probes read the crest, the
+# flank and the toe before and after; the audit counts the dirt in the water.
+# Then the same mound in sand (moves easily, settles in a metre) and in clay
+# (needs 8 Pa of shear, stays in suspension). Pad X = 3; the mound is at Y = -12.
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 -5 40
+wait 1
+
+# --- loam --------------------------------------------------------------------------
+DaDirt.Raise 3 -12 300 120
+wait 4 loam_mound
+DaDirt.Probe 18 -20
+DaDirt.Probe 3 -12
+DaDirt.Probe 3 -10.5
+DaDirt.Probe 3 -9.5
+DaDirt.Probe 3 -8.5
+DaDirt.Probe 3 -7.5
+DaDirt.Audit
+camera 3 -3 2.2 -16 270
+wait 0.4
+screenshot erosion_00_loam_mound
+DaDirt.Rain 60 60
+wait 30 loam_raining
+DaDirt.Probe 3 -10.5
+DaDirt.Probe 3 -8.5
+DaDirt.Probe 18 -20
+DaDirt.Audit
+screenshot erosion_01_loam_raining
+wait 40 loam_rained
+DaDirt.Probe 18 -20
+DaDirt.Probe 3 -12
+DaDirt.Probe 3 -10.5
+DaDirt.Probe 3 -9.5
+DaDirt.Probe 3 -8.5
+DaDirt.Probe 3 -7.5
+DaDirt.Audit
+screenshot erosion_02_loam_after
+
+# --- sand ----------------------------------------------------------------------------
+DaDirt.Soil sand
+DaDirt.Reset
+wait 1
+DaDirt.Raise 3 -12 300 120
+wait 4 sand_mound
+DaDirt.Probe 3 -12
+DaDirt.Probe 3 -9.5
+DaDirt.Probe 3 -7.5
+DaDirt.Audit
+DaDirt.Rain 60 60
+wait 30 sand_raining
+DaDirt.Audit
+wait 40 sand_rained
+DaDirt.Probe 3 -12
+DaDirt.Probe 3 -9.5
+DaDirt.Probe 3 -7.5
+DaDirt.Audit
+screenshot erosion_03_sand_after
+
+# --- clay ----------------------------------------------------------------------------
+DaDirt.Soil clay
+DaDirt.Reset
+wait 1
+DaDirt.Raise 3 -12 300 120
+wait 4 clay_mound
+DaDirt.Probe 3 -12
+DaDirt.Probe 3 -9.5
+DaDirt.Probe 3 -7.5
+DaDirt.Audit
+DaDirt.Rain 60 60
+wait 30 clay_raining
+DaDirt.Audit
+wait 40 clay_rained
+DaDirt.Probe 3 -12
+DaDirt.Probe 3 -9.5
+DaDirt.Probe 3 -7.5
+DaDirt.Audit
+screenshot erosion_04_clay_after
+
+# --- a rut washing out: loam, a rut over the mound, then rain ---------------------------
+DaDirt.Soil built
+DaDirt.Reset
+wait 1
+DaDirt.Raise 3 -12 300 120
+wait 4
+DaDirt.Wheel 3 -22 90
+DaDirt.Drive 0.5 0 0
+wait 5 rut_over_mound
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Probe 3 -16
+DaDirt.Probe 3.2 -16
+DaDirt.Probe 3 -14
+DaDirt.Probe 3.2 -14
+DaDirt.Rain 60 60
+wait 70 rut_rained
+DaDirt.Probe 3 -16
+DaDirt.Probe 3.2 -16
+DaDirt.Probe 3 -14
+DaDirt.Probe 3.2 -14
+DaDirt.Audit
+camera 3 -4 1.6 -18 270
+wait 0.4
+screenshot erosion_05_rut_washout
+quit

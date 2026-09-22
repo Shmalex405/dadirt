@@ -234,6 +234,8 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] Soil compounds: a per-cell soil map and a table of measured properties,
       five reference soils including PNW loam and Southwest decomposed granite,
       the pad's soil quilt, `DaDirt.Soil` (docs/SoilPhysics.md 8 and 9l, 2026-09-22)
+- [x] Erosion: run-off carries dirt by shear, capacity and settling, per soil,
+      audited as "in the run-off" (docs/SoilPhysics.md 5b and 9m, 2026-09-22)
 - [x] A pile is not a ramp: the tyre climbs or shoves what stands in front of
       it, whichever costs less (bulldozing, docs/SoilPhysics.md 6 and 9i)
 - [x] The tyre has its own contact patch (deflection), the rut is pressed at

@@ -34,7 +34,7 @@ struct FDirtTileReadback;
 struct FDirtTile
 {
 	TArray<FLinearColor> State;      // R solid cm, G compaction, B moisture, A surface
-	TArray<float> Pond;
+	TArray<FVector2f> Pond;          // x pond cm, y suspended solid cm
 	/** Solid m^3 the builder gave this tile: its share of the world baseline. */
 	double PristineM3 = 0.0;
 	/** Solid m^3 it held when it last left the window; counted while it is out. */
@@ -69,6 +69,8 @@ struct FDirtAudit
 	double AirborneM3 = 0.0;
 	/** Solid dirt in tiles that are out of the simulated window. */
 	double StoredM3 = 0.0;
+	/** Solid dirt suspended in run-off, on its way somewhere. */
+	double SuspendedM3 = 0.0;
 	/** Ground + airborne: what must match the baseline. */
 	double VolumeM3 = 0.0;
 	double BaselineM3 = 0.0;
@@ -280,6 +282,8 @@ public:
 
 	/** Ponded water depth in cm at a world XY, from the last readback. */
 	float GetPondAtWorld(FVector2D WorldXYCm) const;
+	/** Solid cm of dirt suspended in the water at a world XY, from the last readback. */
+	float GetSedimentAtWorld(FVector2D WorldXYCm) const;
 
 	/** True if the world XY lies inside the box. */
 	bool IsInsideBox(FVector2D WorldXYCm) const;
@@ -350,6 +354,7 @@ private:
 	void BuildTile(FIntPoint Tile, TArray<float>& OutBedrock, TArray<FLinearColor>& OutState, TArray<uint8>& OutSoil);
 
 	void UploadBytes(UTexture2D* Texture, const TArray<uint8>& Data);
+	void UploadFloat2s(UTexture2D* Texture, const TArray<FVector2f>& Data);
 
 	/** Run the whole-site builder once for its feature log and site-wide constants. */
 	void BuildWholeSiteLog();
@@ -449,7 +454,7 @@ private:
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> StateB;
 
-	/** Ponded surface water, cm. R32F, ping-ponged by the water pass. */
+	/** Ponded surface water, cm (x), and the solid cm of dirt suspended in it (y). RG32F, ping-ponged by the water pass. */
 	UPROPERTY(Transient)
 	TObjectPtr<UTextureRenderTarget2D> PondA;
 
@@ -523,6 +528,7 @@ private:
 
 	/** CPU mirror of the pond, from the last RefreshReadback. */
 	TArray<float> PondReadback;
+	TArray<float> SedimentReadback;
 
 	/** Bedrock kept on the CPU too, so audits and height probes need no GPU round trip. */
 	TArray<float> BedrockCm;

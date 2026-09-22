@@ -49,8 +49,9 @@ float DirtDeepCompaction;
 //   row 2: infiltration cm/s (loose), field capacity, Proctor optimum moisture, drying multiplier
 //   row 3: dry colour rgb, dust motes per litre
 //   row 4: packed colour rgb, (unused)
+//   row 5: erodibility cm/s/Pa, critical shear Pa, settling cm/s, transport capacity per Pa
 #define DIRT_MAX_SOILS 8
-#define DIRT_SOIL_ROWS 5
+#define DIRT_SOIL_ROWS 6
 Texture2D<uint> DirtSoilIn;
 float4 DirtSoilTable[DIRT_MAX_SOILS * DIRT_SOIL_ROWS];
 
