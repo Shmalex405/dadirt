@@ -148,9 +148,12 @@ void FDirtTrack::BuildCentreline()
 		Centreline[i].Curvature = (Speed > SMALL_NUMBER) ? Cross / (Speed * Speed * Speed) : 0.0f;
 
 		const float AbsK = FMath::Abs(Centreline[i].Curvature);
-		if (AbsK > KINDA_SMALL_NUMBER)
+		if (AbsK > KINDA_SMALL_NUMBER && 1.0f / AbsK < MinCornerRadiusM)
 		{
-			MinCornerRadiusM = FMath::Min(MinCornerRadiusM, 1.0f / AbsK);
+			MinCornerRadiusM = 1.0f / AbsK;
+			TightestCornerM = Pts[i];
+			// The normal is the left of travel; a positive curvature turns left.
+			TightestCentreM = Pts[i] + Centreline[i].Normal * (1.0f / Centreline[i].Curvature);
 		}
 	}
 
@@ -158,8 +161,8 @@ void FDirtTrack::BuildCentreline()
 	const FVector2f Dir = (Centreline[8].Pos - Centreline[0].Pos).GetSafeNormal();
 	StartHeadingRad = FMath::Atan2(Dir.Y, Dir.X);
 
-	Log(FString::Printf(TEXT("Centre line: %.0f m lap (FIM 1500-1750), tightest corner %.0f m radius"),
-		LapLengthM, MinCornerRadiusM));
+	Log(FString::Printf(TEXT("Centre line: %.0f m lap (FIM 1500-1750), tightest corner %.0f m radius at (%.0f, %.0f) m, its centre at (%.0f, %.0f) m"),
+		LapLengthM, MinCornerRadiusM, TightestCornerM.X, TightestCornerM.Y, TightestCentreM.X, TightestCentreM.Y));
 }
 
 float FDirtTrack::NaturalGroundM(const FVector2f& P)

@@ -106,8 +106,10 @@ public:
 	FVector2f StartPositionM = FVector2f::ZeroVector;
 	float StartHeadingRad = 0.0f;
 
-	/** The smallest corner radius anywhere on the lap, in metres. */
+	/** The smallest corner radius anywhere on the lap, in metres, where it is, and the centre of that arc. */
 	float MinCornerRadiusM = 0.0f;
+	FVector2f TightestCornerM = FVector2f::ZeroVector;
+	FVector2f TightestCentreM = FVector2f::ZeroVector;
 
 	float MinElevationM = 0.0f;
 	float MaxElevationM = 0.0f;
@@ -115,7 +117,7 @@ public:
 	/** Recommended world box for this track, in centimetres. */
 	static float RecommendedWorldSizeCm() { return 38400.0f; }   // 384 m
 
-private:
+public:
 	/** One sample of the centre line. */
 	struct FSample
 	{
@@ -170,6 +172,7 @@ private:
 	float MetresPerCell = 0.0f;
 
 	TArray<FSample> Centreline;
+private:
 	TArray<FDirtTrackFeature> Features;
 
 	/** Design grade per centre-line sample, metres. */

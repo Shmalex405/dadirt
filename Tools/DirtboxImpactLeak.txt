@@ -1,0 +1,47 @@
+# Where does a landing on a thin layer lose dirt? Three drops from 1 m onto the
+# 32 deg jump's landing ramp (18 cm of packed loam over bedrock) with every part
+# on, then with the splash off, then with the rut (the crater dig) off, then with
+# the pack off. The audit after each set says which part leaks.
+wait 2 startup
+DaDirt.Mode testbed
+DaDirt.Reset
+wait 1
+DaDirt.Focus -30 -16 40
+wait 1
+DaDirt.Audit
+DaDirt.Wheel -16 -16 0 100
+wait 1.5 all_1
+DaDirt.Wheel -16 -16 0 100
+wait 1.5 all_2
+DaDirt.Wheel -16 -16 0 100
+wait 1.5 all_3
+DaDirt.Probe -16 -16
+DaDirt.Audit
+DaDirt.Wheel -16 -19 0 100
+DaDirt.WheelParts 1 1 1 1 0
+wait 1.5 nosplash_1
+DaDirt.Wheel -16 -19 0 100
+DaDirt.WheelParts 1 1 1 1 0
+wait 1.5 nosplash_2
+DaDirt.Wheel -16 -19 0 100
+DaDirt.WheelParts 1 1 1 1 0
+wait 1.5 nosplash_3
+DaDirt.Audit
+DaDirt.Wheel -16 -13 0 100
+DaDirt.WheelParts 0 1 1 1 1
+wait 1.5 norut_1
+DaDirt.Wheel -16 -13 0 100
+DaDirt.WheelParts 0 1 1 1 1
+wait 1.5 norut_2
+DaDirt.Wheel -16 -13 0 100
+DaDirt.WheelParts 0 1 1 1 1
+wait 1.5 norut_3
+DaDirt.Audit
+DaDirt.Wheel -16 -22 0 100
+DaDirt.WheelParts 1 0 1 1 1
+wait 1.5 nopack_1
+DaDirt.Wheel -16 -22 0 100
+DaDirt.WheelParts 1 0 1 1 1
+wait 1.5 nopack_2
+DaDirt.Audit
+quit

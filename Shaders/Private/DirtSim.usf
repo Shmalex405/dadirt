@@ -131,12 +131,18 @@ void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float Moisture = (float)DirtDepositMoist[P] / max((float)VolFixed, 1.0f);
 		const float AddCm = VolumeCm3 / DirtTexelAreaCm2;
 
-		// Same skin rule as the slump: what lands sits on top and owns the
-		// surface once there is a couple of centimetres of it.
+		// Same skin rules as the slump: what lands sits on top. Its water owns
+		// the surface once there is a couple of centimetres of it; its packing
+		// is felt over the bearing depth a tyre loads (DirtCompactionDepthCm),
+		// so a few centimetres of loose roost on hardpack read as hardpack with
+		// a loose top, not as a loose column. Read as a loose column, a sand
+		// crater refilled by its own slumping walls was punched to bedrock in
+		// five landings.
 		const float SkinCm = 2.0f;
 		const float W = AddCm / (AddCm + SkinCm);
+		const float Wc = AddCm / (AddCm + DirtCompactionDepthCm);
 		S.b = saturate(lerp(S.b, Moisture, W));
-		S.g = saturate(lerp(S.g, DirtDepositCompaction, W));
+		S.g = saturate(lerp(S.g, DirtDepositCompaction, Wc));
 		S.r += AddCm;
 		S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
 
@@ -525,7 +531,9 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 		const float4 SQ = TileAt(T + DirtOffsets8[j]);
 		TotalIn += In;
 		InMoisture += In * saturate(SQ.b);
-		InCompaction += In * SQ.g;
+		// Avalanching dirt is tumbling dirt: whatever arrives is loose, however
+		// packed the face it came off was.
+		InCompaction += In * 0.0f;
 	}
 
 	const float Retained = max(S.r - TotalOut, 0.0f);
@@ -542,13 +550,20 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 	{
 		const float SkinCm = 2.0f;
 		const float W = TotalIn / (TotalIn + SkinCm);
+		// Packing is felt over the bearing depth, not the wet skin: a thin
+		// loose infill over a packed floor is still mostly floor to a tyre.
+		const float Wc = TotalIn / (TotalIn + DirtCompactionDepthCm);
 		S.b = lerp(S.b, InMoisture / TotalIn, W);
-		S.g = saturate(lerp(S.g, InCompaction / TotalIn, W));
+		S.g = saturate(lerp(S.g, InCompaction / TotalIn, Wc));
 	}
 
-	// Avalanching dirt is tumbling dirt, so whatever moved arrives loose; nothing
-	// re-packs it on its own — only a wheel, a tool, or a Pack brush.
-	const float Loosen = saturate((TotalOut + TotalIn) / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
+	// A face that sheds its top is a loose face; nothing re-packs it on its own,
+	// only a wheel, a tool, or a Pack brush. The receiving cell is NOT loosened
+	// beyond the loose inflow mixed in above: applied every step while a wall
+	// trickled into a crater, the old (out + in) rule took a packed floor to
+	// zero in a couple of seconds, and each landing on it punched as if into
+	// fresh loose dirt.
+	const float Loosen = saturate(TotalOut / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
 	S.g = saturate(S.g - Loosen);
 
 	// --- grains shedding down the face ------------------------------------------------

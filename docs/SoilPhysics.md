@@ -297,8 +297,9 @@ Vehicles*, ch. 2) turned into a kinematic rule for the contact. Section 9i.
 the ground does: an MX tyre at 12 psi deflects 2–3 cm, a contact patch of
 2√(2 r δ) ≈ 25 cm even on concrete. Bekker's rigid wheel alone gave a 7 cm
 patch on hardpack, the Janosi shear could not build along it, and the tyre spun
-on every packed face it met. The patch is now the longer of the two
-(`TyreDeflectionM`).
+on every packed face it met. The patch is now sinkage plus flattening in one
+arc, and the flattening is no longer a fixed 2.2 cm: it is the tyre spring
+derived from pressure and shape in section 6b (1.4 cm at 12 psi under 981 N).
 
 **Where the rut is pressed.** At the front of the contact patch, where the tyre
 first meets the ground, so the axle rides on floor it has already made. Pressed
@@ -311,7 +312,109 @@ quarter throttle dug itself in and never got going.
 and the soil's (n, k_c, k_φ) derived from compaction; motion resistance from R_c;
 roost rate from excavation, capped by available layer as now.
 
+**A landing is Proctor's hammer (impact compaction, 2026-09-22).** The Proctor
+test compacts soil by dropping a hammer on it: what packs dirt is energy per
+volume, and a tyre touching down at v brings ½ m v² of it. Two springs in
+series take that energy at one force F: the tyre, the linear spring section 6b
+derives from its pressure and shape (73 kN/m at 12 psi), stores F² / 2k_t; the
+soil, whose force at a punch depth z is Bekker's pressure over the patch the
+tyre has made by then (b the crown's chord at that depth), gives
+
+    F(z) = K b 2√(2r) z^(n+½),    W(z) = K b 2√(2r) z^(n+3/2) / (n + 3/2).
+
+F² / 2k_t + W(z(F)) = ½ m v² is monotonic in F and is bisected. Then: the
+ground under the patch (a disc of the patch's area) is packed at that load,
+`PackPerPass · F / mg` before the Proctor moisture curve, exactly as a rolling
+pass is packed at its load; the plastic share of the punch stays as a crater
+whose rim is the heaved dirt (a dig, zero-sum); and past `SplashImpactMps` a
+share ½ (1 − C) of the punched dirt squirts out from under the tyre as splash
+instead of heaving, so loose dirt splashes half and packed dirt none. There is
+no suspension yet: the whole hundred kilograms lands on the tyre, which is why
+these hits are hard (a 1 m drop onto loose loam is about 7.5 g); the bike build
+puts a spring and a damper between the wheel and the rest. A hop under 1 m/s
+(a 5 cm fall off a rut shoulder) is not a landing and is left to the rolling
+load, and a tyre re-landing in its own fresh crater within 0.3 s is not a
+second landing. **Rolling dynamic
+load:** the velocity the ground takes from the tyre each substep *is* its
+normal force, m(−v_n)/dt — the weight on level ground, m v²/ρ more in a
+transition or the bottom of a bowl. What it gives beyond the static load
+grips more at once and, time-averaged over the stroke with the airborne
+substeps counting nothing, presses the rut deeper and packs harder, capped at
+`MaxDynamicLoadG` so a landing's first substep does not count twice. Read at
+the instant instead, a hop's landing spike pressed the rut many times too deep
+and the tyre stalled in its own trench. Landings go hard and hollow,
+transitions pack, by themselves. Section 9n.
+
+**Cornering: the sheared layer goes to the outside (2026-09-22).** In a corner
+the tyre runs at a slip angle α: it slides sideways at v tan α while it rolls.
+Lateral grip builds with the sideways shear displacement along the patch,
+j = x tan α, by the same Janosi–Hanamoto law as drive traction, and the two
+share one Mohr–Coulomb ceiling (a friction circle: what the drive takes, the
+side has not got), so half the grip needs 5–10° of slip angle as on a real
+tyre and a spinning rear has almost nothing left to hold the side and steps
+out. Where the patch is sliding — the share of the ceiling the side is using —
+the knobs drag the layer they are in sideways with them: knob height, or the
+Bekker sinkage where the knobs do not reach, times the patch length, times the
+slide speed, the roost rule turned through ninety degrees. That layer leaves
+the line and is put down just outside the tyre's outer flank, loose, as the
+outer shoulder (the line under the tyre stays pressed: the knobs took its top); sliding faster than `SpraySlipThresholdMps` a growing share of
+it (all but a fifth by `SprayFullSlideMps`) is flung outward as spray instead.
+Lap after lap the line sinks and packs and the outer shoulder grows into a berm
+that nothing placed: the track develops from the line the rider takes.
+`DaDirt.Orbit` is that rider in its simplest form, steering round a circle.
+Section 9n.
+
 ---
+
+**6b. The tyre is a real one (2026-09-22).** Alex: a round tyre with real
+motocross numbers, so the dirt tests are pure. The test wheel now carries a
+110/90-19 soft-to-intermediate rear, the size every 250 and 450 races on
+(Dunlop Geomax MX33, Michelin Starcross 6 and Bridgestone Battlecross X30 are
+all made in it), and can swap to the 80/100-21 front, a sand rear or a
+hard-terrain rear with `DaDirt.Tyre`. The numbers and where they come from:
+
+| | rear 110/90-19 | front 80/100-21 | source |
+|---|---|---|---|
+| outside diameter | 680 mm (19 in rim + 2 × 0.90 × 110) | 693 mm | the size code; tirecalculatorhub gives 693.4 for the front |
+| section width | 110 mm | 80 mm | size code |
+| tread width across the blocks | 105 mm | 76 mm | a little under the section |
+| crown drop, centre to tread edge | 35 mm | 30 mm | Sumitomo's off-road tyre patent US 7,874,330: "from 30 to 40 mm", camber ratio 0.35–0.75 |
+| crown radius (an arc through both edges) | 57 mm | 39 mm | (w² + d²) / 2d |
+| block height | 19 mm | 13 mm | the patents' range "from 7 to 19 mm" (US 7,874,330) and "6 to 19 mm" (EP 3,047,981); soft-terrain rears at the top, fronts and hard-terrain rears near 12–13 |
+| land ratio (block tops / tread area) | 0.20 | 0.22 | patents: "preferably from 10 to 30 %" |
+| pressure | 83 kPa (12 psi) | 90 kPa (13 psi) | Motocross Action: 12 psi front and rear as the ballpark, 13–13.5 on hardpack, 11–11.5 in sand; the patents test at 80 kPa |
+| tyre mass | 5.5 kg | 3.8 kg | Dunlop MX33 110/90-19 listed at 5.5 kg; MX34 front 8.35 lb |
+| complete wheel | 11.7 kg | 8.0 kg | tyre + tube 1.0 + rim 1.7 (OEM 19 in Dirtstar 1,707 g) + hub 1.06 (KTM OEM 1,059 g) + spokes 0.9 + sprocket 0.5 + disc 0.4 + axle and spacers 0.6 |
+| load on the wheel | 100 kg | 91 kg | a 2025 KTM 450 SX-F is 103.9 kg without fuel; with 5 kg of fuel and an 80 kg rider, 52 % of 189 kg sits on the back |
+| tread rubber | 75–80 Shore A | | US 7,874,330 (not used yet) |
+
+**What the shape does.** The crown is an arc of 57 mm radius, so the tyre
+touches the ground in a strip whose width is the arc's chord at the depth it
+sits: b = 2√(2 r_c (z + δ)) for a sinkage z and a flattening δ, never wider
+than the tread. On hardpack that is 78 mm; in loam, where the tyre sinks
+2–3 cm, it is the whole 105 mm. Bekker's b is that width, so the two settle
+together (a narrower strip carries more pressure and sinks more). The rut,
+the pack, the roost and the sideways shear are all as wide as the contact,
+and the tyre reads the ground at its two contact edges. The shoulder blocks
+are only reached by leaning, which the single wheel cannot do yet.
+
+**The tyre spring, derived.** At pressure p a pneumatic carcass carries its
+load over a patch of area about N / p. For a round tyre that patch is an
+ellipse 2√(2Rδ) long and 2√(2 r_c δ) wide, area 2π δ √(R r_c), so
+
+    δ = N / (2π p √(R r_c)),    k_t = 2π p √(R r_c) ≈ 73 kN/m at 12 psi,
+
+a linear spring: 1.4 cm under the 981 N static load, a hard-ground patch of
+192 × 78 mm. Cossalter (*Motorcycle Dynamics*) uses 180 kN/m for a road tyre
+at about 2.3 bar; scaled to 0.83 bar that is 65 kN/m, so the derived number
+sits where it should. This replaces the fixed 2.2 cm deflection, and it is the
+k_t the landing model (section 6) shares the impact energy with. The wheel's
+inertia is 0.8 m r²: tyre, tube and rim sit at the radius.
+
+**Not yet.** Lean and the shoulder blocks; the knob-top pressure (the load
+over the land ratio) as what actually bears on the soil, which Bekker's
+gross-patch pressure understates; the carcass's share of the load beyond the
+air; rubber hardness; a tyre mesh that is not a cylinder.
 
 ## 7. Individual particles: when dirt stops being a surface
 
@@ -604,12 +707,13 @@ soaked block runs out, the dry cone settles at 32° on axis and diagonal.
   into a parcel that rolls off along the fall line, capped at a few grains'
   worth so a 6 mm grain never carries a cell's worth of mud. The loose cone
   sheds **8,600 grains** as it collapses, still settles at 32°, drift 0.00000.
-- *Spray off a berm*: sideways slither above `SpraySlipThresholdMps` shears
-  `SprayFailureDepthCm` of soil per metre off the tyre's flank and throws it
-  outward, low and fast. A hard turn on the pad: 27,000 parcels, drift 0.00000.
-- *A landing*: touching down faster than `SplashImpactMps` scoops
-  `SplashLitresPerMps` per m/s of impact and throws it out both sides. Off the
-  block's edge: 22,000 parcels, drift −0.00001.
+- *Spray off a berm*: the layer the sliding patch shears sideways (section 6,
+  cornering) is flung outward, low and fast, for the share of it that a slide
+  above `SpraySlipThresholdMps` earns; the rest stays as the outer shoulder.
+  A hard turn on the pad (first version): 27,000 parcels, drift 0.00000.
+- *A landing*: past `SplashImpactMps`, ½ (1 − C) of the dirt the tyre punches
+  out of the ground (section 6, impact) squirts out both sides; the rest heaves
+  the rim. Off the block's edge (first version): 22,000 parcels, drift −0.00001.
 - *Dust* (`DaDirt.Dust`): a second pool of camera-facing soft quads, puffed with
   roost, spray, splash and throws at `DustPerLitre` motes per litre of dry
   dirt (wet dirt makes none), on a 1 mm speck's drag, neutrally buoyant with a
@@ -831,6 +935,92 @@ fixed both. The second: at the old infiltration pace loose ground drank
 only packed ground eroded; infiltration is now a tenth of that everywhere
 (still fifty times the field). Not yet: rain-splash detachment, and the
 rills are as fine as the cells let them be, no finer.
+
+## 9n. Impact, corners and the real tyre measured (2026-09-23)
+
+All with the 110/90-19 rear of section 6b (73 kN/m spring, rim bottoming at
+6.9 cm), no suspension: the whole 100 kg lands on the tyre, so the g figures
+are a rigid axle's and will fall when the bike build puts a spring and a
+damper between the wheel and the rest.
+
+**Drops (`Tools/DirtboxImpact.txt` A).** The wheel dropped 1 m (4.4 m/s) onto
+the same spot five times, at 3.9 cm cells, probed at the centre after each hit.
+
+| | loam (C 0.25) | sand (C 0.25) | hardpack clay (C 0.38) |
+|---|---|---|---|
+| first hit | 12 g, punched 13 cm | 15 g, 13 cm | 24 g, 6.3 cm |
+| fifth hit | 33 g, 4.5 cm | 20 g, 8.6 cm | 56 g, 2.6 cm |
+| crater after five, depth (floor compaction) | 17 cm (0.99) | 19 cm (0.92) | 9 cm (1.00) |
+| drift | −0.03 cm³ | 0.00 | +0.01 |
+
+Each hit finds a floor the last one packed, so the punch shrinks and the peak
+load climbs; sand, whose Bekker stiffness grows least with packing, keeps
+punching. Before the wheel read its own circumference it fell into each crater
+it had punched and sand went to bedrock in five hits; now it rests on the
+crater's rim.
+
+**The jump landing (B).** The 32° face flat out, three times: 12 m/s off the
+lip, 4.4 m of air, landing on the packed 22° ramp at 42–50 g with a 6–7 cm
+punch. The landing packs to 1.00 where the tyre comes down and gains 1.2 cm of
+splashed dirt a metre down the ramp (C 0.84); the rest of the ramp is
+untouched. Drift −0.02 cm³.
+
+**G-out in the bowl (C).** Two passes through the 3 m bowl at 6–10 m/s: the
+rolling dynamic load reads 1.2–2.3 g at the bottom and packs it from 0.30 to
+0.99, sinking the floor 4.5 cm. Drift −0.01 cm³.
+
+**Corners (`Tools/DirtboxCorner.txt`).** The rider is
+`DaDirt.Orbit` (a circle) and `DaDirt.Lap` (the track's centre line), and the
+probes read a radial cross-section through the line.
+
+*The flat circle (A).* An 8 m circle on the loam pad at a gentle throttle, 3.9 cm
+cells. After 230 m (about five laps): a rut 2.2 cm deep packed 0.60–0.75 at
+the line, and just outside it a loose shoulder 1.8 cm tall (compaction 0.00)
+of sheared dirt, 36 L moved outward in all. After 370 m the rut is 3.6 cm
+deep and packed to 1.00 with the shoulder still 1.8 cm; the line by then
+wanders 20–30 cm lap to lap, which is the rigid wheel at 5–30° of slip angle
+on its own ruts and shoulders, not the rider. Harder on the throttle (0.5) the
+slip angle reaches 60°, the tyre spends a third of its time in the air off its
+own shoulders and cuts two more lines 30 cm apart. Drift −0.08 to −0.28 cm³.
+
+*The banked berm (B).* Ten passes through the testbed berm (34° bank, 1.1 m)
+on one 14.6 m line at 8–10 m/s, slip angle 3–17°, each pass shearing
+0.3–1.3 L outward and hitting the bank at up to 19 g. Cross-section at the
+arc's middle, before / after five / after ten passes: the rut at the toe
+(Y −14.9) 55.8 → 51.0 → 51.1 cm, packed 0.82 → 1.00; the shoulder against
+the bank (Y −15.0) 57.4 → 60.4 → 59.9 cm, loose after five passes and packed
+to 1.00 by the tenth as the tyre rides it; the face above (Y −15.1) up 0.4 cm.
+A second line 40 cm inside cut 3.5 cm on the later passes. The berm grows
+where the tyre leans on it and nothing placed the dirt. Drift −0.01 to
+−0.03 cm³.
+
+*The track (C).* `DaDirt.Lap` follows the centre line through the tightest
+corner; at a third throttle the rigid wheel still flies 3.4 m off the first
+jump it meets, lands at 34 g and buries itself, and while the wheel is on the
+track the audit moves by ±100 cm³ at the window slides that follow it (slides
+without a wheel, in track and testbed mode alike, audit at exactly zero, and
+the same wheel on the testbed with the window following it audits clean). The
+fault is in what the wheel's strokes, craters or parcels do at a slide on the
+tiled track; it is logged in the roadmap and the track numbers are not quoted
+until it is fixed.
+
+**The hills again (`Tools/DirtboxHills.txt`).** Every shape again with the real tyre, the round contact
+and the strips. Dome: climbs at 7.4 m/s, crests at 11.8 and flies 3 m off the
+back; the rigid wheel lands at 32 g, punches 15 cm and stays in its crater (a
+wheel with no suspension does). SX whoops at 6 m/s: hops of 50 cm, landings of
+9–10 g. Rolling waves at 11 m/s: hops of 36 cm, 10–13 g. The 32° jump flat out:
+4.4 m of air, a 32 g landing that punches 17 cm, and it drives on at 10.7 m/s.
+Tabletop: 2.2 m of air. The 25° and 40° wedges are climbed from a standing
+start. The berm arc: a 12.7 g hit into the bank, a 62 cm hop, 5.3 L sheared
+into the outside of the turn. The mound is climbed without a hop; the bowl's
+far rim throws a 20 g landing. Drift 0.08 cm³ or less in every section.
+
+**Straight ruts (`Tools/DirtboxWheel.txt`).** Four passes down the same line at 3.9 cm cells: a rut 4.6–5.1 cm deep with its
+floor packed 0.91–1.00, and narrow: 6 cm off the centre the ground is down only
+1 cm, because a packed line is the crown's 78 mm strip, not the whole tread.
+Shoulders of 0.1–0.4 cm, compaction 0.36–0.85 along the flanks. The burnout,
+the straight run and the turn read as before; the turn's slither shears
+5–7 L into the outside of the arc. Drift under 1 cm³ in every section.
 
 ## 10. Implementation plan
 

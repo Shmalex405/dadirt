@@ -492,12 +492,18 @@ void ADirtBox::BuildWholeSiteLog()
 	Whole.SimRegionSizeCm = 0.0f;
 	Whole.SimRegionCentreCm = FVector2D::ZeroVector;
 	TArray<float> Bedrock, Layer;
+	TrackLineM.Reset();
 	if (TerrainMode == EDirtTerrainMode::Track)
 	{
 		FDirtTrack Track(Whole);
 		Track.Build();
 		FeatureLog = Track.FeatureLog;
 		LapLengthM = Track.LapLengthM;
+		TrackLineM.Reserve(Track.Centreline.Num());
+		for (const FDirtTrack::FSample& Sample : Track.Centreline)
+		{
+			TrackLineM.Add(FVector2D(Sample.Pos.X, Sample.Pos.Y));
+		}
 		Bedrock = MoveTemp(Track.Bedrock); Layer = MoveTemp(Track.Layer);
 		WholeCompaction = MoveTemp(Track.Compaction); WholeMoisture = MoveTemp(Track.Moisture);
 		WholeSoil = MoveTemp(Track.Soil);
@@ -3303,7 +3309,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtBallCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtWheelCmd(
 	TEXT("DaDirt.Wheel"),
-	TEXT("DaDirt.Wheel <Xm> <Ym> [headingDeg=0] - put the powered test wheel on the dirt (replaces any existing one). ")
+	TEXT("DaDirt.Wheel <Xm> <Ym> [headingDeg=0] [dropCm=3] - put the powered test wheel on the dirt (replaces any existing one), dropped from dropCm above it. ")
 	TEXT("Then DaDirt.Drive <throttle> <steer> [brake]."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
 		[](const TArray<FString>& Args, UWorld* World)
@@ -3327,6 +3333,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtWheelCmd(
 			const float Xm = ArgFloat(Args, 0, 0.0f);
 			const float Ym = ArgFloat(Args, 1, 0.0f);
 			const float HeadingDeg = ArgFloat(Args, 2, 0.0f);
+			const float DropCm = FMath::Clamp(ArgFloat(Args, 3, 3.0f), 0.0f, 2000.0f);
 			const FVector Origin = Box->GetActorLocation();
 			const FVector2D World2D(Origin.X + Xm * 100.0, Origin.Y + Ym * 100.0);
 
@@ -3341,12 +3348,15 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtWheelCmd(
 
 			FActorSpawnParameters Params;
 			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			// Set down just clear of the ground unless a drop is asked for: dropped
+			// from 25 cm, as it used to be, every placement was a landing that
+			// packed and cratered its spot. (The axle sits a tyre radius, 35 cm, up.)
 			ADirtWheel* Wheel = World->SpawnActor<ADirtWheel>(ADirtWheel::StaticClass(),
-				FVector(World2D.X, World2D.Y, Ground + 60.0f), FRotator(0.0f, HeadingDeg, 0.0f), Params);
+				FVector(World2D.X, World2D.Y, Ground + 35.0f + DropCm), FRotator(0.0f, HeadingDeg, 0.0f), Params);
 			if (Wheel)
 			{
-				UE_LOG(LogDirt, Log, TEXT("Test wheel at (%.1f, %.1f) m heading %.0f deg. DaDirt.Drive <throttle> <steer> to go."),
-					Xm, Ym, HeadingDeg);
+				UE_LOG(LogDirt, Log, TEXT("Test wheel at (%.1f, %.1f) m heading %.0f deg, %.0f cm up. DaDirt.Drive <throttle> <steer> to go."),
+					Xm, Ym, HeadingDeg, DropCm);
 			}
 		}));
 
@@ -3361,6 +3371,106 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtDriveCmd(
 				It->SetInputs(FMath::Clamp(ArgFloat(Args, 0, 0.0f), -1.0f, 1.0f),
 							  FMath::Clamp(ArgFloat(Args, 1, 0.0f), -1.0f, 1.0f),
 							  FMath::Clamp(ArgFloat(Args, 2, 0.0f), 0.0f, 1.0f));
+				return;
+			}
+			UE_LOG(LogDirt, Warning, TEXT("No test wheel. DaDirt.Wheel <x> <y> first."));
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtLapCmd(
+	TEXT("DaDirt.Lap"),
+	TEXT("DaDirt.Lap [throttle=0.5] [xM yM] - in track mode, put the test wheel on the centre line (at the start, or the point nearest x y) ")
+	TEXT("and have it follow the line lap after lap. DaDirt.Drive takes the steering back."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box || !World)
+			{
+				return;
+			}
+			const TArray<FVector2D>& Line = Box->TrackLineM;
+			if (Line.Num() < 3)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("DaDirt.Lap needs the track: DaDirt.Mode track first."));
+				return;
+			}
+			int32 Start = 0;
+			if (Args.Num() >= 3)
+			{
+				const FVector2D Want(ArgFloat(Args, 1, 0.0f), ArgFloat(Args, 2, 0.0f));
+				double Best = 1e18;
+				for (int32 i = 0; i < Line.Num(); ++i)
+				{
+					const double D = FVector2D::DistSquared(Line[i], Want);
+					if (D < Best) { Best = D; Start = i; }
+				}
+			}
+			const FVector2D P = Line[Start];
+			const FVector2D Dir = (Line[(Start + 4) % Line.Num()] - P).GetSafeNormal();
+			const float HeadingDeg = FMath::RadiansToDegrees(FMath::Atan2(Dir.Y, Dir.X));
+
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				It->Destroy();
+			}
+			const FVector Origin = Box->GetActorLocation();
+			const FVector2D World2D(Origin.X + P.X * 100.0, Origin.Y + P.Y * 100.0);
+			Box->RefreshReadback();
+			const float Ground = Box->GetSurfaceHeightAtWorld(World2D);
+			FActorSpawnParameters Params;
+			Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+			ADirtWheel* Wheel = World->SpawnActor<ADirtWheel>(ADirtWheel::StaticClass(),
+				FVector(World2D.X, World2D.Y, Ground + 38.0f), FRotator(0.0f, HeadingDeg, 0.0f), Params);
+			if (Wheel)
+			{
+				Wheel->SetInputs(FMath::Clamp(ArgFloat(Args, 0, 0.5f), -1.0f, 1.0f), 0.0f, 0.0f);
+				Wheel->SetLap();
+				UE_LOG(LogDirt, Log, TEXT("Test wheel on the centre line at (%.1f, %.1f) m heading %.0f deg, following the lap (%d points)."),
+					P.X, P.Y, HeadingDeg, Line.Num());
+			}
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtTyreCmd(
+	TEXT("DaDirt.Tyre"),
+	TEXT("DaDirt.Tyre <rear|front|sand|hard> - fit the test wheel with a real tyre: the 110/90-19 soft-intermediate rear (default), ")
+	TEXT("the 80/100-21 front, a sand rear or a hard-terrain rear. Prints its sizes, deflection and hard-ground patch."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				if (!Args.IsValidIndex(0) || !It->SetTyrePreset(Args[0]))
+				{
+					UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Tyre rear | front | sand | hard"));
+				}
+				return;
+			}
+			UE_LOG(LogDirt, Warning, TEXT("No test wheel. DaDirt.Wheel <x> <y> first."));
+		}));
+
+static FAutoConsoleCommandWithWorldAndArgs GDirtOrbitCmd(
+	TEXT("DaDirt.Orbit"),
+	TEXT("DaDirt.Orbit <cxM> <cyM> <radiusM> [throttle=0.5] - the test wheel steers itself round that circle, lap after lap, ")
+	TEXT("the way it is already pointing. DaDirt.Drive takes the steering back."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld* World)
+		{
+			if (Args.Num() < 3)
+			{
+				UE_LOG(LogDirt, Warning, TEXT("Usage: DaDirt.Orbit <cxM> <cyM> <radiusM> [throttle]"));
+				return;
+			}
+			ADirtBox* Box = GetDirtBoxOrWarn();
+			if (!Box)
+			{
+				return;
+			}
+			for (TActorIterator<ADirtWheel> It(World); It; ++It)
+			{
+				const FVector Origin = Box->GetActorLocation();
+				It->SetInputs(FMath::Clamp(ArgFloat(Args, 3, 0.5f), -1.0f, 1.0f), 0.0f, 0.0f);
+				It->SetOrbit(FVector2D(Origin.X / 100.0 + ArgFloat(Args, 0, 0.0f), Origin.Y / 100.0 + ArgFloat(Args, 1, 0.0f)),
+							 ArgFloat(Args, 2, 8.0f));
 				return;
 			}
 			UE_LOG(LogDirt, Warning, TEXT("No test wheel. DaDirt.Wheel <x> <y> first."));

@@ -304,6 +304,9 @@ public:
 	/** Parcels alive right now (pool minus free), a frame or two old. */
 	int32 GetLiveParcels() const;
 
+	/** The track's centre line in metres from the box centre (empty in testbed mode), for DaDirt.Lap. About one point every 33 cm. */
+	TArray<FVector2D> TrackLineM;
+
 	/** Dust motes alive right now, a frame or two old. */
 	int32 GetLiveDust() const;
 	void GetDustCounters(uint32 OutCounters[8]) const;

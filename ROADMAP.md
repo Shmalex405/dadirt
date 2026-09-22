@@ -236,6 +236,16 @@ cannot read structured buffers and Niagara cannot be authored from text):
       the pad's soil quilt, `DaDirt.Soil` (docs/SoilPhysics.md 8 and 9l, 2026-09-22)
 - [x] Erosion: run-off carries dirt by shear, capacity and settling, per soil,
       audited as "in the run-off" (docs/SoilPhysics.md 5b and 9m, 2026-09-22)
+- [x] Impact compaction: a landing is Proctor's hammer, the tyre spring and the
+      soil share its energy, the punch packs, craters and splashes; the rolling
+      dynamic load packs transitions (docs/SoilPhysics.md 6 and 9n, 2026-09-22)
+- [x] Corners build the track: Janosi lateral grip on the slip angle in a friction
+      circle with the drive, the sheared layer put down as the outer shoulder,
+      `DaDirt.Orbit`, `DaDirt.Lap`, `Tools/DirtboxCorner.txt` (docs/SoilPhysics.md 6 and 9n)
+- [ ] **Known fault:** with the test wheel on the track and the window following it,
+      the audit moves by about ±100 cm³ at each window slide (wheel-less slides and
+      the same wheel on the testbed audit at zero). Find what a stroke, crater or
+      parcel does at a slide on the tiled track before quoting track-lap numbers.
 - [x] A pile is not a ramp: the tyre climbs or shoves what stands in front of
       it, whichever costs less (bulldozing, docs/SoilPhysics.md 6 and 9i)
 - [x] The tyre has its own contact patch (deflection), the rut is pressed at
@@ -253,8 +263,12 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] A driveable powered wheel (throttle / brake / steer) — the ancestor of the
       bike. `DaDirt.Wheel`, `DaDirt.Drive`, `DaDirt.Anchor`, `DaDirt.Follow`. No
       physics engine: it integrates against the dirt through a height window,
-      with a 12 cm-wide three-point contact so ruts hold it and berm walls push
-      it back
+      with a three-point contact as wide as the crown touches, so ruts hold it
+      and berm walls push it back
+- [x] **A real tyre (2026-09-22):** a 110/90-19 rear by the numbers (680 mm, round
+      57 mm crown, 19 mm blocks, 12 psi, 11.7 kg wheel), its spring derived from
+      pressure and shape, contact width from the crown's chord at its sinkage;
+      `DaDirt.Tyre rear|front|sand|hard` (docs/SoilPhysics.md 6b)
 - [x] **Terramechanics (2026-09-21):** Bekker sinkage from load and the soil's
       (n, k_c, k_φ) — 3 cm on the loose pad, 1 mm on hardpack, 9 cm in mud;
       Janosi–Hanamoto traction building with slip to the Mohr–Coulomb ceiling;
@@ -266,8 +280,9 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] Rutting and packing: four passes at 3.9 cm cells gave a 4.3 cm rut with
       0.5 cm shoulders, floor packed 0.25 → 0.91, sinkage per pass 2.2 → 0.7 cm:
       the rut saturates because the packed floor barely sinks, no rule needed
-- [ ] Berm carving: repeated cornering builds up a banked wall — the turn works,
-      the berm has not been measured yet
+- [x] Berm carving: repeated cornering builds up a banked wall from the line's own
+      sheared dirt, measured lap by lap on the pad, the testbed berm and the
+      track's tightest corner (`Tools/DirtboxCorner.txt`, docs/SoilPhysics.md 9n)
 - [ ] Keyboard control for Alex (WASD), and a tyre mesh that is not a cylinder
 
 **Phase 1 exit bar:** dig a hole and the dirt piles beside it; piles slump at a

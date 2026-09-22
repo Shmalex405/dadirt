@@ -1,0 +1,391 @@
+# Corners: the line the rider takes builds the track.
+#   A. a circle on the flat loam pad, 8 m radius, lap after lap at a gentle throttle:
+#      the line packs and sinks and the sheared layer goes to the outside as a
+#      shoulder; then harder so the tyre runs at a bigger slip angle.
+#   B. the testbed berm arc at (56, 0), 34 deg bank: ten passes through the bank on
+#      the same line, entering at the arc start and braking before its far end.
+#   C. the real track: the wheel follows the centre line (DaDirt.Lap) through the
+#      tightest corner (17 m radius at (162, -43)) and on round the lap.
+# DaDirt.Orbit steers the wheel round a circle; the probes read a radial cross-section
+# through the line (rut floor, inner shoulder, outer shoulder) as the laps go by.
+# Status lines carry lateral N, slip angle, dyn g, impact g and shoved litres.
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+
+# --- A. the flat circle -------------------------------------------------------------------------
+DaDirt.Focus 3 -10 40
+wait 1
+DaDirt.Probe 10.20 -10
+DaDirt.Probe 10.30 -10
+DaDirt.Probe 10.40 -10
+DaDirt.Probe 10.50 -10
+DaDirt.Probe 10.60 -10
+DaDirt.Probe 10.70 -10
+DaDirt.Probe 10.80 -10
+DaDirt.Probe 10.90 -10
+DaDirt.Probe 11.00 -10
+DaDirt.Probe 11.10 -10
+DaDirt.Probe 11.20 -10
+DaDirt.Probe 11.30 -10
+DaDirt.Probe 11.40 -10
+DaDirt.Probe 11.50 -10
+DaDirt.Probe 11.60 -10
+DaDirt.Probe 11.70 -10
+DaDirt.Probe 11.80 -10
+DaDirt.Probe 11.90 -10
+DaDirt.Probe 12.00 -10
+DaDirt.Probe 12.10 -10
+DaDirt.Probe 12.20 -10
+DaDirt.Probe 12.30 -10
+DaDirt.Probe 12.40 -10
+DaDirt.Probe 12.50 -10
+DaDirt.Probe 12.60 -10
+DaDirt.Wheel 11 -10 90
+DaDirt.Follow 1
+DaDirt.Orbit 3 -10 8 0.3
+wait 60 A_laps_early
+DaDirt.Probe 10.20 -10
+DaDirt.Probe 10.30 -10
+DaDirt.Probe 10.40 -10
+DaDirt.Probe 10.50 -10
+DaDirt.Probe 10.60 -10
+DaDirt.Probe 10.70 -10
+DaDirt.Probe 10.80 -10
+DaDirt.Probe 10.90 -10
+DaDirt.Probe 11.00 -10
+DaDirt.Probe 11.10 -10
+DaDirt.Probe 11.20 -10
+DaDirt.Probe 11.30 -10
+DaDirt.Probe 11.40 -10
+DaDirt.Probe 11.50 -10
+DaDirt.Probe 11.60 -10
+DaDirt.Probe 11.70 -10
+DaDirt.Probe 11.80 -10
+DaDirt.Probe 11.90 -10
+DaDirt.Probe 12.00 -10
+DaDirt.Probe 12.10 -10
+DaDirt.Probe 12.20 -10
+DaDirt.Probe 12.30 -10
+DaDirt.Probe 12.40 -10
+DaDirt.Probe 12.50 -10
+DaDirt.Probe 12.60 -10
+DaDirt.Audit
+wait 90 A_laps_mid
+DaDirt.Probe 10.20 -10
+DaDirt.Probe 10.30 -10
+DaDirt.Probe 10.40 -10
+DaDirt.Probe 10.50 -10
+DaDirt.Probe 10.60 -10
+DaDirt.Probe 10.70 -10
+DaDirt.Probe 10.80 -10
+DaDirt.Probe 10.90 -10
+DaDirt.Probe 11.00 -10
+DaDirt.Probe 11.10 -10
+DaDirt.Probe 11.20 -10
+DaDirt.Probe 11.30 -10
+DaDirt.Probe 11.40 -10
+DaDirt.Probe 11.50 -10
+DaDirt.Probe 11.60 -10
+DaDirt.Probe 11.70 -10
+DaDirt.Probe 11.80 -10
+DaDirt.Probe 11.90 -10
+DaDirt.Probe 12.00 -10
+DaDirt.Probe 12.10 -10
+DaDirt.Probe 12.20 -10
+DaDirt.Probe 12.30 -10
+DaDirt.Probe 12.40 -10
+DaDirt.Probe 12.50 -10
+DaDirt.Probe 12.60 -10
+screenshot corner_A0_chase
+DaDirt.Audit
+DaDirt.Orbit 3 -10 8 0.5
+wait 60 A_laps_hard
+DaDirt.Probe 10.20 -10
+DaDirt.Probe 10.30 -10
+DaDirt.Probe 10.40 -10
+DaDirt.Probe 10.50 -10
+DaDirt.Probe 10.60 -10
+DaDirt.Probe 10.70 -10
+DaDirt.Probe 10.80 -10
+DaDirt.Probe 10.90 -10
+DaDirt.Probe 11.00 -10
+DaDirt.Probe 11.10 -10
+DaDirt.Probe 11.20 -10
+DaDirt.Probe 11.30 -10
+DaDirt.Probe 11.40 -10
+DaDirt.Probe 11.50 -10
+DaDirt.Probe 11.60 -10
+DaDirt.Probe 11.70 -10
+DaDirt.Probe 11.80 -10
+DaDirt.Probe 11.90 -10
+DaDirt.Probe 12.00 -10
+DaDirt.Probe 12.10 -10
+DaDirt.Probe 12.20 -10
+DaDirt.Probe 12.30 -10
+DaDirt.Probe 12.40 -10
+DaDirt.Probe 12.50 -10
+DaDirt.Probe 12.60 -10
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+camera 11 -14 1.2 -15 90
+wait 0.4
+screenshot corner_A1_line_along
+camera 13.5 -10 1.0 -20 180
+wait 0.4
+screenshot corner_A2_line_across
+DaDirt.DebugView 2
+wait 0.4
+screenshot corner_A3_compaction
+DaDirt.DebugView 1
+wait 0.4
+screenshot corner_A4_height
+DaDirt.DebugView 0
+DaDirt.Audit
+
+# --- B. the banked berm, ten passes -----------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 56 -7 40
+wait 1
+DaDirt.Probe 56 -13.30
+DaDirt.Probe 56 -13.40
+DaDirt.Probe 56 -13.50
+DaDirt.Probe 56 -13.60
+DaDirt.Probe 56 -13.70
+DaDirt.Probe 56 -13.80
+DaDirt.Probe 56 -13.90
+DaDirt.Probe 56 -14.00
+DaDirt.Probe 56 -14.10
+DaDirt.Probe 56 -14.20
+DaDirt.Probe 56 -14.30
+DaDirt.Probe 56 -14.40
+DaDirt.Probe 56 -14.50
+DaDirt.Probe 56 -14.60
+DaDirt.Probe 56 -14.70
+DaDirt.Probe 56 -14.80
+DaDirt.Probe 56 -14.90
+DaDirt.Probe 56 -15.00
+DaDirt.Probe 56 -15.10
+DaDirt.Probe 56 -15.20
+DaDirt.Probe 56 -15.30
+DaDirt.Probe 56 -15.40
+DaDirt.Probe 56 -15.50
+DaDirt.Probe 56 -15.60
+DaDirt.Probe 56 -15.70
+DaDirt.Follow 1
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_1
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_2
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_3
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_4
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_5
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Probe 56 -13.30
+DaDirt.Probe 56 -13.40
+DaDirt.Probe 56 -13.50
+DaDirt.Probe 56 -13.60
+DaDirt.Probe 56 -13.70
+DaDirt.Probe 56 -13.80
+DaDirt.Probe 56 -13.90
+DaDirt.Probe 56 -14.00
+DaDirt.Probe 56 -14.10
+DaDirt.Probe 56 -14.20
+DaDirt.Probe 56 -14.30
+DaDirt.Probe 56 -14.40
+DaDirt.Probe 56 -14.50
+DaDirt.Probe 56 -14.60
+DaDirt.Probe 56 -14.70
+DaDirt.Probe 56 -14.80
+DaDirt.Probe 56 -14.90
+DaDirt.Probe 56 -15.00
+DaDirt.Probe 56 -15.10
+DaDirt.Probe 56 -15.20
+DaDirt.Probe 56 -15.30
+DaDirt.Probe 56 -15.40
+DaDirt.Probe 56 -15.50
+DaDirt.Probe 56 -15.60
+DaDirt.Probe 56 -15.70
+screenshot corner_B0_chase
+DaDirt.Audit
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_6
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_7
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_8
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_9
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Wheel 44.3 -8.2 305
+DaDirt.Orbit 56 0 14.6 0.6
+wait 4.5 B_pass_10
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Probe 56 -13.30
+DaDirt.Probe 56 -13.40
+DaDirt.Probe 56 -13.50
+DaDirt.Probe 56 -13.60
+DaDirt.Probe 56 -13.70
+DaDirt.Probe 56 -13.80
+DaDirt.Probe 56 -13.90
+DaDirt.Probe 56 -14.00
+DaDirt.Probe 56 -14.10
+DaDirt.Probe 56 -14.20
+DaDirt.Probe 56 -14.30
+DaDirt.Probe 56 -14.40
+DaDirt.Probe 56 -14.50
+DaDirt.Probe 56 -14.60
+DaDirt.Probe 56 -14.70
+DaDirt.Probe 56 -14.80
+DaDirt.Probe 56 -14.90
+DaDirt.Probe 56 -15.00
+DaDirt.Probe 56 -15.10
+DaDirt.Probe 56 -15.20
+DaDirt.Probe 56 -15.30
+DaDirt.Probe 56 -15.40
+DaDirt.Probe 56 -15.50
+DaDirt.Probe 56 -15.60
+DaDirt.Probe 56 -15.70
+DaDirt.Follow 0
+camera 56 -11 1.5 -20 -90
+wait 0.4
+screenshot corner_B1_berm_across
+DaDirt.DebugView 2
+wait 0.4
+screenshot corner_B2_berm_compaction
+DaDirt.DebugView 0
+DaDirt.Audit
+
+# --- C. the real track, following the centre line ---------------------------------------------------
+DaDirt.Mode track
+wait 3
+DaDirt.Focus 148 -53
+wait 2
+DaDirt.Probe 160.69 -43.93
+DaDirt.Probe 160.86 -43.82
+DaDirt.Probe 161.02 -43.70
+DaDirt.Probe 161.18 -43.58
+DaDirt.Probe 161.35 -43.47
+DaDirt.Probe 161.51 -43.35
+DaDirt.Probe 161.67 -43.24
+DaDirt.Probe 161.83 -43.12
+DaDirt.Probe 162.00 -43.00
+DaDirt.Probe 162.16 -42.89
+DaDirt.Probe 162.32 -42.77
+DaDirt.Probe 162.48 -42.65
+DaDirt.Probe 162.65 -42.54
+DaDirt.Probe 162.81 -42.42
+DaDirt.Probe 162.97 -42.31
+DaDirt.Probe 163.14 -42.19
+DaDirt.Probe 163.30 -42.07
+DaDirt.Probe 163.46 -41.96
+DaDirt.Probe 163.62 -41.84
+DaDirt.Probe 163.79 -41.72
+DaDirt.Probe 163.95 -41.61
+DaDirt.Lap 0.35 162 -43
+DaDirt.Follow 1
+DaDirt.Focus follow
+wait 20 C_laps_1
+DaDirt.Audit
+wait 20 C_laps_2
+DaDirt.Audit
+wait 20 C_laps_early
+DaDirt.Focus 148 -53
+wait 1
+DaDirt.Probe 160.69 -43.93
+DaDirt.Probe 160.86 -43.82
+DaDirt.Probe 161.02 -43.70
+DaDirt.Probe 161.18 -43.58
+DaDirt.Probe 161.35 -43.47
+DaDirt.Probe 161.51 -43.35
+DaDirt.Probe 161.67 -43.24
+DaDirt.Probe 161.83 -43.12
+DaDirt.Probe 162.00 -43.00
+DaDirt.Probe 162.16 -42.89
+DaDirt.Probe 162.32 -42.77
+DaDirt.Probe 162.48 -42.65
+DaDirt.Probe 162.65 -42.54
+DaDirt.Probe 162.81 -42.42
+DaDirt.Probe 162.97 -42.31
+DaDirt.Probe 163.14 -42.19
+DaDirt.Probe 163.30 -42.07
+DaDirt.Probe 163.46 -41.96
+DaDirt.Probe 163.62 -41.84
+DaDirt.Probe 163.79 -41.72
+DaDirt.Probe 163.95 -41.61
+screenshot corner_C0_chase
+DaDirt.Audit
+DaDirt.Focus follow
+wait 30 C_laps_3
+DaDirt.Audit
+wait 30 C_laps_4
+DaDirt.Audit
+wait 30 C_laps_late
+DaDirt.Focus 148 -53
+wait 1
+DaDirt.Probe 160.69 -43.93
+DaDirt.Probe 160.86 -43.82
+DaDirt.Probe 161.02 -43.70
+DaDirt.Probe 161.18 -43.58
+DaDirt.Probe 161.35 -43.47
+DaDirt.Probe 161.51 -43.35
+DaDirt.Probe 161.67 -43.24
+DaDirt.Probe 161.83 -43.12
+DaDirt.Probe 162.00 -43.00
+DaDirt.Probe 162.16 -42.89
+DaDirt.Probe 162.32 -42.77
+DaDirt.Probe 162.48 -42.65
+DaDirt.Probe 162.65 -42.54
+DaDirt.Probe 162.81 -42.42
+DaDirt.Probe 162.97 -42.31
+DaDirt.Probe 163.14 -42.19
+DaDirt.Probe 163.30 -42.07
+DaDirt.Probe 163.46 -41.96
+DaDirt.Probe 163.62 -41.84
+DaDirt.Probe 163.79 -41.72
+DaDirt.Probe 163.95 -41.61
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+camera 163 -46 2 -20 125
+wait 0.4
+screenshot corner_C1_track_corner
+DaDirt.DebugView 2
+wait 0.4
+screenshot corner_C2_track_compaction
+DaDirt.DebugView 0
+DaDirt.Audit
+quit

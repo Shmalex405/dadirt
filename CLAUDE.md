@@ -138,6 +138,21 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   (`TransferDirt`), with the wedge's resistance as a force. Do not fix a launch
   or a stall by hand-tuning the contact: change the soil numbers that feed
   `R_b` and `F_climb` (docs/SoilPhysics.md 6), and check `Tools/DirtboxPlough.txt`.
+- **The tyre is a real 110/90-19, by the numbers.** Its sizes, block height,
+  land ratio, pressure and mass are measured or patent figures (docs/SoilPhysics.md
+  6b), its spring and contact width are derived from them, and every mark it
+  makes is as wide as the contact (`ContactWidthM`). Change a tyre by changing a
+  real property or adding a `DaDirt.Tyre` preset with its source, never by
+  tuning the contact.
+- **The wheel's marks all come from its loads.** A rolling pass packs at its
+  load (static plus what the ground takes from it each substep, capped at
+  `MaxDynamicLoadG`); a landing packs, craters and splashes from the peak force
+  the tyre spring and the soil share (`ImpactResponse`); a corner puts the layer
+  the sliding patch shears (knob depth x patch x slide) down as the outer
+  shoulder. Berms, holes in landings and packed lines are meant to appear from
+  laps, never be placed; if one is missing, change the soil or the load path
+  (docs/SoilPhysics.md 6), not the mark. `Tools/DirtboxCorner.txt` and
+  `Tools/DirtboxImpact.txt` are the tests, and `DaDirt.Orbit` is the rider.
 - **Every mass-moving stroke is two halves.** A taking half (dig core, raise rim,
   scoop) runs first and reports per stroke what the cell did not have (bedrock)
   into `DirtScoopShortfall`; the giving half (dig rim, raise core, dump, or the
@@ -179,7 +194,7 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
   (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist,
-  Plough, Hills, WaterGrip, Soils, Erosion). Anything that touches the wheel or soil strength runs
+  Plough, Hills, WaterGrip, Soils, Erosion, Impact, Corner). Anything that touches the wheel or soil strength runs
   `DirtboxHills.txt` too: the pad only exercises ruts, and every contact bug so
   far showed up on the dome, the jump faces or the berm. `DaDirt.Wheel` makes a
   new wheel with every part on, so `DaDirt.WheelParts` must follow it. Run them with

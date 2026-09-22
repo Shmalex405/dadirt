@@ -45,22 +45,78 @@ public:
 	/** Throttle -1..1, steer -1..1, brake 0..1. Held until changed. */
 	void SetInputs(float InThrottle, float InSteer, float InBrake);
 
-	// --- the machine ---------------------------------------------------------
+	// --- the tyre: a real one --------------------------------------------------------
+	//
+	// A 110/90-19 motocross rear, the size every 250 and 450 races on (Dunlop
+	// Geomax MX33, Michelin Starcross 6, Bridgestone Battlecross X30 all come in
+	// it): section 110 mm, 90 % aspect ratio on a 19 in rim, so the outside
+	// diameter is 482.6 + 2 x 99 = 680 mm; 5.5 kg; run at 12 psi (83 kPa; the
+	// tyre patents test at 80 kPa). Its tread is a ROUND crown: the off-road
+	// tyre patents put the drop from the centre to the tread edge at 30-40 mm
+	// over a half-width of about 52 mm, a circular arc of about 56 mm radius, so
+	// the contact is a narrow strip on hard ground and widens as the tyre sinks
+	// or deflects, and it takes lean to reach the shoulder blocks. Blocks 7-19 mm
+	// tall covering 10-30 % of the tread (the land ratio), tread rubber 75-80
+	// Shore A. A complete rear wheel is about 11.7 kg: tyre 5.5, tube 1.0, rim
+	// 1.7, hub 1.06, spokes and nipples 0.9, sprocket 0.5, disc 0.4, axle and
+	// spacers 0.6. docs/SoilPhysics.md 6b has the sources. DaDirt.Tyre swaps in
+	// the front (80/100-21), a sand tyre or a hard-terrain tyre.
 
-	/** MX rear tyre: ~0.35 m radius, 0.12 m wide. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wheel")
-	float RadiusM = 0.35f;
+	/** Outside diameter, m. 110/90-19: 0.680. 80/100-21 front: 0.693. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float OuterDiameterM = 0.680f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wheel")
-	float WidthM = 0.12f;
+	/** Section width, m: the widest point of the inflated tyre. Pushes water and dirt ahead of it. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float SectionWidthM = 0.110f;
 
-	/** Mass riding on this wheel. Half a bike and rider. */
+	/** Half the width across the tread blocks, m. The contact can never be wider than twice this. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float TreadHalfWidthM = 0.0525f;
+
+	/** How far the tread edge sits below the crown, m (the patents: 30-40 mm). Sets the crown radius. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float CrownDropM = 0.035f;
+
+	/** Block (knob) height, cm. Soft-terrain rears 18-19 mm, hard-terrain and fronts 12-13 mm. The layer a sliding knob drags; water shallower than this drains between the knobs. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float KnobHeightCm = 1.9f;
+
+	/** Share of the tread area that is block top (the patents: 10-30 %). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float LandRatio = 0.20f;
+
+	/** Inflation pressure, kPa. 12 psi = 83. The carcass carries its load over a patch of about load / pressure. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Tyre")
+	float PressureKPa = 83.0f;
+
+	/** Mass riding on this wheel. The rear share of a 450 and its rider: 104 kg dry + 5 of fuel + 80 of rider, 52 % on the back. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wheel")
 	float MassKg = 100.0f;
 
-	/** Wheel + tyre rotating mass, for spin-up. */
+	/** The whole rotating wheel, kg: tyre, tube, rim, hub, spokes, sprocket, disc, axle. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wheel")
-	float WheelMassKg = 9.0f;
+	float WheelMassKg = 11.7f;
+
+	/** Derived from the tyre above by ApplyTyre(): outside radius and the crown arc's radius, m. */
+	float RadiusM = 0.34f;
+	float CrownRadiusM = 0.056f;
+
+	/** Recompute the derived sizes and rescale the mesh. Called at BeginPlay and by DaDirt.Tyre. */
+	void ApplyTyre();
+
+	/** Swap the whole tyre for a named one: rear (default), front, sand, hard. False if the name is unknown. */
+	bool SetTyrePreset(const FString& Name);
+
+	/** The tyre spring: at pressure p a round tyre of radius R and crown r_c carries N over an elliptical patch of area N / p, so its deflection is N / (2 pi p sqrt(R r_c)) and it is linear. About 72 kN/m at 12 psi, next to the 180 kN/m Cossalter quotes for a road tyre at 2.3 bar. */
+	float TyreStiffnessNPerM() const;
+	float TyreDeflectionM(float LoadN) const { return LoadN / FMath::Max(TyreStiffnessNPerM(), 1.0f); }
+
+	/** Width of the ground contact, m, for a tyre sunk SinkM into the soil and flattened DeflectionM: the round crown's chord, never wider than the tread. */
+	float ContactWidthM(float SinkM, float DeflectionM) const;
+
+	/** How far the tyre can flatten before the rim is on the ground, m: most of the sidewall (19 in rim = 0.4826 m). Past it the spring is the rim. */
+	float MaxTyreDeflectionM() const { return 0.7f * FMath::Max(0.5f * (OuterDiameterM - 0.4826f), 0.03f); }
 
 	/** Peak drive torque at the axle, N m. A 450 in second gear is in this range. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wheel")
@@ -90,16 +146,6 @@ public:
 	/** Share of the Bekker sinkage that stays as a rut once the tyre has passed (the rest springs back). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
 	float PlasticSinkage = 0.5f;
-
-	/**
-	 * A pneumatic tyre flattens under its load whatever the ground does: an MX
-	 * tyre at 12 psi deflects 2-3 cm, which is a contact patch 2 sqrt(2 r d) ~
-	 * 25 cm long even on concrete. Bekker's rigid wheel alone gave a 7 cm patch
-	 * on hardpack, the shear could not build over it, and the tyre spun on every
-	 * packed face it met.
-	 */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
-	float TyreDeflectionM = 0.022f;
 
 	/** Slip-sinkage: extra sinkage per unit slip ratio, as a fraction of the static sinkage. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
@@ -149,10 +195,6 @@ public:
 	// speed v = 6.36 sqrt(p [psi]) mph puts a 12 psi tyre at 9.8 m/s, which is
 	// C_L = 0.68 on the tyre's own patch.
 
-	/** Knob height, cm. Water shallower than this drains between the knobs and only wets the soil. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
-	float KnobHeightCm = 1.8f;
-
 	/** Drag coefficient of the submerged tyre front. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water")
 	float WaterDragCoeff = 1.0f;
@@ -186,21 +228,45 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	float RoostSpreadDeg = 14.0f;
 
-	/** Sideways slither above this speed shears dirt off the tyre's flank: spray off a berm, m/s. */
+	// --- cornering: the sheared layer goes to the outside ----------------------------
+	//
+	// In a corner the tyre runs at a slip angle: it slides sideways at v tan(alpha)
+	// while it rolls. Lateral grip builds with that shear displacement along the
+	// patch exactly as drive traction does (Janosi-Hanamoto, j = x tan alpha), and
+	// the two share one Mohr-Coulomb ceiling, so a spinning rear has little left
+	// to hold the side. Where the patch is sliding, the knobs drag the layer they
+	// are in (knob height, or the sinkage if shallower) sideways with them: that
+	// layer leaves the line and is put down just outside the tyre's outer edge.
+	// Lap after lap the line sinks and packs and the outer shoulder grows into a
+	// berm; nothing places it. Sliding fast, the flank flings the same dirt as
+	// spray instead of leaving it.
+
+	/** Sideways slide above this speed starts flinging the sheared dirt off the flank rather than leaving it as a shoulder, m/s. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	float SpraySlipThresholdMps = 0.4f;
 
-	/** Bulk cm of soil the flank shears per metre of sideways slide, on loose dirt. */
+	/** Sideways slide speed at which most of the sheared dirt flies, m/s. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
-	float SprayFailureDepthCm = 0.25f;
+	float SprayFullSlideMps = 3.0f;
 
-	/** Impact speed above which a landing splashes dirt out from under the tyre, m/s. */
+	// --- impact: a landing is Proctor's hammer -------------------------------------------
+	//
+	// A tyre touching down at v carries 1/2 m v^2 into the ground. The tyre's own
+	// spring (its load over its deflection) and the soil (Bekker, the patch
+	// growing as it sinks) take it between them at one force, and solving that
+	// gives the peak load in g and how far the tyre punched in. The punch packs
+	// the ground at that load (Proctor: energy per volume is what compacts), the
+	// plastic share of it stays as a crater whose rim is the heaved dirt, and on
+	// a hard landing part of the punched dirt squirts out from under the tyre as
+	// splash instead of heaving. Landings go hard and hollow by themselves.
+
+	/** Impact speed above which a landing splashes part of the punched dirt out from under the tyre, m/s. Below it the punch only heaves the rim. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	float SplashImpactMps = 1.5f;
 
-	/** Litres of solid dirt splashed per m/s of impact above the threshold, on loose dirt. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
-	float SplashLitresPerMps = 0.25f;
+	/** The rolling dynamic load (g-out in a transition, the bottom of a bowl) is capped at this many g over the static load; a landing is the impact model's job. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Terramechanics")
+	float MaxDynamicLoadG = 4.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	bool bDeformsDirt = true;
@@ -216,6 +282,14 @@ public:
 	/** Test-rig mode: the wheel cannot translate, only spin. Burnouts on a stand. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Roost")
 	bool bAnchored = false;
+
+	/** The simplest rider: steer to follow a circle of the given radius about a centre, lap after lap. DaDirt.Orbit. Any DaDirt.Drive clears it. */
+	void SetOrbit(FVector2D CentreM, float InRadiusM);
+	void ClearOrbit() { bOrbit = false; }
+	bool IsOrbiting() const { return bOrbit; }
+
+	/** The same rider on the real track: follow the box's centre line. DaDirt.Lap. */
+	void SetLap() { bLap = true; LapIndex = -1; OrbitBias = 0.0f; }
 
 	/** Keep the player's camera behind the wheel. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Camera")
@@ -240,7 +314,15 @@ public:
 	float LastPondCm = 0.0f;          // standing water under the tyre
 	float LastWaterDragN = 0.0f;
 	float LastHydroLiftN = 0.0f;      // load carried by water rather than soil
+	float LastLateralN = 0.0f;        // sideways force the ground gave this substep
+	float LastSlipAngleDeg = 0.0f;    // angle between heading and travel
+	float LastDynamicG = 0.0f;        // rolling load beyond the static, in g
+	float LastImpactG = 0.0f;         // peak load of the last landing, in g
+	float LastImpactCm = 0.0f;        // how far the last landing punched in
+	float LastContactWidthM = 0.08f;  // how wide the tyre touched the ground last substep
+	float LastContactOffsetM = 0.0f;  // where along the tyre's circumference the ground held it: + ahead of the axle
 	double PloughLitresTotal = 0.0;   // solid litres shoved ahead of the tyre
+	double ShovedLitresTotal = 0.0;   // solid litres sheared sideways into the outer shoulder
 	double AirTimeS = 0.0;            // seconds spent off the ground since placed
 	float MaxAirCm = 0.0f;            // highest the tyre has been above the ground since placed
 	bool bOnGround = false;
@@ -252,9 +334,16 @@ private:
 	void UpdateVisuals(float Dt);
 	void UpdateFollowCamera();
 
-	/** Bekker static sinkage (m) and the soil constants for this state and load. */
+	/** Bekker's n, k_c (kN / m^(n+1)) and k_phi (kN / m^(n+2)) for this soil in this state. K = k_c / b + k_phi for a patch b wide. */
+	void BekkerConstants(const struct FDirtSoil& Soil, float Compaction, float Moisture, float& OutN, float& OutKcKN, float& OutKphiKN) const;
+
+	/** Bekker static sinkage (m), the patch it makes (length and width, m) and the motion resistance for this state and load. */
 	void SoilResponse(const struct FDirtSoil& Soil, float Compaction, float Moisture, float LoadN,
-					  float& OutSinkageM, float& OutContactLengthM, float& OutResistanceN) const;
+					  float& OutSinkageM, float& OutContactLengthM, float& OutContactWidthM, float& OutResistanceN) const;
+
+	/** A landing at FallSpeed: the peak force the tyre spring and the soil share, and how far the tyre punches in. */
+	void ImpactResponse(const struct FDirtSoil& Soil, float Compaction, float Moisture, float InFallSpeedMps,
+						float& OutPeakN, float& OutPunchM, float& OutTyreDeflectionM) const;
 	float ContactPatchLength(const struct FDirtSoil& Soil, float Compaction, float Moisture, float LoadN) const;
 
 	UPROPERTY(Transient)
@@ -280,13 +369,25 @@ private:
 	float StrokeSlipM = 0.0f;
 	float StrokeSlipSign = 0.0f;
 	float StrokeTimeS = 0.0f;
-	float StrokeSinkageM = 0.0f;      // sinkage-weighted by distance, for the rut
+	float StrokeLoadNs = 0.0f;        // load x time over the stroke, airborne substeps counting nothing:
+	float StrokeLoadTimeS = 0.0f;     //   the ground feels the mean pressure, not a hop's landing spike
 	float StrokeSlipRatio = 0.0f;
-	float StrokeSideSlipM = 0.0f;     // sideways slide, for spray
-	float StrokeSideSign = 0.0f;
+	float StrokeSideSlipM = 0.0f;     // sideways slide, all of it: its mean speed decides shoulder or spray
+	float StrokeShoveCm3 = 0.0f;      // bulk cm3 the sliding patch has sheared sideways this stroke, SIGNED by the slide direction: a jiggle cancels, a slide does not
+	FVector2D LastPressCm = FVector2D::ZeroVector;   // where the last stroke's strip ended, so the next one continues it without a gap or a lump
+	bool bHaveLastPress = false;
 	float StrokePloughM2 = 0.0f;      // heap thickness sunk through x distance: the swept area, for the plough
 	bool bWasOnGround = false;
-	float FallSpeedMps = 0.0f;        // downward speed on the last airborne substep, for the splash
+	float FallSpeedMps = 0.0f;        // downward speed on the last airborne substep, for the impact
+	float SinceImpactS = 100.0f;      // a tyre re-landing in its own fresh crater is not a second landing
+
+	bool bOrbit = false;
+	FVector2D OrbitCentreM = FVector2D::ZeroVector;
+	float OrbitRadiusM = 8.0f;
+	float OrbitSign = 1.0f;           // +1 anticlockwise (heading increasing), -1 clockwise
+	float OrbitBias = 0.0f;           // slow correction for running wide at a slip angle
+	bool bLap = false;
+	int32 LapIndex = -1;              // nearest centre-line point last substep
 
 	static constexpr float SubstepSeconds = 1.0f / 240.0f;
 	static constexpr float Gravity = 9.81f;

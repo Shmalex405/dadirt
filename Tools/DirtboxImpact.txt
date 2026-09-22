@@ -1,0 +1,169 @@
+# Impact compaction: a landing is Proctor's hammer.
+#   A. drop tests at rut resolution: the wheel dropped 1 m onto the same spot five
+#      times, on the loam pad and then on the sand and clay lanes of the quilt.
+#      The probes read the crater depth and the compaction under it after each hit.
+#   B. the 32 deg jump flat out, three times over the same landing: the landing
+#      ramp packs and hollows where the tyre comes down.
+#   C. the 3 m bowl at 10 m/s: g-out at the bottom packs it (the rolling dynamic load).
+# Status lines carry "impact <g> <cm>" for the last landing and "dyn <g>" while rolling.
+# The pad's loam is at X = 3; the quilt lanes at Y = 20..30 are sand (X -4.2),
+# granite (-0.6), loam (3), pnw (6.6), clay (10.2).
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+
+# --- A. drops ---------------------------------------------------------------------------------
+DaDirt.Focus 3 12 40
+wait 1
+DaDirt.Probe 3 -2
+DaDirt.Wheel 3 -2 90 100
+wait 1.5 drop_loam_1
+DaDirt.Probe 3 -2
+DaDirt.Probe 3.15 -2
+DaDirt.Probe 3.3 -2
+DaDirt.Wheel 3 -2 90 100
+wait 1.5 drop_loam_2
+DaDirt.Probe 3 -2
+DaDirt.Wheel 3 -2 90 100
+wait 1.5 drop_loam_3
+DaDirt.Wheel 3 -2 90 100
+wait 1.5 drop_loam_4
+DaDirt.Wheel 3 -2 90 100
+wait 1.5 drop_loam_5
+DaDirt.Probe 3 -2
+DaDirt.Probe 3.15 -2
+DaDirt.Probe 3.3 -2
+DaDirt.Probe 3.5 -2
+camera 1.5 -2 0.9 -25 0
+wait 0.4
+screenshot impact_A0_loam_crater
+DaDirt.Audit
+
+DaDirt.Probe -4.2 25
+DaDirt.Wheel -4.2 25 90 100
+wait 1.5 drop_sand_1
+DaDirt.Probe -4.2 25
+DaDirt.Wheel -4.2 25 90 100
+wait 1.5 drop_sand_2
+DaDirt.Probe -4.2 25
+DaDirt.Wheel -4.2 25 90 100
+wait 1.5 drop_sand_3
+DaDirt.Probe -4.2 25
+DaDirt.Wheel -4.2 25 90 100
+wait 1.5 drop_sand_4
+DaDirt.Probe -4.2 25
+DaDirt.Wheel -4.2 25 90 100
+wait 1.5 drop_sand_5
+DaDirt.Probe -4.2 25
+DaDirt.Probe -4.05 25
+DaDirt.Probe -3.9 25
+DaDirt.Audit
+
+DaDirt.Probe 10.2 25
+DaDirt.Wheel 10.2 25 90 100
+wait 1.5 drop_clay_1
+DaDirt.Probe 10.2 25
+DaDirt.Wheel 10.2 25 90 100
+wait 1.5 drop_clay_2
+DaDirt.Wheel 10.2 25 90 100
+wait 1.5 drop_clay_3
+DaDirt.Wheel 10.2 25 90 100
+wait 1.5 drop_clay_4
+DaDirt.Wheel 10.2 25 90 100
+wait 1.5 drop_clay_5
+DaDirt.Probe 10.2 25
+DaDirt.Probe 10.35 25
+DaDirt.Audit
+
+# a bigger hit: 2 m onto fresh loam
+DaDirt.Probe 3 -12
+DaDirt.Wheel 3 -12 90 200
+wait 1.5 drop_loam_2m
+DaDirt.Probe 3 -12
+DaDirt.Probe 3.15 -12
+DaDirt.Probe 3.3 -12
+DaDirt.Probe 3.5 -12
+DaDirt.Audit
+
+# --- B. the jump landing, three times --------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus -30 -16 40
+wait 1
+DaDirt.Probe -17 -16
+DaDirt.Probe -16 -16
+DaDirt.Probe -15 -16
+DaDirt.Probe -14 -16
+DaDirt.Wheel -50 -16 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 1 0 0
+wait 4.8 B_jump_1
+screenshot impact_B0_landing
+wait 3
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Focus -30 -16 40
+wait 0.5
+DaDirt.Probe -17 -16
+DaDirt.Probe -16 -16
+DaDirt.Probe -15 -16
+DaDirt.Probe -14 -16
+DaDirt.Wheel -50 -16 0
+DaDirt.Focus follow
+DaDirt.Drive 1 0 0
+wait 7.8 B_jump_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Wheel -50 -16 0
+DaDirt.Drive 1 0 0
+wait 7.8 B_jump_3
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Focus -30 -16 40
+wait 0.5
+DaDirt.Probe -18 -16
+DaDirt.Probe -17 -16
+DaDirt.Probe -16 -16
+DaDirt.Probe -15 -16
+DaDirt.Probe -14 -16
+DaDirt.Probe -16 -16.3
+camera -12 -19 1.5 -20 150
+wait 0.4
+screenshot impact_B1_landing_after
+DaDirt.DebugView 2
+wait 0.4
+screenshot impact_B2_landing_compaction
+DaDirt.DebugView 0
+DaDirt.Audit
+
+# --- C. g-out in the bowl -----------------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 54 -42 40
+wait 1
+DaDirt.Probe 54 -42
+DaDirt.Probe 50 -42
+DaDirt.Wheel 42 -42 0
+DaDirt.Focus follow
+DaDirt.Follow 1
+DaDirt.Drive 0.5 0 0
+wait 6 C_bowl_1
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Wheel 42 -42 0
+DaDirt.Drive 0.5 0 0
+wait 6 C_bowl_2
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Follow 0
+DaDirt.Focus 54 -42 40
+wait 0.5
+DaDirt.Probe 54 -42
+DaDirt.Probe 50 -42
+DaDirt.Probe 58 -42
+DaDirt.Audit
+quit

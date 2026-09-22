@@ -20,12 +20,12 @@ wait 1
 DaDirt.Wheel 22 10 90
 DaDirt.Focus follow
 DaDirt.Follow 1
-DaDirt.Drive 0.8 0 0
-wait 5 A_climb
+DaDirt.Drive 0.6 0 0
+wait 5.5 A_climb
 screenshot hills_A0_climb
 wait 3 A_crest
 screenshot hills_A1_crest
-wait 3 A_descent
+wait 1.2 A_descent
 DaDirt.Drive 0 0 1
 wait 2.5 A_braked
 screenshot hills_A2_braked

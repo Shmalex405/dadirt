@@ -125,9 +125,11 @@ confirm by measuring)*; the front, narrower and rounder, 40–50 mm. This is the
   and spaced for exactly this.
 - **Contact patch.** The tyre deflects under load like a spring; the patch
   length is 2√(2 R δ) and the width 2√(2 r_c δ) for deflection δ. At 12–13 psi
-  an MX tyre deflects 20–25 mm under a 1 kN wheel load *(typical, confirm)*:
-  a patch roughly 25 cm long and 14 cm wide, which matches the 25 cm the
-  wheel's `TyreDeflectionM` already uses.
+  an MX tyre deflects about 14 mm under a 1 kN wheel load when the carcass is
+  taken as a membrane carrying the load over a patch of N / p (derived in
+  docs/SoilPhysics.md 6b, 73 kN/m at 12 psi, next to Cossalter's 180 kN/m for
+  a road tyre at 2.3 bar): a patch about 19 cm long and 8 cm wide on hard
+  ground. The test wheel now runs exactly this (`ADirtWheel::TyreDeflectionM`).
 
 **Carcass.** Bias-ply, two or more cord plies at 15–45° to the circumference
 ([tyre patent survey](https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/9290060)),
