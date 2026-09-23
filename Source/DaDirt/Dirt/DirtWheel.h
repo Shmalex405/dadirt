@@ -321,6 +321,7 @@ public:
 	float LastImpactCm = 0.0f;        // how far the last landing punched in
 	float LastContactWidthM = 0.08f;  // how wide the tyre touched the ground last substep
 	float LastContactOffsetM = 0.0f;  // where along the tyre's circumference the ground held it: + ahead of the axle
+	float LastSkinCm = 0.0f;          // the skin under the contact (loose top, or a crust), cm
 	double PloughLitresTotal = 0.0;   // solid litres shoved ahead of the tyre
 	double ShovedLitresTotal = 0.0;   // solid litres sheared sideways into the outer shoulder
 	double AirTimeS = 0.0;            // seconds spent off the ground since placed

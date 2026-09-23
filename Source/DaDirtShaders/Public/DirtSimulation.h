@@ -145,7 +145,7 @@ struct DADIRTSHADERS_API FDirtTileReadback
 
 	/** Filled on the render thread once the copies have landed; bDone last. */
 	TArray<FLinearColor> ResultState;
-	TArray<FVector2f> ResultPond;         // x pond cm, y suspended solid cm
+	TArray<FLinearColor> ResultPond;      // R pond cm, G suspended solid cm, B skin cm, A packed base
 	std::atomic<bool> bDone{ false };
 
 	~FDirtTileReadback();
@@ -190,6 +190,10 @@ struct FDirtSimFrame
 	float EvapPerSec = 0.0007f;
 	float WetDepthCm = 20.0f;
 	float AmbientMoisture = 0.05f;
+	float CrustSeedCm = 0.5f;
+	float CrustMaxCm = 4.0f;
+	float CrustGrowCmPerSec = 0.03f;
+	float SkinEvapChokeCm = 0.3f;
 
 	// parcels
 	bool bParcels = true;
@@ -255,11 +259,11 @@ struct FDirtSimFrame
 	FRHITexture* BaseHeight = nullptr;     // R32F,    static bedrock
 	FRHITexture* SoilIn = nullptr;         // R8_UINT, the soil id of every cell (static, CPU-built)
 	FRHITexture* InitialState = nullptr;   // RGBA32F, CPU-built start state, or the entering patch on a shift
-	FRHITexture* InitialPond = nullptr;    // RG32F, entering pond (x) and suspended dirt (y) on a shift
+	FRHITexture* InitialPond = nullptr;    // RGBA32F, entering pond (x), suspended dirt (y), skin cm (z), packed base (w) on a shift
 	FRHITexture* StateA = nullptr;         // RGBA32F, ping
 	FRHITexture* StateB = nullptr;         // RGBA32F, pong
-	FRHITexture* PondA = nullptr;          // RG32F, ponded water (x) and suspended dirt (y), ping
-	FRHITexture* PondB = nullptr;          // RG32F, pong
+	FRHITexture* PondA = nullptr;          // RGBA32F, ponded water (x), suspended dirt (y), skin cm (z), packed base (w), ping
+	FRHITexture* PondB = nullptr;          // RGBA32F, pong
 	FRHITexture* Display = nullptr;        // RGBA32F, sampled by the material
 	FRHITexture* NormalOut = nullptr;      // RGBA16F, encoded world normal
 	FRHITexture* DebugOut = nullptr;       // RGBA16F, base colour / debug view

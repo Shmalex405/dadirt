@@ -45,6 +45,7 @@ struct FDirtWindowSlot
 	uint32 ReadyGeneration = 0;
 	TArray<FLinearColor> ReadyData;
 	TArray<float> ReadyPond;
+	TArray<FVector2f> ReadySkin;
 	bool bReady = false;
 
 	// Render thread only.
@@ -212,8 +213,8 @@ void ADirtBox::CreateResources()
 
 	StateA = MakeRT(TEXT("DirtStateA"), RTF_RGBA32f);
 	StateB = MakeRT(TEXT("DirtStateB"), RTF_RGBA32f);
-	PondA = MakeRT(TEXT("DirtPondA"), RTF_RG32f);
-	PondB = MakeRT(TEXT("DirtPondB"), RTF_RG32f);
+	PondA = MakeRT(TEXT("DirtPondA"), RTF_RGBA32f);
+	PondB = MakeRT(TEXT("DirtPondB"), RTF_RGBA32f);
 	DisplayRT = MakeRT(TEXT("DirtDisplay"), RTF_RGBA32f);
 	NormalRT = MakeRT(TEXT("DirtNormal"), RTF_RGBA16f);
 	DebugRT = MakeRT(TEXT("DirtDebug"), RTF_RGBA16f);
@@ -288,7 +289,7 @@ void ADirtBox::CreateResources()
 	SoilTex->AddressY = TA_Clamp;
 	SoilTex->NeverStream = true;
 
-	InitialPondTex = UTexture2D::CreateTransient(Res, Res, PF_G32R32F);
+	InitialPondTex = UTexture2D::CreateTransient(Res, Res, PF_A32B32G32R32F);
 	InitialPondTex->SRGB = false;
 	InitialPondTex->Filter = TF_Nearest;
 	InitialPondTex->AddressX = TA_Clamp;
@@ -337,7 +338,7 @@ void ADirtBox::BuildTerrainAndUpload()
 	// joins the world baseline.
 	TArray<float> Bedrock;
 	TArray<FLinearColor> Initial;
-	TArray<FVector2f> InitialPond;
+	TArray<FLinearColor> InitialPond;
 	TArray<uint8> Soils;
 	Bedrock.SetNumZeroed(Count);
 	Initial.SetNumZeroed(Count);
@@ -364,11 +365,17 @@ void ADirtBox::BuildTerrainAndUpload()
 				if (bFromCache)
 				{
 					FMemory::Memcpy(Initial.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
-					FMemory::Memcpy(InitialPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(FVector2f));
+					FMemory::Memcpy(InitialPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
 				}
 				else
 				{
 					FMemory::Memcpy(Initial.GetData() + Row, TileState.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
+					// Fresh ground has no skin: the base is the surface.
+					for (int32 X = 0; X < TileCells; ++X)
+					{
+						const FLinearColor& St = TileState[Y * TileCells + X];
+						InitialPond[Row + X] = FLinearColor(0.0f, 0.0f, 0.0f, DirtPackBase(St.G, St.B));
+					}
 				}
 			}
 			if (bFromCache)
@@ -386,7 +393,7 @@ void ADirtBox::BuildTerrainAndUpload()
 	UploadFloats(BaseHeightTex, Bedrock);
 	UploadBytes(SoilTex, SoilId);
 	UploadColors(InitialStateTex, Initial);
-	UploadFloat2s(InitialPondTex, InitialPond);
+	UploadColors(InitialPondTex, InitialPond);
 
 	// Make sure the uploads have actually landed before the first sim step
 	// reads them. This happens on a rebuild, so the stall does not matter.
@@ -856,7 +863,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 	TArray<float> NewBedrock;
 	TArray<uint8> NewSoil;
 	TArray<FLinearColor> Patch;
-	TArray<FVector2f> PatchPond;
+	TArray<FLinearColor> PatchPond;
 	NewBedrock.SetNumZeroed(Count);
 	NewSoil.SetNumZeroed(Count);
 	Patch.SetNumZeroed(Count);
@@ -905,7 +912,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 				if (bFromCache)
 				{
 					FMemory::Memcpy(Patch.GetData() + Row, (*Cached)->State.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
-					FMemory::Memcpy(PatchPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(FVector2f));
+					FMemory::Memcpy(PatchPond.GetData() + Row, (*Cached)->Pond.GetData() + Y * TileCells, TileCells * sizeof(FLinearColor));
 				}
 				else
 				{
@@ -928,7 +935,7 @@ void ADirtBox::ShiftWindow(FIntPoint DeltaTiles)
 	UploadFloats(BaseHeightTex, BedrockCm);
 	UploadBytes(SoilTex, SoilId);
 	UploadColors(InitialStateTex, Patch);
-	UploadFloat2s(InitialPondTex, PatchPond);
+	UploadColors(InitialPondTex, PatchPond);
 
 	// 3. Everything that addresses the window by texel moves with it.
 	WindowTile = NewTile;
@@ -991,12 +998,12 @@ void ADirtBox::HarvestTileReadbacks(bool bBlock)
 						}
 						RB->State->Unlock();
 					}
-					if (const FVector2f* Src = static_cast<const FVector2f*>(RB->Pond->Lock(Pitch)))
+					if (const FLinearColor* Src = static_cast<const FLinearColor*>(RB->Pond->Lock(Pitch)))
 					{
 						RB->ResultPond.SetNumUninitialized(N * N);
 						for (int32 Y = 0; Y < N; ++Y)
 						{
-							FMemory::Memcpy(RB->ResultPond.GetData() + Y * N, Src + Y * Pitch, N * sizeof(FVector2f));
+							FMemory::Memcpy(RB->ResultPond.GetData() + Y * N, Src + Y * Pitch, N * sizeof(FLinearColor));
 						}
 						RB->Pond->Unlock();
 					}
@@ -1547,7 +1554,8 @@ void ADirtBox::SetHeightWindowCentre(int32 Id, FVector2D WorldXYCm)
 }
 
 bool ADirtBox::SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
-								  FLinearColor* OutState, float* OutPondCm) const
+								  FLinearColor* OutState, float* OutPondCm,
+								  float* OutSkinCm, float* OutBaseCompaction, float* OutBaseMoisture) const
 {
 	if (!Windows.IsValidIndex(Id) || !Windows[Id] || Windows[Id]->bReleased)
 	{
@@ -1598,6 +1606,27 @@ bool ADirtBox::SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeigh
 	{
 		*OutPondCm = PondHere;
 	}
+	if (OutSkinCm || OutBaseCompaction || OutBaseMoisture)
+	{
+		// Nearest texel, not blended: the packed base does not interpolate.
+		float SkinCm = 0.0f, BaseC = S.G, BaseM = S.B;
+		if (W.Skin.Num() >= N * N)
+		{
+			const FVector2f K = W.Skin[FMath::RoundToInt(T.Y) * N + FMath::RoundToInt(T.X)];
+			SkinCm = K.X;
+			if (SkinCm > 1e-4f)
+			{
+				DirtUnpackBase(K.Y, BaseC, BaseM);
+			}
+			else
+			{
+				SkinCm = 0.0f;
+			}
+		}
+		if (OutSkinCm) *OutSkinCm = SkinCm;
+		if (OutBaseCompaction) *OutBaseCompaction = BaseC;
+		if (OutBaseMoisture) *OutBaseMoisture = BaseM;
+	}
 
 	// Normal from central differences around the nearest texel.
 	const int32 XN = FMath::RoundToInt(T.X);
@@ -1634,6 +1663,7 @@ void ADirtBox::UpdateHeightWindows()
 				Slot->Game.Size = Slot->Size;
 				Swap(Slot->Game.Data, Slot->ReadyData);
 				Swap(Slot->Game.Pond, Slot->ReadyPond);
+				Swap(Slot->Game.Skin, Slot->ReadySkin);
 				Slot->Game.bValid = true;
 			}
 			else
@@ -1692,18 +1722,23 @@ void ADirtBox::UpdateHeightWindows()
 						}
 						Slot->Readback[i]->Unlock();
 
-						// The pond rides along: the wheel needs to know it is in a puddle.
+						// The pond rides along: the wheel needs to know it is in a puddle,
+						// and the skin and the base under it, to know what it sinks into.
 						TArray<float> PondCopy;
+						TArray<FVector2f> SkinCopy;
 						PondCopy.SetNumZeroed(N * N);
+						SkinCopy.SetNumZeroed(N * N);
 						int32 PondPitch = 0;
 						if (const void* PondSrc = Slot->PondReadback[i]->Lock(PondPitch))
 						{
-							const FVector2f* PondRows = static_cast<const FVector2f*>(PondSrc);
+							const FLinearColor* PondRows = static_cast<const FLinearColor*>(PondSrc);
 							for (int32 Y = 0; Y < N; ++Y)
 							{
 								for (int32 X = 0; X < N; ++X)
 								{
-									PondCopy[Y * N + X] = PondRows[Y * PondPitch + X].X;
+									const FLinearColor& PW = PondRows[Y * PondPitch + X];
+									PondCopy[Y * N + X] = PW.R;
+									SkinCopy[Y * N + X] = FVector2f(PW.B, PW.A);
 								}
 							}
 							Slot->PondReadback[i]->Unlock();
@@ -1712,6 +1747,7 @@ void ADirtBox::UpdateHeightWindows()
 						FScopeLock L(&Slot->Lock);
 						Slot->ReadyData = MoveTemp(Copy);
 						Slot->ReadyPond = MoveTemp(PondCopy);
+						Slot->ReadySkin = MoveTemp(SkinCopy);
 						Slot->ReadyOrigin = Slot->PendingOrigin[i];
 						Slot->ReadyGeneration = Slot->PendingGeneration[i];
 						Slot->bReady = true;
@@ -1815,6 +1851,11 @@ void ADirtBox::StepSimulation(bool bForceReinit)
 	Frame.EvapPerSec = Settings.EvapPerSec;
 	Frame.WetDepthCm = Settings.WetDepthCm;
 	Frame.AmbientMoisture = Settings.AmbientMoisture;
+	Frame.EvapPerSec = Settings.EvapPerSec * Settings.EvapMultiplier;
+	Frame.CrustSeedCm = Settings.CrustSeedCm;
+	Frame.CrustMaxCm = Settings.CrustMaxCm;
+	Frame.CrustGrowCmPerSec = Settings.CrustGrowCmPerSec;
+	Frame.SkinEvapChokeCm = Settings.SkinEvapChokeCm;
 	Frame.bParcels = bParcelsReady;
 	Frame.ParcelRes = FMath::Clamp(Settings.ParcelPoolSide, 64, 1024);
 	Frame.FrameSeed = FrameCounter;
@@ -2396,10 +2437,14 @@ void ADirtBox::RefreshReadback()
 			PondRes->ReadLinearColorPixels(Pixels);
 			PondReadback.SetNumUninitialized(Pixels.Num());
 			SedimentReadback.SetNumUninitialized(Pixels.Num());
+			SkinReadback.SetNumUninitialized(Pixels.Num());
+			BaseReadback.SetNumUninitialized(Pixels.Num());
 			for (int32 i = 0; i < Pixels.Num(); ++i)
 			{
 				PondReadback[i] = Pixels[i].R;
 				SedimentReadback[i] = Pixels[i].G;
+				SkinReadback[i] = Pixels[i].B;
+				BaseReadback[i] = Pixels[i].A;
 			}
 		}
 	}
@@ -2432,11 +2477,23 @@ FDirtAudit ADirtBox::RunAudit()
 	{
 		const FLinearColor& S = Readback[i];
 		const FDirtSoil& CellSoil = Settings.Soil(SoilId.IsValidIndex(i) ? SoilId[i] : Settings.DefaultSoil);
-		const float Bulk = DirtBulkCm(S.R, S.G, CellSoil, Settings);
+		// The column is a skin over a base: bulk and pore water count both.
+		float SkinCm = SkinReadback.IsValidIndex(i) ? SkinReadback[i] : 0.0f;
+		float BaseC = S.G, BaseM = S.B;
+		if (SkinCm > 1e-4f && BaseReadback.IsValidIndex(i))
+		{
+			DirtUnpackBase(BaseReadback[i], BaseC, BaseM);
+		}
+		else
+		{
+			SkinCm = 0.0f;
+		}
+		const float Bulk = DirtBulkCmSkin(S.R, SkinCm, S.G, BaseC, CellSoil, Settings);
 		SumSolidCm += S.R;
 		SumBulkCm += Bulk;
-		// Pore water: saturation x porosity x the wet skin the moisture channel describes.
-		SumWaterCm += FMath::Clamp(S.B, 0.0f, 1.0f) * (1.0f - DirtSolidFraction(S.G, CellSoil)) * FMath::Min(Bulk, Settings.WetDepthCm);
+		const float SkinPart = FMath::Min(SkinCm, Bulk);
+		SumWaterCm += FMath::Clamp(S.B, 0.0f, 1.0f) * (1.0f - DirtSolidFraction(S.G, CellSoil)) * SkinPart
+					+ FMath::Clamp(BaseM, 0.0f, 1.0f) * (1.0f - DirtSolidFraction(BaseC, CellSoil)) * FMath::Min(Bulk - SkinPart, Settings.WetDepthCm);
 		if (PondReadback.IsValidIndex(i))
 		{
 			SumPondCm += PondReadback[i];
@@ -2559,6 +2616,24 @@ float ADirtBox::GetPondAtWorld(FVector2D WorldXYCm) const
 	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
 	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
 	return PondReadback[Y * Res + X];
+}
+
+float ADirtBox::GetSkinAtWorld(FVector2D WorldXYCm, float* OutBaseCompaction, float* OutBaseMoisture) const
+{
+	const int32 Res = Settings.SimResolution;
+	if (SkinReadback.Num() < Res * Res || BaseReadback.Num() < Res * Res)
+	{
+		return 0.0f;
+	}
+	const FVector2f T = WorldToTexel(WorldXYCm);
+	const int32 X = FMath::Clamp(FMath::FloorToInt(T.X), 0, Res - 1);
+	const int32 Y = FMath::Clamp(FMath::FloorToInt(T.Y), 0, Res - 1);
+	const int32 I = Y * Res + X;
+	float C = 0.0f, M = 0.0f;
+	DirtUnpackBase(BaseReadback[I], C, M);
+	if (OutBaseCompaction) *OutBaseCompaction = C;
+	if (OutBaseMoisture) *OutBaseMoisture = M;
+	return SkinReadback[I];
 }
 
 float ADirtBox::GetSedimentAtWorld(FVector2D WorldXYCm) const
@@ -2869,7 +2944,7 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtLoosenCmd(
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtDebugViewCmd(
 	TEXT("DaDirt.DebugView"),
-	TEXT("DaDirt.DebugView <0-6> - 0 dirt, 1 layer depth, 2 compaction, 3 moisture, ")
+	TEXT("DaDirt.DebugView <0-8> - 0 dirt, 1 layer depth, 2 compaction, 3 moisture, 7 skin thickness, 8 base moisture, ")
 	TEXT("4 stability vs repose, 5 bedrock exposure, 6 slope angle."),
 	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
 		[](const TArray<FString>& Args, UWorld*)
@@ -2922,6 +2997,19 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtAuditCmd(
 			UE_LOG(LogDirt, Log, TEXT("  steepest anywhere %.1f deg"), A.MaxAnySlopeDeg);
 		}));
 
+static FAutoConsoleCommandWithWorldAndArgs GDirtEvapCmd(
+	TEXT("DaDirt.Evap"),
+	TEXT("DaDirt.Evap <multiplier> - scale the drying rate (1 = the game pace). A test that wants a crust in a minute asks for 20."),
+	FConsoleCommandWithWorldAndArgsDelegate::CreateLambda(
+		[](const TArray<FString>& Args, UWorld*)
+		{
+			if (ADirtBox* Box = GetDirtBoxOrWarn())
+			{
+				Box->Settings.EvapMultiplier = FMath::Max(ArgFloat(Args, 0, 1.0f), 0.0f);
+				UE_LOG(LogDirt, Log, TEXT("Drying at %.1f x the game pace."), Box->Settings.EvapMultiplier);
+			}
+		}));
+
 static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 	TEXT("DaDirt.Probe"),
 	TEXT("DaDirt.Probe <Xm> <Ym> - surface height at a point, in cm."),
@@ -2956,9 +3044,13 @@ static FAutoConsoleCommandWithWorldAndArgs GDirtProbeCmd(
 			const float SurfaceZ = Box->GetSurfaceHeightAtWorld(World);
 			const float SedHere = Box->GetSedimentAtWorld(World);
 			const FDirtSoil& ProbeSoil = Box->SoilAtWorld(World);
-			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [%s, layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm%s]"),
-				Xm, Ym, SurfaceZ, *ProbeSoil.Name, DirtBulkCm(S.R, S.G, ProbeSoil, Box->Settings), S.R, S.G, S.B, PondHere,
-				PondHere > 0.05f ? *FString::Printf(TEXT(", water top at Z = %.1f cm, %.3f cm of dirt in it"), SurfaceZ + PondHere, SedHere) : TEXT(""));
+			float BaseC = S.G, BaseM = S.B;
+			const float SkinCm = Box->GetSkinAtWorld(World, &BaseC, &BaseM);
+			const bool bSkin = SkinCm > 1e-4f;
+			UE_LOG(LogDirt, Log, TEXT("Surface at (%.1f, %.1f) m is Z = %.1f cm  [%s, layer %.1f cm bulk / %.1f solid, compaction %.2f, moisture %.2f, pond %.2f cm%s%s]"),
+				Xm, Ym, SurfaceZ, *ProbeSoil.Name, DirtBulkCmSkin(S.R, bSkin ? SkinCm : 0.0f, S.G, bSkin ? BaseC : S.G, ProbeSoil, Box->Settings), S.R, S.G, S.B, PondHere,
+				PondHere > 0.05f ? *FString::Printf(TEXT(", water top at Z = %.1f cm, %.3f cm of dirt in it"), SurfaceZ + PondHere, SedHere) : TEXT(""),
+				bSkin ? *FString::Printf(TEXT(", skin %.1f cm over base compaction %.2f moisture %.2f"), SkinCm, BaseC, BaseM) : TEXT(""));
 		}));
 
 static FAutoConsoleCommandWithWorldAndArgs GDirtResetCmd(

@@ -152,6 +152,123 @@ float DirtSurface(int2 C)
 }
 
 // ---------------------------------------------------------------------------
+// The skin
+// ---------------------------------------------------------------------------
+// MIRRORED in C++ (DirtPackBase / DirtUnpackBase / DirtBulkCmSkin in
+// DirtSimTypes.h) - keep them identical.
+//
+// A column is a SKIN over a BASE. The state texture's .g and .b are the skin's
+// compaction and moisture (what you see and what the knobs are in); the pond
+// texture's .z is the skin's bulk thickness in cm and its .w packs the base's
+// compaction and moisture into one float. A skin of zero thickness means one
+// layer, and then the base is kept equal to the surface. Loose roost on a
+// hardpack line, a crust dried over a damp base, the infill of a crater: all
+// are a skin, and the tyre, the slump and the water read through it by its
+// thickness instead of guessing from the surface alone.
+
+float DirtPackBase(float C, float M)
+{
+	return floor(saturate(C) * 1000.0f + 0.5f) + saturate(M) * 0.999f;
+}
+
+void DirtUnpackBase(float W, out float C, out float M)
+{
+	const float F = floor(max(W, 0.0f));
+	C = saturate(F / 1000.0f);
+	M = saturate((W - F) / 0.999f);
+}
+
+// Bulk thickness of a column of SolidCm with a skin SkinCm thick at compaction
+// Cs over a base at Cb (the base itself a packed skin over natural ground, as
+// DirtBulkCm has it).
+float DirtBulkCmSkin(float SolidCm, float SkinCm, float Cs, float Cb, uint Soil)
+{
+	const float Fs = DirtSolidFraction(Cs, Soil);
+	const float SkinSolid = min(max(SkinCm, 0.0f) * Fs, max(SolidCm, 0.0f));
+	return SkinSolid / Fs + DirtBulkCm(max(SolidCm, 0.0f) - SkinSolid, Cb, Soil);
+}
+
+// Surface height of a cell with its skin: state S and pond texel W.
+float DirtSurfaceSkin(float4 S, float4 W, int2 P)
+{
+	float Cb, Mb;
+	DirtUnpackBase(W.w, Cb, Mb);
+	const float CbUse = (W.z > 1e-4f) ? Cb : S.g;
+	return DirtBedrock(P) + DirtBulkCmSkin(S.r, W.z, S.g, CbUse, DirtSoilAt(P));
+}
+
+// Add AddSolidCm of dirt at compaction Cin and moisture Min on top of the
+// column: it joins the skin, mixed by mass; a column with no skin gets one,
+// and its old surface becomes the base.
+void DirtSkinAdd(inout float4 S, inout float4 W, float AddSolidCm, float Cin, float Min, uint Soil)
+{
+	if (AddSolidCm <= 0.0f)
+	{
+		return;
+	}
+	if (W.z <= 1e-4f)
+	{
+		W.z = 0.0f;
+		W.w = DirtPackBase(S.g, S.b);
+	}
+	const float Fs = DirtSolidFraction(S.g, Soil);
+	const float SkinSolid = W.z * Fs;
+	const float Total = SkinSolid + AddSolidCm;
+	const float Cn = (SkinSolid * S.g + AddSolidCm * saturate(Cin)) / Total;
+	const float Mn = (SkinSolid * S.b + AddSolidCm * saturate(Min)) / Total;
+	S.g = saturate(Cn);
+	S.b = saturate(Mn);
+	W.z = Total / DirtSolidFraction(S.g, Soil);
+	S.r += AddSolidCm;
+}
+
+// Take TakeSolidCm out of the top of the column: the skin first, the base for
+// the rest. When the skin is gone the base is the surface again. (S.r is
+// reduced by the caller: digs judge bedrock afterwards.)
+void DirtSkinTake(inout float4 S, inout float4 W, float TakeSolidCm, uint Soil)
+{
+	if (TakeSolidCm <= 0.0f || W.z <= 1e-4f)
+	{
+		return;
+	}
+	const float Fs = DirtSolidFraction(S.g, Soil);
+	const float SkinSolid = W.z * Fs;
+	if (TakeSolidCm >= SkinSolid - 1e-5f)
+	{
+		float Cb, Mb;
+		DirtUnpackBase(W.w, Cb, Mb);
+		W.z = 0.0f;
+		S.g = Cb;
+		S.b = Mb;
+	}
+	else
+	{
+		W.z -= TakeSolidCm / Fs;
+	}
+}
+
+// Give a column with no skin one, SkinCm thick, partitioned out of the base
+// (nothing moves): what a disturbed or a drying surface does.
+void DirtSkinSplit(inout float4 S, inout float4 W, float SkinCm)
+{
+	if (W.z <= 1e-4f && SkinCm > 0.0f)
+	{
+		W.w = DirtPackBase(S.g, S.b);
+		W.z = SkinCm;
+	}
+}
+
+// Keep the invariant: no skin means the base is the surface.
+void DirtSkinSettle(inout float4 S, inout float4 W)
+{
+	if (W.z <= 1e-4f)
+	{
+		W.z = 0.0f;
+		W.w = DirtPackBase(S.g, S.b);
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Angle of repose
 // ---------------------------------------------------------------------------
 // Soil strength, Mohr-Coulomb: tau = c + sigma tan(phi). docs/SoilPhysics.md.

@@ -22,7 +22,7 @@
 
 Texture2D<float4> DirtInitialState;   // CPU-built starting state (.r already solid cm)
 RWTexture2D<float4> DirtStateOut;
-RWTexture2D<float2> DirtPondOut;      // x ponded water cm, y suspended solid cm
+RWTexture2D<float4> DirtPondOut;      // x ponded water cm, y suspended solid cm, z skin cm, w packed base
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -40,7 +40,7 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));      // derive the surface rather than trusting the upload
 
 	DirtStateOut[P] = S;
-	DirtPondOut[P] = float2(0.0f, 0.0f);
+	DirtPondOut[P] = float4(0.0f, 0.0f, 0.0f, DirtPackBase(S.g, S.b));
 }
 
 #endif // DIRT_INIT_PASS
@@ -57,10 +57,10 @@ void MainInitCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 int2 DirtShiftTexels;                 // old texel = new texel + shift
 Texture2D<float4> DirtPatchState;     // entering cells, already in NEW texel coordinates
-Texture2D<float2> DirtPatchPond;
-Texture2D<float2> DirtPondIn;
+Texture2D<float4> DirtPatchPond;
+Texture2D<float4> DirtPondIn;
 RWTexture2D<float4> DirtStateOut;
-RWTexture2D<float2> DirtPondOut;      // x ponded water cm, y suspended solid cm
+RWTexture2D<float4> DirtPondOut;      // x ponded water cm, y suspended solid cm, z skin cm, w packed base
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -73,20 +73,21 @@ void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 	const int2 Q = P + DirtShiftTexels;
 	float4 S;
-	float2 Pond;
+	float4 Pond;
 	if (DirtInBounds(Q))
 	{
 		S = DirtState(Q);
-		Pond = DirtPondIn.Load(int3(Q, 0)).xy;
+		Pond = DirtPondIn.Load(int3(Q, 0));
 	}
 	else
 	{
 		// Taken exactly as stored: any clamp here would create or destroy dirt
 		// that the ledger has already counted.
 		S = DirtPatchState.Load(int3(P, 0));
-		Pond = DirtPatchPond.Load(int3(P, 0)).xy;
+		Pond = DirtPatchPond.Load(int3(P, 0));
 	}
-	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
+	DirtSkinSettle(S, Pond);
+	S.a = DirtSurfaceSkin(S, Pond, P);
 
 	DirtStateOut[P] = S;
 	DirtPondOut[P] = Pond;
@@ -105,7 +106,9 @@ void MainShiftCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 
 float DirtDepositCompaction;       // landed dirt is loose
 int DirtResetLiveMax;              // 1 when a parcel sim pass follows this step and will recount
+Texture2D<float4> DirtPondIn;
 RWTexture2D<float4> DirtStateOut;
+RWTexture2D<float4> DirtPondOut;
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
 void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
@@ -124,6 +127,7 @@ void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	float4 S = DirtState(P);
+	float4 W = DirtPondIn.Load(int3(P, 0));
 	const uint VolFixed = DirtDepositVol[P];
 	if (VolFixed > 0u)
 	{
@@ -131,24 +135,17 @@ void MainDepositCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		const float Moisture = (float)DirtDepositMoist[P] / max((float)VolFixed, 1.0f);
 		const float AddCm = VolumeCm3 / DirtTexelAreaCm2;
 
-		// Same skin rules as the slump: what lands sits on top. Its water owns
-		// the surface once there is a couple of centimetres of it; its packing
-		// is felt over the bearing depth a tyre loads (DirtCompactionDepthCm),
-		// so a few centimetres of loose roost on hardpack read as hardpack with
-		// a loose top, not as a loose column. Read as a loose column, a sand
-		// crater refilled by its own slumping walls was punched to bedrock in
-		// five landings.
-		const float SkinCm = 2.0f;
-		const float W = AddCm / (AddCm + SkinCm);
-		const float Wc = AddCm / (AddCm + DirtCompactionDepthCm);
-		S.b = saturate(lerp(S.b, Moisture, W));
-		S.g = saturate(lerp(S.g, DirtDepositCompaction, Wc));
-		S.r += AddCm;
-		S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
+		// What lands sits on top: it joins the skin, loose, with the water it
+		// carried, and the base underneath is untouched. A few centimetres of
+		// roost on a hardpack line are a loose skin on hardpack, which is what
+		// the tyre, the slump and the water then read them as.
+		DirtSkinAdd(S, W, AddCm, DirtDepositCompaction, Moisture, DirtSoilAt(P));
+		S.a = DirtSurfaceSkin(S, W, P);
 
 		DirtDepositVol[P] = 0u;
 		DirtDepositMoist[P] = 0u;
 	}
+	DirtPondOut[P] = W;
 
 	DirtStateOut[P] = S;
 }
@@ -173,10 +170,16 @@ float4 DirtStrokeA[DIRT_MAX_STROKES];   // centre.xy (cells), core radius, rim r
 float4 DirtStrokeB[DIRT_MAX_STROKES];   // core norm, rim norm, amount, disturb
 float4 DirtStrokeC[DIRT_MAX_STROKES];   // mode (as float), proctor flag, linked taking stroke (-1 none), unused
 
+Texture2D<float4> DirtPondIn;
+RWTexture2D<float4> DirtPondOut;
 RWTexture2D<float4> DirtStateOut;
 RWStructuredBuffer<uint> DirtScoopShortfall;
 
-void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
+// How deep a tool breaks the ground up: a disturbed surface is a loose skin
+// this thick over what was under it.
+#define DIRT_DISTURB_SKIN_CM 2.0f
+
+void ApplyStroke(int2 P, int K, inout float4 S, inout float4 W, inout float ScoopWant)
 {
 	const float2 Centre     = DirtStrokeA[K].xy;
 	const float  CoreRadius = DirtStrokeA[K].z;
@@ -217,23 +220,26 @@ void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
 		? saturate(1.0f - ((float)DirtScoopShortfall[Link] / DIRT_DEPOSIT_SCALE / DirtTexelAreaCm2) / Amount)
 		: 1.0f;
 
+	const uint Soil = DirtSoilAt(P);
 	if (Mode == 0)         // DIG, taking half: scoop the core out
 	{
 		ScoopWant = Amount * CoreW;
+		DirtSkinTake(S, W, ScoopWant, Soil);
 		S.r -= ScoopWant;
 	}
 	else if (Mode == 1)    // RAISE, taking half: borrow from the rim
 	{
 		ScoopWant = Amount * RimW;
+		DirtSkinTake(S, W, ScoopWant, Soil);
 		S.r -= ScoopWant;
 	}
-	else if (Mode == 8)    // DIG, giving half: heap what was taken on the rim
+	else if (Mode == 8)    // DIG, giving half: heap what was taken on the rim, the same dirt
 	{
-		S.r += Amount * RimW * Give;
+		DirtSkinAdd(S, W, Amount * RimW * Give, S.g, S.b, Soil);
 	}
 	else if (Mode == 10)   // RAISE, giving half: pile what was borrowed on the core
 	{
-		S.r += Amount * CoreW * Give;
+		DirtSkinAdd(S, W, Amount * CoreW * Give, S.g, S.b, Soil);
 	}
 	else if (Mode == 2)    // SMOOTH — pull toward the local average (of the pre-pass state)
 	{
@@ -253,15 +259,51 @@ void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
 	}
 	else if (Mode == 3)    // WET — may exceed 1: the water pass ponds the excess
 	{
+		// A water truck wets the column, not just its skin: the base under a
+		// skin gets it too (the water pass would only have got it there through
+		// the skin's pores, slowly). A soaked block with a dry base stood as a
+		// wall at 85 % moisture.
 		S.b = clamp(S.b + Amount * Mask, 0.0f, 50.0f);
+		if (W.z > 1e-4f)
+		{
+			float Cb, Mb;
+			DirtUnpackBase(W.w, Cb, Mb);
+			W.w = DirtPackBase(Cb, Mb + Amount * Mask);
+		}
 	}
 	else if (Mode == 4)    // PACK
 	{
-		const float Efficiency = bProctor ? DirtPackingEfficiency(S.b, DirtSoilAt(P)) : 1.0f;
-		S.g = saturate(S.g + Amount * Efficiency * Mask);
+		// The skin packs at the Proctor rate and shrinks as it does; the base
+		// under it packs by the share of the bearing depth the skin does not
+		// fill. A tyre working a dry crust also kneads it into the damp base
+		// (moisture blends), and once skin and base match the skin is folded
+		// in: the packed line is one layer again.
+		const float Efficiency = bProctor ? DirtPackingEfficiency(S.b, Soil) : 1.0f;
+		const float Add = Amount * Efficiency * Mask;
+		if (W.z > 1e-4f)
+		{
+			float Cb, Mb;
+			DirtUnpackBase(W.w, Cb, Mb);
+			const float SkinSolid = W.z * DirtSolidFraction(S.g, Soil);
+			S.g = saturate(S.g + Add);
+			W.z = SkinSolid / DirtSolidFraction(S.g, Soil);
+			Cb = saturate(Cb + Add * saturate(1.0f - W.z / DirtCompactionDepthCm));
+			const float Knead = saturate(Amount * Mask / 0.15f) * 0.3f;
+			S.b = lerp(S.b, Mb, Knead);
+			if (abs(S.g - Cb) < 0.03f && abs(S.b - Mb) < 0.05f)
+			{
+				W.z = 0.0f;
+			}
+			W.w = DirtPackBase(Cb, Mb);
+		}
+		else
+		{
+			S.g = saturate(S.g + Add);
+		}
 	}
 	else if (Mode == 5)    // LOOSEN
 	{
+		DirtSkinSplit(S, W, DIRT_DISTURB_SKIN_CM);
 		S.g = saturate(S.g - Amount * Mask);
 	}
 	else if (Mode == 6)    // SCOOP — take dirt out of the core; the volume goes elsewhere
@@ -269,17 +311,20 @@ void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
 		// Remembered, so that whatever the whole batch fails to find at this cell
 		// can be charged back to the scoops that asked for it (see ApplyBrush).
 		ScoopWant = Amount * CoreW;
+		DirtSkinTake(S, W, ScoopWant, Soil);
 		S.r -= ScoopWant;
 	}
 	else if (Mode == 7)    // DUMP — the giving half of a SCOOP. Arrives loose.
 	{
-		S.r += Amount * CoreW * Give;
+		DirtSkinAdd(S, W, Amount * CoreW * Give, 0.05f, S.b, Soil);
 	}
 
 	// Dirt you have just moved is broken-up dirt — it loses its pack. The
-	// taking halves carry the disturb; the giving halves have none.
-	if (Mode <= 2 || Mode == 6 || Mode == 7)
+	// taking halves carry the disturb; the giving halves have none. Breaking
+	// ground up makes a loose skin of it over what was underneath.
+	if ((Mode <= 2 || Mode == 6 || Mode == 7) && Disturb * Mask > 1e-4f)
 	{
+		DirtSkinSplit(S, W, DIRT_DISTURB_SKIN_CM);
 		S.g = saturate(S.g - Disturb * Mask);
 	}
 }
@@ -287,6 +332,7 @@ void ApplyStroke(int2 P, int K, inout float4 S, inout float ScoopWant)
 void ApplyBrush(int2 P)
 {
 	float4 S = DirtState(P);
+	float4 W = DirtPondIn.Load(int3(P, 0));
 	const float Bed = DirtBedrock(P);
 
 	float ScoopWant[DIRT_MAX_STROKES];
@@ -296,7 +342,7 @@ void ApplyBrush(int2 P)
 	for (int K = 0; K < DirtStrokeCount; ++K)
 	{
 		ScoopWant[K] = 0.0f;
-		ApplyStroke(P, K, S, ScoopWant[K]);
+		ApplyStroke(P, K, S, W, ScoopWant[K]);
 		WantSum += ScoopWant[K];
 	}
 
@@ -321,9 +367,11 @@ void ApplyBrush(int2 P)
 		}
 	}
 	S.r = max(S.r, 0.0f);
-	S.a = Bed + DirtBulkCm(S.r, S.g, DirtSoilAt(P));
+	DirtSkinSettle(S, W);
+	S.a = DirtSurfaceSkin(S, W, P);
 
 	DirtStateOut[P] = S;
+	DirtPondOut[P] = W;
 }
 
 [numthreads(DIRT_THREADGROUP_SIZE, DIRT_THREADGROUP_SIZE, 1)]
@@ -379,6 +427,8 @@ float DirtShedDiameterCm;
 float DirtShedSpeedCmS;
 uint DirtFrameSeed;
 
+Texture2D<float4> DirtPondIn;
+RWTexture2D<float4> DirtPondOut;
 RWTexture2D<float4> DirtStateOut;
 
 // One 16 x 16 tile of cells per group, plus a 2-cell halo, held in group shared
@@ -391,13 +441,33 @@ RWTexture2D<float4> DirtStateOut;
 #define SLUMP_HALO 2
 #define SLUMP_W (SLUMP_TILE + 2 * SLUMP_HALO)     // 20
 #define SLUMP_OUT (SLUMP_TILE + 2)                // 18
+#define DIRT_SLUMP_SKIN_DEPTH_CM 5.0f     // a face fails through what is within this of the surface
 
 groupshared float4 TileState[SLUMP_W * SLUMP_W];
+groupshared float2 TileSkin[SLUMP_W * SLUMP_W];           // x skin cm, y packed base
 groupshared float TileOut[SLUMP_OUT * SLUMP_OUT * 9];    // 8 outflows + scale per cell
 
 float4 TileAt(int2 T)
 {
 	return TileState[T.y * SLUMP_W + T.x];
+}
+
+// The strength a face has is that of the dirt within a few centimetres of its
+// surface: a thin dry crust over a damp base fails through the base, a thick
+// loose skin fails as loose dirt. The skin's own values read in by thickness.
+float4 TileStrengthState(int2 T)
+{
+	float4 S = TileState[T.y * SLUMP_W + T.x];
+	const float2 K = TileSkin[T.y * SLUMP_W + T.x];
+	if (K.x > 1e-4f)
+	{
+		float Cb, Mb;
+		DirtUnpackBase(K.y, Cb, Mb);
+		const float Wt = saturate(K.x / DIRT_SLUMP_SKIN_DEPTH_CM);
+		S.g = lerp(Cb, S.g, Wt);
+		S.b = lerp(Mb, S.b, Wt);
+	}
+	return S;
 }
 
 // Unscaled solid outflow from tile cell T toward each of its eight neighbours,
@@ -424,7 +494,7 @@ void ComputeOutflowTile(int2 T, int2 Cell, out float Out[8], out float Scale)
 	const float UnitWeight = DirtSoilUnitWeight(Soil);
 
 	float TanPhi, CohesionKPa;
-	DirtSoilStrength(S, Soil, TanPhi, CohesionKPa);
+	DirtSoilStrength(TileStrengthState(T), Soil, TanPhi, CohesionKPa);
 
 	float Sum = 0.0f;
 
@@ -478,6 +548,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 	{
 		const int2 C = TileOrigin + int2(Idx % SLUMP_W, Idx / SLUMP_W);
 		TileState[Idx] = DirtInBounds(C) ? DirtState(C) : float4(-1.0f, 0.0f, 0.0f, 0.0f);
+		TileSkin[Idx] = DirtInBounds(C) ? DirtPondIn.Load(int3(C, 0)).zw : float2(0.0f, 0.0f);
 	}
 	GroupMemoryBarrierWithGroupSync();
 
@@ -507,7 +578,9 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 	const int2 L = int2(GroupThreadId.xy) + 1;                       // ring coords (0..17), ours at 1..16
 	const int2 T = L + 1;                                            // tile coords
 	float4 S = TileAt(T);
+	float4 W = DirtPondIn.Load(int3(P, 0));
 	const float Bed = DirtBedrock(P);
+	const uint Soil = DirtSoilAt(P);
 
 	const int OwnIdx = L.y * SLUMP_OUT + L.x;
 	const float ScaleP = TileOut[OwnIdx * 9 + 8];
@@ -539,32 +612,26 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 	const float Retained = max(S.r - TotalOut, 0.0f);
 	float NewLayer = Retained + TotalIn;
 
-	// Dirt carries its water and its packing with it, and the state channels
-	// describe the SURFACE: a sheet of mud arriving on a damp column lands on
-	// top, so it takes the surface over quickly rather than averaging into 60 cm
-	// of what was underneath. Averaged over the whole column, the receiving cell
-	// stayed cohesive, became a dam for the next inflow, and a wet/dry boundary
-	// turned into a saw-tooth of held and drained cells. The skin depth is how
-	// much arriving dirt it takes to own the surface.
+	// What leaves comes off the top: the skin first, then the base, and when
+	// the skin is gone the base is the surface. What arrives is tumbled dirt
+	// and lands loose on the skin with the water it carried, mixed by mass.
+	DirtSkinTake(S, W, TotalOut, Soil);
 	if (TotalIn > 1e-4f)
 	{
-		const float SkinCm = 2.0f;
-		const float W = TotalIn / (TotalIn + SkinCm);
-		// Packing is felt over the bearing depth, not the wet skin: a thin
-		// loose infill over a packed floor is still mostly floor to a tyre.
-		const float Wc = TotalIn / (TotalIn + DirtCompactionDepthCm);
-		S.b = lerp(S.b, InMoisture / TotalIn, W);
-		S.g = saturate(lerp(S.g, InCompaction / TotalIn, Wc));
+		const float SaveR = S.r;
+		DirtSkinAdd(S, W, TotalIn, 0.0f, InMoisture / TotalIn, Soil);
+		S.r = SaveR;
 	}
 
 	// A face that sheds its top is a loose face; nothing re-packs it on its own,
-	// only a wheel, a tool, or a Pack brush. The receiving cell is NOT loosened
-	// beyond the loose inflow mixed in above: applied every step while a wall
-	// trickled into a crater, the old (out + in) rule took a packed floor to
-	// zero in a couple of seconds, and each landing on it punched as if into
-	// fresh loose dirt.
+	// only a wheel, a tool, or a Pack brush. The loosening is a skin: what is
+	// under it keeps its packing.
 	const float Loosen = saturate(TotalOut / max(DirtLooseningScaleCm, 1e-4f)) * DirtLooseningRate;
-	S.g = saturate(S.g - Loosen);
+	if (Loosen > 1e-4f)
+	{
+		DirtSkinSplit(S, W, 1.0f);
+		S.g = saturate(S.g - Loosen);
+	}
 
 	// --- grains shedding down the face ------------------------------------------------
 	// A cell avalanching hard enough may send part of what it sheds off as a
@@ -611,7 +678,7 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 					const float3 Vel = float3((Down + Side) * DirtShedSpeedCmS * (0.6f + 0.8f * DirtRand01(Seed, 3u)), DirtShedSpeedCmS * 0.3f);
 
 					const float2 XY = DirtRegionOriginCm + (float2(P) + float2(DirtRand01(Seed, 5u), DirtRand01(Seed, 6u))) * DirtTexelSizeCm;
-					const float Z = Bed + DirtBulkCm(NewLayer, S.g, DirtSoilAt(P)) + Diameter;
+					const float Z = Bed + DirtBulkCm(NewLayer, S.g, Soil) + Diameter;
 
 					const int2 PT = ParcelTexel(Slot);
 					DirtParcelPos[PT] = float4(XY, Z, VolumeCm3);
@@ -623,9 +690,11 @@ void MainSlumpCS(uint3 DispatchThreadId : SV_DispatchThreadID, uint3 GroupId : S
 	}
 
 	S.r = NewLayer;
-	S.a = Bed + DirtBulkCm(NewLayer, S.g, DirtSoilAt(P));
+	DirtSkinSettle(S, W);
+	S.a = DirtSurfaceSkin(S, W, P);
 
 	DirtStateOut[P] = S;
+	DirtPondOut[P] = W;
 }
 
 #endif // DIRT_SLUMP_PASS
@@ -654,6 +723,10 @@ float DirtDrainPerSec;            // of the water above field capacity, loose di
 float DirtEvapPerSec;
 float DirtWetDepthCm;
 float DirtAmbientMoisture;        // air-dry dirt keeps this much (hygroscopic water)
+float DirtCrustSeedCm;            // a drying surface with no skin gets one this thick
+float DirtCrustMaxCm;             // and the drying front goes no deeper than this
+float DirtCrustGrowCmPerSec;      // how fast the front descends while the skin is drier than the base
+float DirtSkinEvapChokeCm;        // a dry skin this thick halves what the base can evaporate through it
 
 // Water poured on a spot this step (a water truck): lands as pond, then soaks in
 // at the soil's own rate, so it puddles on hardpack and vanishes into sand.
@@ -662,8 +735,8 @@ float DirtAmbientMoisture;        // air-dry dirt keeps this much (hygroscopic w
 int DirtWaterSourceCount;
 float4 DirtWaterSource[DIRT_MAX_WATER_SOURCES];   // centre.xy (cells), core radius, cm per unit kernel weight
 
-Texture2D<float2> DirtPondIn;
-RWTexture2D<float2> DirtPondOut;      // x ponded water cm, y suspended solid cm
+Texture2D<float4> DirtPondIn;
+RWTexture2D<float4> DirtPondOut;      // x ponded water cm, y suspended solid cm, z skin cm, w packed base
 RWTexture2D<float4> DirtStateOut;
 
 float PondHead(int2 Q)
@@ -703,9 +776,9 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	float4 S = DirtState(P);
-	const float2 PW = DirtPondIn.Load(int3(P, 0)).xy;
-	float Pond = PW.x;
-	float Sed = PW.y;                 // solid cm of dirt suspended in this cell's water
+	float4 W = DirtPondIn.Load(int3(P, 0));
+	float Pond = W.x;
+	float Sed = W.y;                  // solid cm of dirt suspended in this cell's water
 	const float PondBefore = Pond;
 	float SedIn = 0.0f;
 	float MaxBedDropCm = 0.0f;        // steepest fall of the BED toward a neighbour the water flows to
@@ -740,8 +813,11 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	Pond = max(Pond - Moved, 0.0f);
 	Sed = max(Sed - SedOut, 0.0f) + SedIn;
 
-	// 2. rain, and anything poured from a truck
+	// 2. rain, and anything poured from a truck; and standing water evaporates at
+	//    the potential rate (what the wet ground would lose over its wet depth),
+	//    which is how a puddle goes without soaking in on hardpack.
 	Pond += DirtRainCmPerSec * DirtDt;
+	Pond = max(Pond - DirtEvapPerSec * DirtWetDepthCm * 0.45f * DirtDt, 0.0f);
 	[loop]
 	for (int k = 0; k < DirtWaterSourceCount; ++k)
 	{
@@ -749,32 +825,124 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 		Pond += DirtWaterSource[k].w * DirtBrushCoreWeight(R, DirtWaterSource[k].z);
 	}
 
-	// 3. infiltration. Compaction lowers conductivity by ~two orders of magnitude.
+	// 3-6. water in the ground, through the skin. The column is a skin (S.g,
+	//    S.b, W.z thick) over a base (packed in W.w) down to the wet depth. Water
+	//    enters at the surface at the skin's conductivity and fills the skin's
+	//    pores first, then the base's; the skin drains into the base and the
+	//    base drains away; the skin dries in the air and the base only through
+	//    the skin, which a dry skin chokes (a crust keeps the base damp: stage
+	//    two drying). A column with no skin that is drying grows one from the
+	//    surface down, at the base's packing, and the drying front descends
+	//    while the skin is drier than the base: the dry crust over a tacky base.
 	const float C = saturate(S.g);
 	const uint Soil = DirtSoilAt(P);
 	const float4 SoilR0 = DirtSoilRow(Soil, 0);
 	const float4 SoilR2 = DirtSoilRow(Soil, 2);
-	const float PoreCm = max(lerp(SoilR0.x, SoilR0.y, C) * min(S.a - DirtBedrock(P), DirtWetDepthCm), 0.05f);
-	const float K = SoilR2.x * exp(-4.6f * C);
-	const float Room = max(0.0f, 1.0f - S.b) * PoreCm;
-	const float Infil = min(Pond, min(K * DirtDt, Room));
-	S.b += Infil / PoreCm;
-	Pond -= Infil;
-
-	// 4. overflow: a Wet brush or a flood can push moisture past saturation
-	if (S.b > 1.0f)
+	const float LayerCm = max(S.a - DirtBedrock(P), 0.0f);
+	// Nothing dries under standing water: the pond evaporates, not the soil.
+	const float DryingPull = (Pond > 0.01f) ? 0.0f : DirtEvapPerSec * SoilR2.w * DirtDt;
+	// The drying front descends with the drying: the crust's growth rate is
+	// set at the game's reference pace (0.0007/s) and scales with the actual
+	// pull, so DaDirt.Evap speeds the crust up with the drying it speeds up.
+	const float DryingPace = DryingPull / max(0.0007f * DirtDt, 1e-9f);
+	if (W.z <= 1e-4f && DryingPull > 0.0f && S.b > DirtAmbientMoisture + 0.05f && LayerCm > DirtCrustSeedCm * 2.0f)
 	{
-		Pond += (S.b - 1.0f) * PoreCm;
+		DirtSkinSplit(S, W, DirtCrustSeedCm);
+	}
+	float Cb, Mb;
+	DirtUnpackBase(W.w, Cb, Mb);
+	const bool bSkin = W.z > 1e-4f;
+	if (!bSkin)
+	{
+		Cb = C;
+		Mb = S.b;
+	}
+	const float SkinCm = bSkin ? min(W.z, LayerCm) : 0.0f;
+	const float PoreSkin = bSkin ? max(lerp(SoilR0.x, SoilR0.y, C) * SkinCm, 0.02f) : 0.0f;
+	const float PoreBase = max(lerp(SoilR0.x, SoilR0.y, Cb) * min(LayerCm - SkinCm, DirtWetDepthCm), 0.05f);
+
+	// infiltration: at the surface's conductivity, the skin first
+	const float K = SoilR2.x * exp(-4.6f * C);
+	const float Entering = min(Pond, K * DirtDt);
+	float Left = Entering;
+	if (bSkin)
+	{
+		const float RoomS = max(0.0f, 1.0f - S.b) * PoreSkin;
+		const float ToSkin = min(Left, RoomS);
+		S.b += ToSkin / PoreSkin;
+		Left -= ToSkin;
+	}
+	const float RoomB = max(0.0f, 1.0f - Mb) * PoreBase;
+	const float ToBase = min(Left, RoomB);
+	Mb += ToBase / PoreBase;
+	Left -= ToBase;
+	Pond -= (Entering - Left);
+
+	// overflow: a Wet brush or a flood can push moisture past saturation
+	if (bSkin && S.b > 1.0f)
+	{
+		Pond += (S.b - 1.0f) * PoreSkin;
 		S.b = 1.0f;
 	}
+	if (Mb > 1.0f)
+	{
+		Pond += (Mb - 1.0f) * PoreBase;
+		Mb = 1.0f;
+	}
 
-	// 5. drainage down through the layer
-	const float Drain = DirtDrainPerSec * exp(-3.45f * C);
-	S.b -= Drain * max(0.0f, S.b - SoilR2.y) * DirtDt;
+	// drainage: the skin into the base, the base away
+	if (bSkin)
+	{
+		const float DrainS = DirtDrainPerSec * exp(-3.45f * C) * max(0.0f, S.b - SoilR2.y) * DirtDt;
+		const float Moved = min(DrainS * PoreSkin, max(0.0f, 1.0f - Mb) * PoreBase);
+		S.b -= Moved / PoreSkin;
+		Mb += Moved / PoreBase;
+	}
+	Mb -= DirtDrainPerSec * exp(-3.45f * Cb) * max(0.0f, Mb - SoilR2.y) * DirtDt;
 
-	// 6. drying at the surface, down to what air-dry dirt holds on to
-	S.b -= DirtEvapPerSec * SoilR2.w * DirtDt * saturate((S.b - DirtAmbientMoisture) / 0.05f);
-	S.b = max(S.b, 0.0f);
+	// capillary rise: while the base holds water above field capacity it
+	// resupplies the skin, so the surface stays as wet as the base and what
+	// evaporates comes out of the base (stage-one drying). Once the base is
+	// down to field capacity the supply stops, the skin dries out and the
+	// front descends: stage two, the crust.
+	if (bSkin && Mb > SoilR2.y && Mb > S.b)
+	{
+		const float Pull = saturate((Mb - SoilR2.y) / 0.1f) * 0.5f * DirtDt;
+		const float Moved = min((Mb - S.b) * Pull * PoreSkin, (Mb - SoilR2.y) * PoreBase);
+		S.b += Moved / PoreSkin;
+		Mb -= Moved / PoreBase;
+	}
+
+	// drying: the skin in the air, the base through the skin. The drying rate
+	// is a flux; the moisture fraction of a thin skin falls as many times
+	// faster than the wet depth's as it is thinner.
+	if (bSkin)
+	{
+		S.b -= DryingPull * min(DirtWetDepthCm / max(SkinCm, 0.5f), 40.0f) * saturate((S.b - DirtAmbientMoisture) / 0.05f);
+		Mb -= DryingPull * saturate((Mb - DirtAmbientMoisture) / 0.05f) / (1.0f + SkinCm / max(DirtSkinEvapChokeCm, 0.01f));
+		S.b = max(S.b, 0.0f);
+		Mb = max(Mb, 0.0f);
+		// the drying front descends: the base under a drier skin joins it
+		if (S.b < Mb - 0.03f && W.z < DirtCrustMaxCm && DryingPull > 0.0f)
+		{
+			const float Grow = min(DirtCrustGrowCmPerSec * DryingPace * DirtDt * saturate((Mb - S.b) / 0.1f), DirtCrustMaxCm - W.z);
+			const float Fs = DirtSolidFraction(S.g, Soil);
+			const float Fb = DirtSolidFraction(Cb, Soil);
+			const float SkinSolid = W.z * Fs;
+			const float AddSolid = Grow * Fb;
+			const float Total = SkinSolid + AddSolid;
+			S.g = saturate((SkinSolid * S.g + AddSolid * Cb) / Total);
+			S.b = saturate((SkinSolid * S.b + AddSolid * Mb) / Total);
+			W.z = Total / DirtSolidFraction(S.g, Soil);
+		}
+		W.w = DirtPackBase(Cb, Mb);
+	}
+	else
+	{
+		Mb -= DryingPull * saturate((Mb - DirtAmbientMoisture) / 0.05f);
+		S.b = max(Mb, 0.0f);
+		W.w = DirtPackBase(S.g, S.b);
+	}
 
 	// 7. erosion: docs/SoilPhysics.md 5b. Flowing water shears the bed with
 	//    tau = rho g h S on the bed slope S. The run-off model moves water a
@@ -807,6 +975,7 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 			const float Detach = min(min(SoilR5.x * DirtErosionPace * max(TauPa - TauC, 0.0f) * DirtDt, Capacity - Sed), max(S.r, 0.0f));
 			if (Detach >= 1e-4f)
 			{
+				DirtSkinTake(S, W, Detach, Soil);
 				S.r -= Detach;
 				Sed += Detach;
 			}
@@ -826,18 +995,15 @@ void MainWaterCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 	if (Deposited > 0.0f)
 	{
-		// Settled dirt lands loose and soaked, and takes the surface over as it
-		// piles up (the skin rule the deposit fold uses).
-		const float W = Deposited / (Deposited + 2.0f);
-		S.g = saturate(lerp(S.g, 0.05f, W));
-		S.b = saturate(lerp(S.b, 1.0f, W));
-		S.r += Deposited;
+		// Settled dirt lands loose and soaked on the skin.
+		DirtSkinAdd(S, W, Deposited, 0.05f, 1.0f, Soil);
 		Sed -= Deposited;
 	}
-	S.a = DirtBedrock(P) + DirtBulkCm(S.r, S.g, Soil);
+	DirtSkinSettle(S, W);
+	S.a = DirtSurfaceSkin(S, W, P);
 
 	DirtStateOut[P] = S;
-	DirtPondOut[P] = float2(Pond, max(Sed, 0.0f));
+	DirtPondOut[P] = float4(Pond, max(Sed, 0.0f), W.z, W.w);
 }
 
 #endif // DIRT_WATER_PASS
@@ -853,7 +1019,7 @@ float DirtMaxCohesiveHeightCm;
 int DirtDebugMode;
 float DirtDebugLayerRangeCm;
 
-Texture2D<float2> DirtPondIn;
+Texture2D<float4> DirtPondIn;
 
 // The brush and slump passes ping-pong between two state textures, so which one
 // holds the answer changes from frame to frame. Resolve copies the finished state
@@ -894,7 +1060,8 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	}
 
 	const float4 S = DirtState(P);
-	const float Pond = DirtPondIn.Load(int3(P, 0)).x;
+	const float4 W = DirtPondIn.Load(int3(P, 0));
+	const float Pond = W.x;
 
 	// What is drawn is the top of the water where there is any: a puddle is a
 	// flat sheet over the rut, not a groove in it. The height window that the
@@ -961,6 +1128,16 @@ void MainResolveCS(uint3 DispatchThreadId : SV_DispatchThreadID)
 	{
 		const float SlopeDeg = degrees(acos(saturate(N.z)));
 		C = DirtHeatRamp(SlopeDeg / 90.0f);
+	}
+	else if (DirtDebugMode == 7)         // the skin: thickness, dark where there is none
+	{
+		C = (W.z > 1e-4f) ? DirtHeatRamp(W.z / 5.0f) : float3(0.12f, 0.12f, 0.12f);
+	}
+	else if (DirtDebugMode == 8)         // the base under the skin: its moisture
+	{
+		float Cb, Mb;
+		DirtUnpackBase(W.w, Cb, Mb);
+		C = lerp(float3(0.85f, 0.75f, 0.55f), float3(0.06f, 0.12f, 0.28f), saturate(Mb));
 	}
 	else                                 // 0 — plain dirt
 	{

@@ -34,7 +34,7 @@ struct FDirtTileReadback;
 struct FDirtTile
 {
 	TArray<FLinearColor> State;      // R solid cm, G compaction, B moisture, A surface
-	TArray<FVector2f> Pond;          // x pond cm, y suspended solid cm
+	TArray<FLinearColor> Pond;       // R pond cm, G suspended solid cm, B skin cm, A packed base (compaction, moisture)
 	/** Solid m^3 the builder gave this tile: its share of the world baseline. */
 	double PristineM3 = 0.0;
 	/** Solid m^3 it held when it last left the window; counted while it is out. */
@@ -57,6 +57,8 @@ struct FDirtHeightWindow
 	TArray<FLinearColor> Data;
 	/** Size x Size texels: ponded water on the surface, cm. */
 	TArray<float> Pond;
+	/** Size x Size texels: x skin thickness cm, y packed base (DirtUnpackBase). */
+	TArray<FVector2f> Skin;
 	bool bValid = false;
 };
 
@@ -282,6 +284,8 @@ public:
 
 	/** Ponded water depth in cm at a world XY, from the last readback. */
 	float GetPondAtWorld(FVector2D WorldXYCm) const;
+	/** Skin thickness (cm) and the base under it at a point, from the last RefreshReadback. */
+	float GetSkinAtWorld(FVector2D WorldXYCm, float* OutBaseCompaction = nullptr, float* OutBaseMoisture = nullptr) const;
 	/** Solid cm of dirt suspended in the water at a world XY, from the last readback. */
 	float GetSedimentAtWorld(FVector2D WorldXYCm) const;
 
@@ -336,7 +340,8 @@ public:
 	 * outside it. OutState, if given, receives the bilinear dirt state there.
 	 */
 	bool SampleHeightWindow(int32 Id, FVector2D WorldXYCm, float& OutHeightCm, FVector& OutNormal,
-							FLinearColor* OutState = nullptr, float* OutPondCm = nullptr) const;
+							FLinearColor* OutState = nullptr, float* OutPondCm = nullptr,
+							float* OutSkinCm = nullptr, float* OutBaseCompaction = nullptr, float* OutBaseMoisture = nullptr) const;
 
 	float GetTexelSizeCm() const { return Settings.TexelSizeCm(); }
 
@@ -532,6 +537,8 @@ private:
 	/** CPU mirror of the pond, from the last RefreshReadback. */
 	TArray<float> PondReadback;
 	TArray<float> SedimentReadback;
+	TArray<float> SkinReadback;       // skin thickness cm
+	TArray<float> BaseReadback;       // packed base compaction and moisture
 
 	/** Bedrock kept on the CPU too, so audits and height probes need no GPU round trip. */
 	TArray<float> BedrockCm;

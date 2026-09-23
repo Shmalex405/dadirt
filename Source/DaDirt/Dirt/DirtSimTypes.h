@@ -406,6 +406,28 @@ struct FDirtSimSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "1"))
 	float WetDepthCm = 20.0f;
 
+	// --- the skin: a crust dries from the surface down (docs/SoilPhysics.md 5c) ----------------
+
+	/** A drying surface with no skin gets one this thick, cm, partitioned out of the base. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0.1"))
+	float CrustSeedCm = 0.5f;
+
+	/** The drying front goes no deeper than this, cm: a crust is a few centimetres, the base under it stays damp. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0.5"))
+	float CrustMaxCm = 4.0f;
+
+	/** How fast the drying front descends while the skin is drier than the base, cm/s (game-paced like the drying). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
+	float CrustGrowCmPerSec = 0.03f;
+
+	/** A dry skin this thick halves what the base can evaporate through it (stage-two drying). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0.1"))
+	float SkinEvapChokeCm = 0.3f;
+
+	/** Multiplies the drying rate, for tests that need a crust in a minute. DaDirt.Evap. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Water", meta = (ClampMin = "0"))
+	float EvapMultiplier = 1.0f;
+
 	// --- parcels (docs/SoilPhysics.md section 7) ---------------------------------
 	//
 	// Dirt in the air. A parcel carries a real volume, lands, and hands it back.
@@ -672,6 +694,27 @@ inline float DirtSolidCm(float BulkCm, float Compaction, const FDirtSoil& Soil, 
 	return (BulkCm <= S.CompactionDepthCm)
 		? BulkCm * SkinFrac
 		: S.CompactionDepthCm * SkinFrac + (BulkCm - S.CompactionDepthCm) * DeepFrac;
+}
+
+/** The base under the skin, packed into one float of the pond texture. Mirrors DirtPackBase / DirtUnpackBase in DirtCommon.ush. */
+inline float DirtPackBase(float Compaction, float Moisture)
+{
+	return FMath::Floor(FMath::Clamp(Compaction, 0.0f, 1.0f) * 1000.0f + 0.5f) + FMath::Clamp(Moisture, 0.0f, 1.0f) * 0.999f;
+}
+
+inline void DirtUnpackBase(float Packed, float& OutCompaction, float& OutMoisture)
+{
+	const float F = FMath::Floor(FMath::Max(Packed, 0.0f));
+	OutCompaction = FMath::Clamp(F / 1000.0f, 0.0f, 1.0f);
+	OutMoisture = FMath::Clamp((Packed - F) / 0.999f, 0.0f, 1.0f);
+}
+
+/** Bulk thickness of a column of SolidCm with a skin SkinCm thick at SkinCompaction over a base at BaseCompaction. Mirrors DirtBulkCmSkin. */
+inline float DirtBulkCmSkin(float SolidCm, float SkinCm, float SkinCompaction, float BaseCompaction, const FDirtSoil& Soil, const FDirtSimSettings& S)
+{
+	const float Fs = DirtSolidFraction(SkinCompaction, Soil);
+	const float SkinSolid = FMath::Min(FMath::Max(SkinCm, 0.0f) * Fs, FMath::Max(SolidCm, 0.0f));
+	return SkinSolid / Fs + DirtBulkCm(FMath::Max(SolidCm, 0.0f) - SkinSolid, BaseCompaction, Soil, S);
 }
 
 /** Proctor: packing efficiency as a function of moisture, peaking at the soil's optimum. Mirrors DirtPackingEfficiency in DirtCommon.ush. */

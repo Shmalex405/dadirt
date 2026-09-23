@@ -189,12 +189,12 @@ void ADirtWheel::Tick(float DeltaSeconds)
 		UE_LOG(LogDirtWheel, Log,
 			TEXT("Wheel at (%.1f, %.1f) m hdg %.0f: %.1f m/s (%.0f km/h), wheel %.1f m/s, slip %+.1f m/s (i %+.2f), ")
 			TEXT("grip %.2f, traction %.0f N, sink %.1f cm, resist %.0f N, heap %.1f cm carried %.2f plough %.0f N, ")
-			TEXT("pond %.1f cm drag %.0f N lift %.0f N, lateral %.0f N at %.1f deg, dyn %+.1f g, impact %.1f g %.1f cm, patch %.0f mm wide at %+.0f cm, ")
+			TEXT("pond %.1f cm drag %.0f N lift %.0f N, lateral %.0f N at %.1f deg, dyn %+.1f g, impact %.1f g %.1f cm, patch %.0f mm wide at %+.0f cm, skin %.1f cm, ")
 			TEXT("compaction %.2f, moisture %.2f, %s (air %.2f s, max %.1f cm), odometer %.1f m, roost %.2f L, ploughed %.2f L, shoved %.2f L, %d parcels live"),
 			P.X / CmPerM, P.Y / CmPerM, HeadingDeg, VelocityMps.Size(), VelocityMps.Size() * 3.6f,
 			WheelOmega * RadiusM, LastSlipMps, LastSlipRatio, LastFriction, LastTractionN, LastSinkageCm, LastResistanceN,
 			LastHeapCm, LastCarried, LastPloughN,
-			LastPondCm, LastWaterDragN, LastHydroLiftN, LastLateralN, LastSlipAngleDeg, LastDynamicG, LastImpactG, LastImpactCm, LastContactWidthM * 1000.0f, LastContactOffsetM * CmPerM,
+			LastPondCm, LastWaterDragN, LastHydroLiftN, LastLateralN, LastSlipAngleDeg, LastDynamicG, LastImpactG, LastImpactCm, LastContactWidthM * 1000.0f, LastContactOffsetM * CmPerM, LastSkinCm,
 			LastCompaction, LastMoisture, bOnGround ? TEXT("on ground") : TEXT("airborne"), AirTimeS, MaxAirCm, OdometerM, RoostLitresTotal,
 			PloughLitresTotal, ShovedLitresTotal, B ? B->GetLiveParcels() : 0);
 	}
@@ -405,7 +405,8 @@ void ADirtWheel::Step(float Dt)
 	FLinearColor State(0, 0, 0, 0);
 	float PondCm = 0.0f;
 	float LateralSlope = 0.0f;
-	bool bHaveGround = B && B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM, GroundCm, Normal, &State, &PondCm);
+	float SkinCm = 0.0f, BaseC = 0.0f, BaseM = 0.0f;
+	bool bHaveGround = B && B->SampleHeightWindow(WindowId, FVector2D(PosM) * CmPerM, GroundCm, Normal, &State, &PondCm, &SkinCm, &BaseC, &BaseM);
 	LastPondCm = PondCm;
 	static const FDirtSoil NoSoil;
 	const FDirtSoil& Soil = B ? B->SoilAtWorld(FVector2D(PosM) * CmPerM) : NoSoil;
@@ -467,7 +468,7 @@ void ADirtWheel::Step(float Dt)
 				const FVector2D At = FVector2D(PosM) * CmPerM + Fwd2 * (ContactOffsetM * CmPerM);
 				float UnusedH = 0.0f;
 				FVector UnusedN;
-				B->SampleHeightWindow(WindowId, At, UnusedH, UnusedN, &State, &PondCm);
+				B->SampleHeightWindow(WindowId, At, UnusedH, UnusedN, &State, &PondCm, &SkinCm, &BaseC, &BaseM);
 				const float Sx = ContactOffsetM / RadiusM;
 				Normal = (Forward * (-Sx) + FVector::UpVector * FMath::Sqrt(FMath::Max(1.0f - Sx * Sx, 0.0f))).GetSafeNormal();
 			}
@@ -646,12 +647,27 @@ void ADirtWheel::Step(float Dt)
 	StrokeLoadTimeS += Dt;
 
 	// --- what the dirt under the tyre is like --------------------------------------
-	// Under standing water the surface is saturated whatever the moisture
-	// channel has had time to say: the knobs are in soup.
-	const float Compaction = FMath::Clamp(State.G, 0.0f, 1.0f);
-	const float Moisture = FMath::Max(FMath::Clamp(State.B, 0.0f, 1.0f), FMath::Clamp(PondCm / 1.0f, 0.0f, 1.0f));
+	// The ground is a skin over a base (docs/SoilPhysics.md 5c). The knobs are
+	// in the skin for as far as it is thick, so grip and roost read the skin by
+	// thickness against knob height; the sinkage carries the load down through
+	// it, so Bekker reads the skin by thickness against the sinkage. Loose roost
+	// on a hardpack line and a dry crust on a damp base come out as they should:
+	// dusty and loose to the knobs, hard and tacky to the load. Under standing
+	// water the surface is saturated whatever the moisture channel has had time
+	// to say: the knobs are in soup.
+	const float SkinC = FMath::Clamp(State.G, 0.0f, 1.0f);
+	const float SkinM = FMath::Clamp(State.B, 0.0f, 1.0f);
+	const bool bSkin = SkinCm > 1e-4f;
+	const float KnobShare = bSkin ? FMath::Clamp(SkinCm / FMath::Max(KnobHeightCm, 0.1f), 0.0f, 1.0f) : 1.0f;
+	const float SinkShare = bSkin ? FMath::Clamp(SkinCm / FMath::Max(LastSinkageCm, 2.0f), 0.0f, 1.0f) : 1.0f;
+	const float Compaction = FMath::Lerp(bSkin ? BaseC : SkinC, SkinC, KnobShare);
+	const float Moisture = FMath::Max(FMath::Lerp(bSkin ? BaseM : SkinM, SkinM, KnobShare), FMath::Clamp(PondCm / 1.0f, 0.0f, 1.0f));
+	const float BearingC = FMath::Lerp(bSkin ? BaseC : SkinC, SkinC, SinkShare);
+	const float BearingM = FMath::Max(FMath::Lerp(bSkin ? BaseM : SkinM, SkinM, SinkShare), FMath::Clamp(PondCm / 1.0f, 0.0f, 1.0f));
+	const float SurfaceMoisture = FMath::Max(SkinM, FMath::Clamp(PondCm / 1.0f, 0.0f, 1.0f));   // what dusts
 	LastCompaction = Compaction;
 	LastMoisture = Moisture;
+	LastSkinCm = SkinCm;
 
 	// --- wheel spin from the engine and brake --------------------------------------
 	// Most of a wheel's mass is tyre, tube and rim, out at the radius: a ring
@@ -768,7 +784,7 @@ void ADirtWheel::Step(float Dt)
 		{
 			SinceImpactS = 0.0f;
 			float PeakN = 0.0f, PunchM = 0.0f, TyreM = 0.0f;
-			ImpactResponse(Soil, Compaction, Moisture, FallSpeedMps, PeakN, PunchM, TyreM);
+			ImpactResponse(Soil, BearingC, BearingM, FallSpeedMps, PeakN, PunchM, TyreM);
 			const float ImpactG = PeakN / (MassKg * Gravity);
 			LastImpactG = ImpactG;
 			LastImpactCm = PunchM * CmPerM;
@@ -813,7 +829,7 @@ void ADirtWheel::Step(float Dt)
 						// would drive them straight into the ground they came from.
 						B->SpawnParcels(Launch, Dir * SplashSpeed + FVector(VelocityMps.X, VelocityMps.Y, 0.0f) * CmPerM * 0.5f, 30.0f, VolumeCm3 * 0.5f, Moisture, Compaction, Link);
 						B->SpawnDust(Launch, Dir * SplashSpeed * 0.5f, 45.0f,
-									 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 * 0.5f / 1000.0f * (1.0f - Moisture)), Moisture);
+									 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 * 0.5f / 1000.0f * (1.0f - SurfaceMoisture)), SurfaceMoisture);
 					}
 					RoostLitresTotal += VolumeCm3 / 1000.0f;
 				}
@@ -822,7 +838,7 @@ void ADirtWheel::Step(float Dt)
 
 		// --- the soil's answer to this load ----------------------------------------------
 		float SinkageM, ContactLengthM, ContactWidth, ResistanceN;
-		SoilResponse(Soil, Compaction, Moisture, Load, SinkageM, ContactLengthM, ContactWidth, ResistanceN);
+		SoilResponse(Soil, BearingC, BearingM, Load, SinkageM, ContactLengthM, ContactWidth, ResistanceN);
 		LastContactWidthM = ContactWidth;
 
 		// Mohr-Coulomb ceiling on traction: cohesion over the whole contact patch
@@ -954,7 +970,7 @@ void ADirtWheel::Step(float Dt)
 				// Bekker at the mean load already says how much deeper a heavier
 				// wheel sinks; the load factor is not applied to the rut again.
 				float MeanSinkM = 0.0f, UnusedLen = 0.0f, UnusedWid = 0.0f, UnusedRes = 0.0f;
-				SoilResponse(Soil, Compaction, Moisture, MeanLoad, MeanSinkM, UnusedLen, UnusedWid, UnusedRes);
+				SoilResponse(Soil, BearingC, BearingM, MeanLoad, MeanSinkM, UnusedLen, UnusedWid, UnusedRes);
 				const float MeanSinkageCm = MeanSinkM * (1.0f + SlipSinkage * FMath::Abs(StrokeSlipRatio)) * CmPerM;
 				const float RutCm = PlasticSinkage * MeanSinkageCm * PassFraction;
 				// The ground is pressed where the tyre first meets it, at the front
@@ -1062,7 +1078,7 @@ void ADirtWheel::Step(float Dt)
 					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM, RoostSpreadDeg, VolumeCm3, Moisture, Compaction, Link);
 					// Dry dirt roosts with a plume of dust; wet dirt does not.
 					B->SpawnDust(LaunchCm, Dir * EjectMps * CmPerM * 0.5f + VelocityMps * CmPerM, RoostSpreadDeg + 20.0f,
-								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
+								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * VolumeCm3 / 1000.0f * (1.0f - SurfaceMoisture)), SurfaceMoisture);
 					RoostLitresTotal += VolumeCm3 / 1000.0f;
 				}
 			}
@@ -1113,7 +1129,7 @@ void ADirtWheel::Step(float Dt)
 					const int32 Link = B->ScoopDirt(ContactCm, ScoopRadiusCm, FlungCm3, 0.1f);
 					B->SpawnParcels(LaunchCm, Dir * EjectMps * CmPerM + VelocityMps * CmPerM * 0.7f, 18.0f, FlungCm3, Moisture, Compaction, Link);
 					B->SpawnDust(LaunchCm, Dir * EjectMps * CmPerM * 0.5f + VelocityMps * CmPerM * 0.7f, 35.0f,
-								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * FlungCm3 / 1000.0f * (1.0f - Moisture)), Moisture);
+								 FMath::RoundToInt(B->Settings.DustPerLitre * Soil.Dustiness * FlungCm3 / 1000.0f * (1.0f - SurfaceMoisture)), SurfaceMoisture);
 					RoostLitresTotal += FlungCm3 / 1000.0f;
 				}
 			}

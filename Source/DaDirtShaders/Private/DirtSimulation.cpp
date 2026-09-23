@@ -85,7 +85,7 @@ public:
 		DIRT_SHARED_PARAMETERS()
 		SHADER_PARAMETER_TEXTURE(Texture2D<float4>, DirtInitialState)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, DirtPondOut)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtPondOut)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
@@ -112,10 +112,10 @@ public:
 		DIRT_SHARED_PARAMETERS()
 		SHADER_PARAMETER(FIntPoint, DirtShiftTexels)
 		SHADER_PARAMETER_TEXTURE(Texture2D<float4>, DirtPatchState)
-		SHADER_PARAMETER_TEXTURE(Texture2D<float2>, DirtPatchPond)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, DirtPondIn)
+		SHADER_PARAMETER_TEXTURE(Texture2D<float4>, DirtPatchPond)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtPondIn)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, DirtPondOut)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtPondOut)
 	END_SHADER_PARAMETER_STRUCT()
 
 	static void ModifyCompilationEnvironment(const FGlobalShaderPermutationParameters& Parameters,
@@ -143,6 +143,8 @@ public:
 		DIRT_PARCEL_PARAMETERS()
 		SHADER_PARAMETER(float, DirtDepositCompaction)
 		SHADER_PARAMETER(int32, DirtResetLiveMax)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtPondOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -175,6 +177,8 @@ public:
 		SHADER_PARAMETER_ARRAY(FVector4f, DirtStrokeA, [DirtSim::MaxStrokesPerPass])
 		SHADER_PARAMETER_ARRAY(FVector4f, DirtStrokeB, [DirtSim::MaxStrokesPerPass])
 		SHADER_PARAMETER_ARRAY(FVector4f, DirtStrokeC, [DirtSim::MaxStrokesPerPass])
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtPondOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<uint>, DirtScoopShortfall)
 	END_SHADER_PARAMETER_STRUCT()
@@ -213,6 +217,8 @@ public:
 		SHADER_PARAMETER(float, DirtShedDiameterCm)
 		SHADER_PARAMETER(float, DirtShedSpeedCmS)
 		SHADER_PARAMETER(uint32, DirtFrameSeed)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtPondOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -251,8 +257,12 @@ public:
 		SHADER_PARAMETER(float, DirtAmbientMoisture)
 		SHADER_PARAMETER(int32, DirtWaterSourceCount)
 		SHADER_PARAMETER_ARRAY(FVector4f, DirtWaterSource, [DirtSim::MaxWaterSourcesPerPass])
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, DirtPondIn)
-		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float2>, DirtPondOut)
+		SHADER_PARAMETER(float, DirtCrustSeedCm)
+		SHADER_PARAMETER(float, DirtCrustMaxCm)
+		SHADER_PARAMETER(float, DirtCrustGrowCmPerSec)
+		SHADER_PARAMETER(float, DirtSkinEvapChokeCm)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtPondOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtStateOut)
 	END_SHADER_PARAMETER_STRUCT()
 
@@ -281,7 +291,7 @@ public:
 		DIRT_SOIL_PARAMETERS()
 		SHADER_PARAMETER(int32, DirtDebugMode)
 		SHADER_PARAMETER(float, DirtDebugLayerRangeCm)
-		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float2>, DirtPondIn)
+		SHADER_PARAMETER_RDG_TEXTURE(Texture2D<float4>, DirtPondIn)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtDisplayOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtNormalOut)
 		SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, DirtDebugOut)
@@ -723,11 +733,14 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		BindParcelParameters(GraphBuilder, Params, Frame, Parcels);
 		Params->DirtDepositCompaction = Frame.DepositCompaction;
 		Params->DirtResetLiveMax = (Frame.SlumpIterations > 0) ? 1 : 0;
+		Params->DirtPondIn = PondCur;
+		Params->DirtPondOut = GraphBuilder.CreateUAV(PondOther);
 		Params->DirtStateOut = GraphBuilder.CreateUAV(Other);
 
 		TShaderMapRef<FDirtDepositCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 		FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("DirtDeposit"), Shader, Params, GroupCount);
 		Flip();
+		FlipPond();
 	};
 
 	// --- slide the window ----------------------------------------------------
@@ -837,11 +850,14 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 				Params->DirtStrokeC[K] = FVector4f(static_cast<float>(Stroke.Mode), Stroke.bProctor ? 1.0f : 0.0f,
 												   static_cast<float>(Stroke.Link), 0.0f);
 			}
+			Params->DirtPondIn = PondCur;
+			Params->DirtPondOut = GraphBuilder.CreateUAV(PondOther);
 			Params->DirtStateOut = GraphBuilder.CreateUAV(Other);
 
 			TShaderMapRef<FDirtBrushCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 			FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("%s", Name), Shader, Params, GroupCount);
 			Flip();
+			FlipPond();
 		}
 	};
 	AddBrushBatches(Frame.Strokes, TEXT("DirtBrushTake"));
@@ -867,11 +883,14 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 			Params->DirtShedDiameterCm = Frame.ShedDiameterCm;
 			Params->DirtShedSpeedCmS = Frame.ShedSpeedCmS;
 			Params->DirtFrameSeed = Frame.FrameSeed * 977u + static_cast<uint32>(Iteration);
+			Params->DirtPondIn = PondCur;
+			Params->DirtPondOut = GraphBuilder.CreateUAV(PondOther);
 			Params->DirtStateOut = GraphBuilder.CreateUAV(Other);
 
 			TShaderMapRef<FDirtSlumpCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
 			FComputeShaderUtils::AddPass(GraphBuilder, RDG_EVENT_NAME("DirtSlump"), Shader, Params, SlumpGroupCount);
 			Flip();
+			FlipPond();
 		}
 	}
 
@@ -890,6 +909,10 @@ void DirtSim::Execute_RenderThread(FRHICommandListImmediate& RHICmdList, const F
 		Params->DirtEvapPerSec = Frame.EvapPerSec;
 		Params->DirtWetDepthCm = Frame.WetDepthCm;
 		Params->DirtAmbientMoisture = Frame.AmbientMoisture;
+		Params->DirtCrustSeedCm = Frame.CrustSeedCm;
+		Params->DirtCrustMaxCm = Frame.CrustMaxCm;
+		Params->DirtCrustGrowCmPerSec = Frame.CrustGrowCmPerSec;
+		Params->DirtSkinEvapChokeCm = Frame.SkinEvapChokeCm;
 		const int32 SourceCount = FMath::Min(Frame.WaterSources.Num(), DirtSim::MaxWaterSourcesPerPass);
 		Params->DirtWaterSourceCount = SourceCount;
 		for (int32 K = 0; K < SourceCount; ++K)

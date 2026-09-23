@@ -113,10 +113,18 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   `const FDirtSoil&` (the cell's, `SoilAtTexel` / `SoilAtWorld`), and a new
   property goes into the struct, the rows and the docs table, never a global.
   Wet, mud and dust are moisture states of a soil, not soils.
-- **The pond texture is two channels**: x ponded water cm, y solid cm of dirt
-  suspended in it. Anything that reads or copies the pond (window readback,
-  tile cache, shift patch, audit) carries both; the audit counts the y channel
-  as "in the run-off" and the total must still book to the baseline.
+- **The pond texture is four channels**: x ponded water cm, y solid cm of dirt
+  suspended in it, z the SKIN's bulk thickness cm, w the base's compaction and
+  moisture packed into one float (`DirtPackBase` / `DirtUnpackBase`, mirrored).
+  Every cell is a skin over a base (docs/SoilPhysics.md 5c): the state texture's
+  compaction and moisture are the skin's, and a zero skin means one layer with
+  the base kept equal to the surface (`DirtSkinSettle`). Deposits join the skin
+  (`DirtSkinAdd`), takes come off it first (`DirtSkinTake`), breaking ground up
+  splits one off (`DirtSkinSplit`); use those helpers, never edit .g/.b and the
+  skin channels by hand. Every pass that touches the state now reads and writes
+  the pond texture too, and flips it. The audit counts the y channel as "in the
+  run-off", bulk and pore water through the skin, and the total must still book
+  to the baseline.
 - **The layer channel stores SOLID centimetres**, not bulk thickness. Bulk height
   comes from porosity via `DirtBulkCm` (a packed skin over natural ground), so
   packing lowers the surface and loosening raises it without moving any grains.
@@ -194,7 +202,7 @@ Lumen/heavy features off in the sandbox map, budget Niagara particle counts.
   and is allowed to leave (drain, dry) because it is not dirt.
 - Scripted tests are the unit tests: one `Tools/Dirtbox*.txt` per system
   (Solid, Water, Terra, Parcels, Soil, Wheel, Sandcastle, Perf, Leak, Persist,
-  Plough, Hills, WaterGrip, Soils, Erosion, Impact, Corner). Anything that touches the wheel or soil strength runs
+  Plough, Hills, WaterGrip, Soils, Erosion, Impact, Corner, Crust). Anything that touches the wheel or soil strength runs
   `DirtboxHills.txt` too: the pad only exercises ruts, and every contact bug so
   far showed up on the dome, the jump faces or the berm. `DaDirt.Wheel` makes a
   new wheel with every part on, so `DaDirt.WheelParts` must follow it. Run them with

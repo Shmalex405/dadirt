@@ -239,9 +239,20 @@ cannot read structured buffers and Niagara cannot be authored from text):
 - [x] Impact compaction: a landing is Proctor's hammer, the tyre spring and the
       soil share its energy, the punch packs, craters and splashes; the rolling
       dynamic load packs transitions (docs/SoilPhysics.md 6 and 9n, 2026-09-22)
+- [x] The skin: every cell is a skin over a base, with its own thickness, compaction
+      and moisture; a crust dries from the surface down over a tacky base, loose
+      roost lies on hardpack, and the tyre, the slump and the water read through
+      it by its thickness. `Tools/DirtboxCrust.txt` (docs/SoilPhysics.md 5c and 9o,
+      2026-09-23)
 - [x] Corners build the track: Janosi lateral grip on the slip angle in a friction
       circle with the drive, the sheared layer put down as the outer shoulder,
       `DaDirt.Orbit`, `DaDirt.Lap`, `Tools/DirtboxCorner.txt` (docs/SoilPhysics.md 6 and 9n)
+- [ ] **Known fault:** under a flood (`Tools/DirtboxWater.txt`, 8 s of 60 mm/min over
+      the whole box, 110 m3 ponded, 11 m3 of dirt in suspension) the audit dips by
+      up to 0.8 L while the sediment settles and returns to zero once it has;
+      the same on the commit before the skin, so it is the erosion pass's
+      settling bookkeeping, not the skin. Find where settling dirt is out of the
+      count for a step.
 - [ ] **Known fault:** with the test wheel on the track and the window following it,
       the audit moves by about ±100 cm³ at each window slide (wheel-less slides and
       the same wheel on the testbed audit at zero). Find what a stroke, crater or

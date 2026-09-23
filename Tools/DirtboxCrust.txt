@@ -1,0 +1,133 @@
+# The skin: a dry crust over a tacky base, and loose dirt over hardpack.
+#   A. rain on the loam pad at rut resolution, then drying at twenty times the game
+#      pace: a crust forms from the surface down while the base stays damp. Probes
+#      read skin thickness and moisture against the base's (DaDirt.Probe prints
+#      "skin X cm over base ...").
+#   B. the wheel on the crust: a pass reads the crust as dust to the knobs and the
+#      damp base to the load; the line it packs kneads the crust into the base.
+#      A burnout on the crust dusts; the same on the watered, unpacked ground does not.
+#   C. loose over hardpack: a spot packed hard, roost thrown onto it, the probe reads
+#      a loose skin over a packed base, and the wheel sinks as on hardpack.
+# DebugView 7 is skin thickness, 8 the base's moisture.
+wait 2 startup
+DaDirt.Mode testbed
+sun -22 35
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 0 40
+wait 1
+
+# --- A. rain, then a crust -------------------------------------------------------------------------
+DaDirt.Probe 3 0
+DaDirt.Probe 3 6
+DaDirt.Water 3 0 800 300
+DaDirt.Water 3 6 800 300
+DaDirt.Rain 60 15
+wait 20 rained
+DaDirt.Probe 3 0
+DaDirt.Probe 3 6
+wait 100 soaked_in
+DaDirt.Probe 3 0
+DaDirt.Probe 3 6
+DaDirt.Audit
+DaDirt.Evap 20
+wait 30 drying_1
+DaDirt.Probe 3 0
+DaDirt.Probe 3 6
+wait 30 drying_2
+DaDirt.Probe 3 0
+DaDirt.Probe 3 6
+wait 60 drying_3
+DaDirt.Probe 3 0
+DaDirt.Probe 3 6
+DaDirt.Probe 3 -10
+DaDirt.Audit
+camera 3 -4 2 -35 90
+wait 0.4
+screenshot crust_A0_dried
+DaDirt.DebugView 7
+wait 0.4
+screenshot crust_A1_skin
+DaDirt.DebugView 8
+wait 0.4
+screenshot crust_A2_base_moisture
+DaDirt.DebugView 3
+wait 0.4
+screenshot crust_A3_surface_moisture
+DaDirt.DebugView 0
+DaDirt.Evap 1
+
+# --- B. the wheel on the crust ----------------------------------------------------------------------
+DaDirt.Wheel 3 -17 90
+DaDirt.Follow 1
+DaDirt.Drive 0.5 0 0
+wait 5.5 crust_pass_1
+DaDirt.Probe 3 0
+DaDirt.Probe 3.15 0
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5.5 crust_pass_2
+DaDirt.Wheel 3 -17 90
+DaDirt.Drive 0.5 0 0
+wait 5.5 crust_pass_3
+DaDirt.Drive 0 0 1
+wait 2
+DaDirt.Probe 3 0
+DaDirt.Probe 3.15 0
+DaDirt.Probe 3.3 0
+DaDirt.Probe 3 6
+DaDirt.Follow 0
+camera 3 -3 1 -15 90
+wait 0.4
+screenshot crust_B0_line
+DaDirt.DebugView 7
+wait 0.4
+screenshot crust_B1_line_skin
+DaDirt.DebugView 0
+DaDirt.Audit
+# a burnout on the crust, then on fresh damp ground
+DaDirt.Wheel 8 -5 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 burnout_on_crust
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Info
+DaDirt.Probe 8 -5
+DaDirt.Audit
+DaDirt.Water 8 8 300 250
+wait 4
+DaDirt.Wheel 8 8 90
+DaDirt.Anchor 1
+DaDirt.Drive 1 0 0
+wait 2 burnout_on_damp
+DaDirt.Drive 0 0 1
+wait 1
+DaDirt.Info
+DaDirt.Probe 8 8
+DaDirt.Audit
+
+# --- C. loose over hardpack ---------------------------------------------------------------------------
+DaDirt.Reset
+wait 1
+DaDirt.Focus 3 0 40
+wait 1
+DaDirt.Pack 3 -8 250 0.7
+DaDirt.Pack 3 -8 250 0.7
+wait 1
+DaDirt.Probe 3 -8
+DaDirt.Throw 3 -12 8 6.5 90 60 10
+DaDirt.Throw 3 -12 8 6.5 90 60 10
+DaDirt.Throw 3 -12 8 6.5 90 60 10
+wait 4 thrown
+DaDirt.Probe 3 -8
+DaDirt.Probe 3 -7.5
+DaDirt.Probe 3 -8.5
+DaDirt.Wheel 3 -14 90
+DaDirt.Drive 0.4 0 0
+wait 4 over_loose_on_hard
+DaDirt.Drive 0 0 1
+wait 1.5
+DaDirt.Probe 3 -8
+DaDirt.Audit
+quit

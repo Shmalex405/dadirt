@@ -230,6 +230,59 @@ a column, *in the run-off*, and the total still books to the baseline. The four
 erosion numbers are soil properties (section 8, row 5 of the table).
 `DaDirt.Erosion 0|1` switches it for attribution. Section 9m.
 
+**5c. The skin: a crust over a tacky base (2026-09-23).** Alex's list: a dry
+crust over a tacky base. Real dirt dries from the top: evaporation takes the
+top centimetre in an hour and the base stays damp for days, because once the
+top is dry the water below can only leave as vapour diffusing through it
+(stage-two drying, the rate falling as the dry layer thickens). A track after
+watering is that: a dusty crust the knobs break through to tacky loam, and a
+line that gets worked becomes one layer again, blue-grooved. The same
+two-layer column is what a few centimetres of loose roost on a hardpack line
+are, or the infill of a crater: loose to the knobs and to the eye, hard to
+the load.
+
+So every cell is now a **skin over a base**. The state texture's compaction
+and moisture are the skin's (what you see, what the knobs are in); the pond
+texture carries the skin's thickness in bulk cm and, packed into one float,
+the base's compaction and moisture. No skin means one layer, and then the base
+is kept equal to the surface. The rules, each a physical one:
+
+- **Deposits** (parcels landing, a dump, slump inflow, settled sediment) join
+  the skin, mixed by mass; a column with no skin gets one and its old surface
+  becomes the base. **Takes** (a dig, a scoop, slump outflow, erosion) come
+  off the skin first and out of the base for the rest; when the skin is gone
+  the base is the surface again. Breaking ground up (a tool's disturb, a
+  shedding face) makes a loose skin of its top; nothing below is loosened.
+- **Packing** works the skin (it packs and thins as it does), reaches the base
+  by the share of the bearing depth the skin does not fill, kneads the skin's
+  moisture toward the base's, and once skin and base match the skin is folded
+  in. A dry crust worked by a tyre becomes the tacky line under it.
+- **Water** enters at the surface at the skin's conductivity and fills the
+  skin's pores first, then the base's; the skin drains into the base and the
+  base drains away. Drying is in two stages, as in the field: while the base
+  holds water above field capacity it resupplies the skin by capillary rise,
+  the surface stays as wet as the base and what evaporates comes out of the
+  base (stage one); once the base is down to field capacity the supply stops,
+  the skin dries in the air (the drying rate is a flux, so a thin skin's
+  moisture fraction falls many times faster than the wet depth's), the base
+  dries only through the skin, choked by its thickness, and the drying front
+  descends while the skin is drier than the base, to a few centimetres: the
+  crust (stage two). Nothing dries under a pond; the pond itself evaporates at
+  the potential rate.
+- **Strength** for the slump reads the skin by its thickness against the
+  depth a face fails through (5 cm): a thin dry crust over damp loam fails
+  through the loam. The **tyre** reads the skin against knob height for grip,
+  roost and dust, and against its own sinkage for the load: a loose skin on
+  hardpack sinks as hardpack and dusts as loose.
+- The audit's bulk and pore water count skin and base; solid centimetres are
+  still one number and still book to the baseline.
+
+`DaDirt.Probe` prints the skin and the base under it; `DaDirt.DebugView 7`
+is skin thickness, `8` the base's moisture; `DaDirt.Evap <x>` scales the
+drying for tests. Settings: `CrustSeedCm`, `CrustMaxCm`, `CrustGrowCmPerSec`,
+`SkinEvapChokeCm`. Not yet: the cementation a dried loam crust has (a dry crust
+is cohesionless here, so it crumbles rather than plates), and salts. Section 9o.
+
 ## 6. The tyre and the soil: terramechanics
 
 **Pressure–sinkage (Bekker).** A plate of width b pushed into soil to depth z
@@ -538,7 +591,7 @@ fifth argument. `DaDirt.Probe` names the soil at the point.
 
 ---
 
-## 9b. Phase A measured (Tools/DirtboxSoil.txt, 2026-09-21; re-run 2026-09-22 after the soil table: 140.6 → 80.5, damp wall stands, soaked block runs out)
+## 9b. Phase A measured (Tools/DirtboxSoil.txt, 2026-09-21; re-run 2026-09-22 after the soil table: 140.6 → 80.5, damp wall stands, soaked block runs out; re-run 2026-09-23 with the skin: the soaked block runs out slower, 23–29° at 6 s, see 9o)
 
 The testbed's 100 m³ block (1 m tall, vertical walls, compaction 0.1, moisture
 0.05) in three states, probing across its east wall after 5 s:
@@ -1021,6 +1074,50 @@ floor packed 0.91–1.00, and narrow: 6 cm off the centre the ground is down onl
 Shoulders of 0.1–0.4 cm, compaction 0.36–0.85 along the flanks. The burnout,
 the straight run and the turn read as before; the turn's slither shears
 5–7 L into the outside of the arc. Drift under 1 cm³ in every section.
+
+## 9o. The skin measured (2026-09-23)
+
+`Tools/DirtboxCrust.txt`, on the loam pad at 3.9 cm cells, drying at twenty
+times the game pace (`DaDirt.Evap 20`) where it says so.
+
+**A crust over a tacky base.** 800 L on a 3 m disc and 15 s of cloudburst,
+then 100 s to soak in: the surface saturated under a puddle, the base at 0.34
+(field capacity is 0.30). Drying, twenty times:
+
+| after | skin | skin moisture | base moisture |
+|---|---|---|---|
+| soaked in | 0.5 cm | 1.00 (puddle 0.9 cm) | 0.34 |
+| 30 s | 4.0 cm | 0.05 | 0.29 |
+| 60 s | 4.0 cm | 0.05 | 0.26 |
+| 120 s | 4.0 cm | 0.05 | 0.21 |
+
+The base first drains to field capacity through the wet skin (stage one),
+then the crust forms and reaches its 4 cm in under thirty seconds, and behind
+it the base loses 0.05 a minute where the bare column of the old model lost
+0.30 in ten. A crust in minutes, the base damp for hours: the order the field
+has. Unwatered ground alongside dries to 0.14 in the same time.
+
+**The wheel on the crust.** Three passes at half throttle over the crusted
+pad: the line's skin is kneaded from 0.05 to 0.14 (the base is at 0.21) and
+packed 0.45 → 0.77 with the base under it packed 0.40 → 0.65; where the line
+packs to 1.00 the skin folds into the base and the column is one layer again.
+A metre off the line the crust is untouched, 4 cm at 0.05. A burnout on the
+crust throws 0.98 L and 247 motes of dust; the same burnout on watered ground
+throws 0.60 L and no dust.
+
+**Loose over hardpack.** A spot packed to 1.00, then 24 L thrown onto it: the
+probe reads a loose skin 0.8–1.7 cm thick at compaction 0.39–0.75 over a base
+at 1.00, and a pass of the wheel packs the skin to 0.77 without disturbing the
+base. Drift −0.30 cm³.
+
+**Regressions.** `Tools/DirtboxPersist.txt` (the four-channel pond through
+every slide): drift 0.63 cm³ or less. `Tools/DirtboxSoil.txt`: the as-built
+wall shears to 68 cm as before and the damp wall stands; the soaked block now
+runs out at 23–29° after 6 s where 9b had 16°, because its surface is held
+saturated by capillary supply from the base rather than read over the whole
+wet depth, and the run-out is slower for it; the cone is unchanged at 32°.
+Drift −1.8 cm³. The crust section itself carries a −75 cm³ dip from the
+ponded, eroding pad that the flood fault in the roadmap describes.
 
 ## 10. Implementation plan
 
